@@ -1,7 +1,8 @@
 """Чаты с работодателями: открываем непрочитанные чаты, где последнее сообщение — «Отказ».
 
-Открытый чат hh отмечает прочитанным, так что отказы перестают висеть в непрочитанных.
-Чаты с приглашениями и живыми сообщениями не трогаем — только выводим их в лог.
+Включаем в списке фильтр «Только непрочитанные» и открываем из него чаты с отказом —
+hh отмечает их прочитанными. Чаты с приглашениями и живыми сообщениями не трогаем,
+только выводим их в лог.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from dataclasses import dataclass, field
 from playwright.sync_api import Page
 from playwright.sync_api import Error as PlaywrightError
 
+from . import control
 from . import selectors as S
 from .auth import hh_role, is_auth_url
 from .browser import FatalError, wait_captcha
@@ -68,8 +70,9 @@ class _Chat:
     unread: bool
 
 
-def read_rejections(page: Page, cfg: Config, dry_run: bool = False) -> ChatStats:
+def read_rejections(page: Page, cfg: Config, dry_run: bool = False, stats: ChatStats | None = None) -> ChatStats:
     rules = cfg.chats
+    stats = stats if stats is not None else ChatStats()
     log.info("")
     log.info("Шаг 3/3: чаты с отказами" + ("  [DRY-RUN: только список, без открытия]" if dry_run else ""))
     log.info(f"  открываю чаты: {rules.url}")
@@ -77,23 +80,30 @@ def read_rejections(page: Page, cfg: Config, dry_run: bool = False) -> ChatStats
     wait_captcha(page)
     if is_auth_url(page.url) or hh_role(page) == "anonymous":
         raise FatalError("hh перекинул на страницу входа — сессия истекла, войдите заново")
-    try:
-        page.locator(S.CHAT_CELL).first.wait_for(timeout=20_000)
+    try:  # при уже включённом фильтре список может быть пуст — тогда ждём сам переключатель
+        page.locator(f"{S.CHAT_CELL}, {S.CHAT_ONLY_UNREAD}").first.wait_for(state="attached", timeout=20_000)
     except PlaywrightError:
         log.warning("  ! список чатов не появился за 20 с (чатов нет или hh поменял вёрстку)")
-        return ChatStats()
+        return stats
 
-    only_unread = page.locator(S.CHAT_ONLY_UNREAD)
-    if only_unread.count():
-        state = "включён" if only_unread.first.is_checked() else "выключен"
-        log.info(f"  фильтр «Только непрочитанные»: {state}")
+    # С фильтром в списке только непрочитанные чаты. Если включить не вышло —
+    # отличаем непрочитанные по счётчику сообщений у чата.
+    only_unread = _enable_only_unread(page)
+    if only_unread:
+        try:
+            page.locator(S.CHAT_CELL).first.wait_for(timeout=5_000)
+        except PlaywrightError:
+            log.success("  ✓ непрочитанных чатов нет")
+            return stats
 
     rejection = rules.rejection_text.strip().lower()
-    stats = ChatStats()
     seen: set[str] = set()
     found = 0
     for _ in range(500):  # защита от бесконечного цикла
         chats = [_Chat(**raw) for raw in page.evaluate(_COLLECT_JS, _selectors())]
+        if only_unread:  # в отфильтрованном списке непрочитанные все, даже без счётчика
+            for chat in chats:
+                chat.unread = True
         for chat in chats:
             if chat.id in seen:
                 continue
@@ -114,7 +124,7 @@ def read_rejections(page: Page, cfg: Config, dry_run: bool = False) -> ChatStats
         if target is None:
             if not page.evaluate(_SCROLL_JS, S.CHAT_CELL):
                 break
-            time.sleep(0.8)  # даём виртуальному списку дорисовать строки
+            control.sleep(0.8)  # даём виртуальному списку дорисовать строки
             continue
 
         seen.add(target.id)
@@ -131,11 +141,43 @@ def read_rejections(page: Page, cfg: Config, dry_run: bool = False) -> ChatStats
     return stats
 
 
+def _enable_only_unread(page: Page) -> bool:
+    """Включает в списке чатов фильтр «Только непрочитанные». True — фильтр включён."""
+    box = page.locator(S.CHAT_ONLY_UNREAD)
+    if not box.count():
+        log.warning("  ! переключателя «Только непрочитанные» нет — ищу непрочитанные по счётчикам")
+        return False
+    box = box.first
+    if box.is_checked():
+        log.info("  фильтр «Только непрочитанные» уже включён")
+        return True
+
+    log.info("  → включаю фильтр «Только непрочитанные»")
+    # Сам чекбокс hh прячет под своей отрисовкой — жмём подпись, а если не сработало, сам чекбокс
+    attempts = (
+        lambda: page.get_by_text("Только непрочитанные", exact=True).first.click(),
+        lambda: box.check(force=True),
+    )
+    for attempt in attempts:
+        try:
+            attempt()
+        except PlaywrightError as e:
+            log.debug(f"  не получилось: {(str(e).splitlines() or [''])[0]}")
+        for _ in range(10):
+            if box.is_checked():
+                control.sleep(1.5)  # список перезагружается
+                log.success("  ✓ фильтр включён — в списке только непрочитанные чаты")
+                return True
+            control.sleep(0.3)
+    log.warning("  ! не удалось включить фильтр — ищу непрочитанные по счётчикам")
+    return False
+
+
 def _open_chat(page: Page, chat: _Chat, cfg: Config) -> bool:
     cell = page.locator(f'[data-qa="chatik-open-chat-{chat.id}"]')
     try:
         cell.scroll_into_view_if_needed()
-        time.sleep(random.uniform(cfg.limits.action_delay_min, cfg.limits.action_delay_max))
+        control.sleep(random.uniform(cfg.limits.action_delay_min, cfg.limits.action_delay_max))
         log.info("  → открываю чат")
         cell.click()
         try:
@@ -144,7 +186,7 @@ def _open_chat(page: Page, chat: _Chat, cfg: Config) -> bool:
             log.debug(f"  адрес не сменился на /chat/{chat.id}: {page.url}")
         delay = random.uniform(cfg.chats.delay_min, cfg.chats.delay_max)
         log.info(f"  ⏸ {delay:.1f} с — жду, пока hh отметит чат прочитанным")
-        time.sleep(delay)
+        control.sleep(delay)
 
         # Узкая вёрстка: чат открывается вместо списка — возвращаемся назад
         if not page.locator(S.CHAT_CELL).count():

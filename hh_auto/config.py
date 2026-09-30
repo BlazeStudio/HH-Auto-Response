@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from dataclasses import dataclass, field, fields
@@ -131,6 +132,35 @@ class Config:
         return parse_qs(urlparse(self.search_url).query).get("resume", [None])[0]
 
 
+def save_config(cfg: Config, path: Path) -> None:
+    """Сохраняет настройки в TOML (используется приложением; комментарии не сохраняются)."""
+    lines = [
+        "# Настройки hh-auto. Файл записан приложением; описание параметров — в config.example.toml",
+        "",
+    ]
+    top = {"search_url": cfg.search_url, "resume_url": cfg.resume_url,
+           "skip_on_resume_mismatch": cfg.skip_on_resume_mismatch}
+    lines += [f"{key} = {_toml_value(value)}" for key, value in top.items()]
+    for f in fields(cfg):
+        section = getattr(cfg, f.name)
+        if not hasattr(section, "__dataclass_fields__"):
+            continue
+        lines += ["", f"[{f.name}]"]
+        lines += [f"{sf.name} = {_toml_value(getattr(section, sf.name))}" for sf in fields(section)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    # JSON-строка — валидная базовая строка TOML (те же экранирования \" \\ \n \uXXXX)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
 def _section(cls, data: dict, name: str):
     known = {f.name for f in fields(cls)}
     unknown = set(data) - known
@@ -139,7 +169,17 @@ def _section(cls, data: dict, name: str):
     return cls(**data)
 
 
-def load_config(path: Path) -> Config:
+def validate_search_url(search_url: str) -> None:
+    u = urlparse(search_url)
+    if u.hostname not in ("hh.ru", "www.hh.ru") or not u.path.startswith("/search/vacancy"):
+        raise ConfigError(
+            "search_url должен быть ссылкой на поиск вакансий hh.ru вида https://hh.ru/search/vacancy?... "
+            "(региональные сайты hh.kz, hh.uz и т.п. не поддерживаются)"
+        )
+
+
+def load_config(path: Path, check_search_url: bool = True) -> Config:
+    """check_search_url=False — для формы настроек в приложении: ссылку ещё могут не вписать."""
     if not path.exists():
         raise ConfigError(f"не найден {path}. Скопируйте config.example.toml в config.toml и укажите ссылку поиска.")
     try:
@@ -148,12 +188,8 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"{path}: ошибка синтаксиса TOML: {e}") from e
 
     search_url = raw.pop("search_url", "").strip()
-    u = urlparse(search_url)
-    if u.hostname not in ("hh.ru", "www.hh.ru") or not u.path.startswith("/search/vacancy"):
-        raise ConfigError(
-            "search_url должен быть ссылкой на поиск вакансий hh.ru вида https://hh.ru/search/vacancy?... "
-            "(региональные сайты hh.kz, hh.uz и т.п. не поддерживаются)"
-        )
+    if check_search_url:
+        validate_search_url(search_url)
 
     cfg = Config(
         search_url=search_url,

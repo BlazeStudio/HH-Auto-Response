@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import Page
 
+from . import control
 from . import selectors as S
 from .browser import FatalError, wait_captcha
 from .config import Config
@@ -62,10 +63,10 @@ def ensure_logged_in(page: Page, cfg: Config) -> None:
     deadline = time.monotonic() + cfg.browser.login_timeout
     next_reminder = time.monotonic() + 30
     while time.monotonic() < deadline:
-        time.sleep(2)
+        control.sleep(2)
         # Пока вы вводите код, страницу не трогаем — только смотрим на cookie
         if hh_role(page) not in ("", "anonymous"):
-            time.sleep(2)  # даём hh закончить редиректы после входа
+            control.sleep(2)  # даём hh закончить редиректы после входа
             if is_logged_in(page):
                 log.success("  ✓ вход выполнен, сессия сохранена — в следующий раз входить не придётся")
                 return

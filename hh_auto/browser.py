@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from playwright.sync_api import BrowserContext, Page, Playwright
 from playwright.sync_api import Error as PlaywrightError
 
+from . import control
 from . import selectors as S
 from .config import Config
 from .logger import log
@@ -115,5 +116,5 @@ def wait_captcha(page: Page, timeout: float = 600) -> None:
     while captcha_shown(page):
         if time.monotonic() > deadline:
             raise FatalError("капча не пройдена за отведённое время")
-        time.sleep(2)
+        control.sleep(2)
     log.success("  ✓ капча пройдена, продолжаю")

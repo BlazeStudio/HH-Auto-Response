@@ -11,14 +11,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
-from hh_auto.auth import ensure_logged_in
-from hh_auto.browser import FatalError, check_region, launch
-from hh_auto.chats import ChatStats, log_chat_summary, read_rejections
+from hh_auto.app import run_chats
+from hh_auto.chats import ChatStats
 from hh_auto.config import ConfigError, load_config
 from hh_auto.logger import log, setup_logging
 
@@ -44,36 +40,7 @@ def main() -> int:
     except ConfigError as e:
         log.error(f"Ошибка конфигурации: {e}")
         return 2
-    cfg.browser.profile_dir = str(ROOT / cfg.browser.profile_dir)
-
-    stats = ChatStats()
-    started = time.monotonic()
-    exit_code = 0
-    with sync_playwright() as pw:
-        context = None
-        try:
-            context = launch(pw, cfg)
-            page = context.pages[0] if context.pages else context.new_page()
-            log.info("")
-            check_region(page, cfg)
-            log.info("")
-            ensure_logged_in(page, cfg)
-            stats = read_rejections(page, cfg, args.dry_run)
-        except KeyboardInterrupt:
-            log.warning("Остановлено пользователем (Ctrl+C)")
-            exit_code = 130
-        except FatalError as e:
-            log.error(f"Остановка: {e}")
-            exit_code = 1
-        finally:
-            log_chat_summary(stats, time.monotonic() - started)
-            log.info(f"подробный лог: {log_path}")
-            if context is not None:
-                try:
-                    context.close()
-                except Exception:
-                    pass
-    return exit_code
+    return run_chats(cfg, args.dry_run, ROOT, ChatStats(), log_path)
 
 
 if __name__ == "__main__":

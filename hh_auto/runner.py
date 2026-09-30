@@ -10,6 +10,7 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 
+from . import control
 from .browser import FatalError
 from .config import Config
 from .logger import log
@@ -163,4 +164,4 @@ def _excluded_word(title: str, words: list[str]) -> str | None:
 def _sleep(low: float, high: float, what: str) -> None:
     delay = random.uniform(low, high)
     log.info(f"  ⏸ пауза {delay:.1f} с {what}")
-    time.sleep(delay)
+    control.sleep(delay)

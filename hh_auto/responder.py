@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 from playwright.sync_api import Locator, Page
 from playwright.sync_api import Error as PlaywrightError
 
+from . import control
 from . import selectors as S
 from .auth import hh_role, is_auth_url
 from .browser import FatalError
@@ -192,7 +193,7 @@ class Responder:
                     return _Outcome.LIMIT
             except PlaywrightError:
                 pass  # страница перерисовывается — проверим на следующей итерации
-            time.sleep(0.3)
+            control.sleep(0.3)
         return _Outcome.NOTHING
 
     def _handle_relocation(self, vac: Vacancy, card: Locator) -> Result | None:
@@ -328,7 +329,7 @@ class Responder:
                     return self.page, letter_input.first, None
             except PlaywrightError:
                 pass
-            time.sleep(0.3)
+            control.sleep(0.3)
         return None
 
     def _skip_questions(self, reason: str, remember: bool = True) -> Result:
@@ -354,7 +355,7 @@ class Responder:
         return self._visible(self.page.locator(S.QUESTIONS))
 
     def _handle_modal(self, vac: Vacancy, card: Locator) -> Result:
-        time.sleep(0.5)  # страница вопросов может дорисоваться чуть позже кнопки
+        control.sleep(0.5)  # страница вопросов может дорисоваться чуть позже кнопки
         if not self.on_search_page() or self._questions_shown():
             return self._handle_questions(vac)
         dialog = self._response_dialog()
@@ -456,7 +457,7 @@ class Responder:
                     return informer, textarea.first, submit.first
             except PlaywrightError:
                 pass
-            time.sleep(0.3)
+            control.sleep(0.3)
         return None
 
     # --- сопроводительное письмо ---
@@ -494,7 +495,7 @@ class Responder:
         last, changed_at = before, None
         next_progress = time.monotonic() + 5
         while time.monotonic() < deadline:
-            time.sleep(0.4)
+            control.sleep(0.4)
             value = textarea.input_value().strip()
             now = time.monotonic()
             if value != last:
@@ -544,7 +545,7 @@ class Responder:
             if error:
                 log.debug(f"  hh показал ошибку: «{error}»")
                 return error
-            time.sleep(0.3)
+            control.sleep(0.3)
         return f"после нажатия {label} форма не закрылась"
 
     def _error_text(self, scope: Locator | Page) -> str | None:
@@ -564,7 +565,7 @@ class Responder:
                     return True
             except PlaywrightError:
                 pass
-            time.sleep(0.3)
+            control.sleep(0.3)
         return False
 
     def _resume_matches(self, dialog: Locator | Page) -> bool:
@@ -617,7 +618,7 @@ class Responder:
                 else:
                     log.debug("  закрываю всплывающее окно (Escape)")
                     self.page.keyboard.press("Escape")
-                time.sleep(0.7)
+                control.sleep(0.7)
             except PlaywrightError:
                 break
         if self._visible(self.page.locator(S.DIALOG)):
@@ -636,7 +637,7 @@ class Responder:
 
     def _pause(self) -> None:
         limits = self.cfg.limits
-        time.sleep(random.uniform(limits.action_delay_min, limits.action_delay_max))
+        control.sleep(random.uniform(limits.action_delay_min, limits.action_delay_max))
 
     def _snapshot(self, vacancy_id: str, tag: str) -> None:
         """Скриншот + HTML страницы — чтобы по ним поправить селекторы, если hh поменял вёрстку."""

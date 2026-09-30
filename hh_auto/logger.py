@@ -43,32 +43,45 @@ class _ConsoleFormatter(logging.Formatter):
         return f"{color}{text}{_RESET}" if color else text
 
 
-def setup_logging(log_dir: Path, verbose: bool = False, name: str = "run") -> Path:
-    """Настраивает логгер 'hh' и возвращает путь к файлу лога этого запуска (<name>_<время>.log)."""
+def setup_logging(
+    log_dir: Path,
+    verbose: bool = False,
+    name: str = "run",
+    extra_handlers: tuple[logging.Handler, ...] = (),
+) -> Path:
+    """Настраивает логгер 'hh' и возвращает путь к файлу лога этого запуска (<name>_<время>.log).
+
+    extra_handlers — дополнительные получатели записей (окно лога в приложении).
+    """
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{name}_{datetime.now():%Y-%m-%d_%H-%M-%S}.log"
 
-    # Кириллица и символы ✓/→ в консоли Windows и при перенаправлении вывода в файл
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
-    use_color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-    if use_color and os.name == "nt":
-        os.system("")  # включает обработку ANSI-цветов в консоли Windows
+    for handler in log.handlers:  # файл прошлого запуска (в приложении запусков много)
+        handler.close()
+    log.handlers.clear()
+    log.setLevel(logging.DEBUG)
+    log.propagate = False
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.DEBUG if verbose else logging.INFO)
-    console.setFormatter(_ConsoleFormatter(use_color))
+    # В приложении без консоли (.exe) stdout нет — туда и не пишем
+    if sys.stdout is not None:
+        # Кириллица и символы ✓/→ в консоли Windows и при перенаправлении вывода в файл
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        use_color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+        if use_color and os.name == "nt":
+            os.system("")  # включает обработку ANSI-цветов в консоли Windows
+        console = logging.StreamHandler(sys.stdout)
+        console.setLevel(logging.DEBUG if verbose else logging.INFO)
+        console.setFormatter(_ConsoleFormatter(use_color))
+        log.addHandler(console)
 
     file = logging.FileHandler(log_path, encoding="utf-8")
     file.setLevel(logging.DEBUG)
     file.setFormatter(
         logging.Formatter("%(asctime)s | %(levelname)-5s | %(message)s", "%Y-%m-%d %H:%M:%S")
     )
-
-    log.handlers.clear()
-    log.setLevel(logging.DEBUG)
-    log.addHandler(console)
     log.addHandler(file)
-    log.propagate = False
+    for handler in extra_handlers:
+        log.addHandler(handler)
     return log_path
