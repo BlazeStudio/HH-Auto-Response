@@ -84,6 +84,12 @@ def run(
                 log.info(f"{tag} «{vac.title}» — кнопки «Откликнуться» нет ({vac.button_text or 'уже откликались'}), пропускаю")
                 continue
 
+            excluded = _excluded_word(vac.title, cfg.filters.exclude_title_words)
+            if excluded:
+                stats.skipped[f"в названии «{excluded}»"] += 1
+                log.info(f"{tag} «{vac.title}» — в названии «{excluded}» ([filters]), пропускаю")
+                continue
+
             log.info("")
             log.info(f"{tag} ▶ «{vac.title}» — {vac.company}")
             log.info(f"  {vac.url}")
@@ -99,7 +105,7 @@ def run(
                 stats.with_letter += result.letter
                 state.mark_applied(vac, result.letter)
                 if result.reason:
-                    log.warning(f"  ! {result.reason}")
+                    (log.info if result.letter else log.warning)(f"  {'' if result.letter else '! '}{result.reason}")
                 log.info(f"  итого отправлено откликов: {stats.applied} из {max_responses}")
             elif result.status is Status.SKIPPED:
                 stats.skipped[result.reason] += 1
@@ -147,6 +153,11 @@ def log_summary(stats: Stats, elapsed: float) -> None:
     log.info(f"  уже откликались / ранее:    {stats.already}")
     (log.error if stats.failed else log.info)(f"  ошибок:                     {stats.failed}")
     log.info(f"  время работы:               {minutes} мин {seconds} с")
+
+
+def _excluded_word(title: str, words: list[str]) -> str | None:
+    lowered = title.lower()
+    return next((w for w in words if w.lower() in lowered), None)
 
 
 def _sleep(low: float, high: float, what: str) -> None:

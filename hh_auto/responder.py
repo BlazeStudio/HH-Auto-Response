@@ -33,6 +33,7 @@ from .search import Vacancy
 LIMIT_TEXT = re.compile(r"не более \d+ откликов|лимит откликов|исчерпали лимит", re.I)
 SEND_BUTTON_TEXT = re.compile(r"^\s*(Отправить|Откликнуться)\s*$", re.I)
 CLOSE_BUTTON_TEXT = re.compile(r"^\s*(Закрыть|Отменить|Отмена)\s*$", re.I)
+SAVE_BUTTON_TEXT = re.compile(r"^\s*(Сохранить|Готово|Применить|Отправить|Добавить)\s*$", re.I)
 # Ошибки, которые hh пишет прямо в окне отклика/письма (тексты из переводов hh)
 SUBMIT_ERROR_TEXT = re.compile(
     r"Отклик уже просмотрен работодателем|требуется ответить на вопросы теста|Произошла ошибка"
@@ -156,7 +157,7 @@ class Responder:
                 new_page.close()
             return Result(Status.SKIPPED, "открылось отдельное окно (пока не обрабатываем)", remember=True)
         if outcome in (_Outcome.NAVIGATED, _Outcome.QUESTIONS):
-            return self._skip_questions()
+            return self._handle_questions(vac)
         if outcome is _Outcome.RELOCATION:
             self._snapshot(vac.id, "relocation-stuck")
             self._close_dialogs()
@@ -236,11 +237,111 @@ class Responder:
             pass
         return None
 
-    def _skip_questions(self) -> Result:
-        """Страница с вопросами/тестом работодателя: пока не заполняем — отматываем назад к выдаче."""
+    def _handle_questions(self, vac: Vacancy) -> Result:
+        """Страница с вопросами работодателя.
+
+        Отвечаем, только если вопрос ровно один и он о зарплате: пишем ответ из config,
+        прикладываем сгенерированное письмо и откликаемся. Иначе — назад к выдаче.
+        """
         log.info(f"  hh открыл страницу с вопросами работодателя: {self.page.url}")
-        log.info("  ↩ отматываю назад к выдаче")
-        if self.page.url != self._search_url:
+        try:
+            self.page.locator(S.QUESTION_TEXT).first.wait_for(timeout=5_000)
+        except PlaywrightError:
+            return self._skip_questions("отдельная страница отклика без вопросов (пока не обрабатываем)")
+        questions = [" ".join(t.split()) for t in self.page.locator(S.QUESTION_TEXT).all_inner_texts()]
+        log.info(f"  вопросов: {len(questions)}")
+        for i, question in enumerate(questions, 1):
+            log.info(f"    {i}. {question}")
+
+        rules = self.cfg.questions
+        if not rules.answer_salary:
+            return self._skip_questions("вопросы работодателя ([questions] answer_salary = false)")
+        if len(questions) != 1:
+            return self._skip_questions(f"вопросов работодателя {len(questions)} — отвечаем только на один о зарплате")
+        keyword = next((k for k in rules.salary_keywords if k.lower() in questions[0].lower()), None)
+        if not keyword:
+            return self._skip_questions("вопрос работодателя не о зарплате")
+        answer_box = self.page.locator(S.QUESTION_BLOCK).first.locator("textarea")
+        if not answer_box.count():
+            return self._skip_questions("у вопроса о зарплате нет поля для ответа (варианты выбора)")
+        if self._visible(self.page.locator(S.HIDDEN_RESUME_WARNING)):
+            return self._skip_questions("hh требует сделать резюме видимым всем работодателям")
+        if not self._resume_matches(self.page):
+            return self._skip_questions("на странице вопросов выбрано другое резюме", remember=False)
+
+        log.info(f"  вопрос о зарплате (нашёл «{keyword}») → отвечаю: «{rules.salary_answer}»")
+        self._pause()
+        answer_box.first.fill(rules.salary_answer)
+
+        form = self._open_questions_letter()
+        if form is None:
+            self._snapshot(vac.id, "questions-letter")
+            return self._skip_questions("не открылось поле сопроводительного письма", remember=False)
+        scope, textarea, save = form
+        if not self._write_letter(scope, textarea):
+            return self._skip_questions("не удалось получить сопроводительное письмо", remember=False)
+        if save is not None:
+            error = self._submit(scope, save, "«Сохранить» (письмо)", questions_page=True, until_hidden=True)
+            if error:
+                self._snapshot(vac.id, "questions-letter-save")
+                return self._skip_questions(f"письмо не сохранилось: {error}", remember=False)
+
+        submit = self.page.locator(S.MODAL_SUBMIT).filter(visible=True).first
+        error = self._submit(self.page, submit, "«Откликнуться» (ответ + письмо)", questions_page=True)
+        if error:
+            if LIMIT_TEXT.search(error):
+                return Result(Status.LIMIT, "hh сообщил о лимите откликов")
+            self._snapshot(vac.id, "questions-submit")
+            self._back_to_results(direct=True)
+            return Result(Status.FAILED, f"страница вопросов: {error}")
+
+        log.success("  ✓ ОТКЛИК ОТПРАВЛЕН с ответом о зарплате и сопроводительным письмом")
+        self._back_to_results(direct=True)
+        return Result(Status.APPLIED, reason=f"ответ на вопрос: «{rules.salary_answer}»", letter=True)
+
+    def _open_questions_letter(self, timeout: float = 10) -> tuple[Locator | Page, Locator, Locator | None] | None:
+        """«Сопроводительное письмо → Добавить» на странице вопросов.
+
+        Возвращает (где искать «Сгенерировать», поле письма, кнопка «Сохранить» или None, если поле встроено).
+        """
+        letter_input = self.page.locator(S.LETTER_INPUT).filter(visible=True)
+        if not letter_input.count():
+            toggle = self.page.locator(S.LETTER_TOGGLE).filter(visible=True)
+            if not toggle.count():
+                log.warning("  ! нет кнопки «Сопроводительное письмо → Добавить»")
+                return None
+            self._pause()
+            log.info("  → нажимаю «Сопроводительное письмо → Добавить»")
+            toggle.first.click()
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                dialog = self.page.locator(S.DIALOG).filter(has=self.page.locator(S.LETTER_INPUT)).filter(visible=True)
+                if dialog.count():
+                    dialog = dialog.last
+                    save = dialog.locator(S.LETTER_SUBMIT).or_(dialog.get_by_role("button", name=SAVE_BUTTON_TEXT))
+                    log.info("  открылось окно «Сопроводительное письмо»")
+                    return dialog, dialog.locator(S.LETTER_INPUT).first, save.first
+                if letter_input.count():
+                    log.info("  поле письма появилось на странице")
+                    return self.page, letter_input.first, None
+            except PlaywrightError:
+                pass
+            time.sleep(0.3)
+        return None
+
+    def _skip_questions(self, reason: str, remember: bool = True) -> Result:
+        """Вопросы работодателя, на которые не отвечаем, — отматываем назад к выдаче."""
+        log.info(f"  пропускаю: {reason}")
+        self._back_to_results()
+        return Result(Status.SKIPPED, reason, remember=remember)
+
+    def _back_to_results(self, direct: bool = False) -> None:
+        """Возврат к выдаче: «Назад» в браузере, а после отправки формы — сразу на страницу выдачи."""
+        log.info("  ↩ " + ("возвращаюсь к выдаче" if direct else "отматываю назад к выдаче"))
+        self._close_dialogs()
+        if not direct and self.page.url != self._search_url:
             try:
                 self.page.go_back(wait_until="domcontentloaded")
             except PlaywrightError:
@@ -248,7 +349,6 @@ class Responder:
         if self.page.url != self._search_url or self._questions_shown():
             self.page.goto(self._search_url, wait_until="domcontentloaded")
         self._close_dialogs()
-        return Result(Status.SKIPPED, "вопросы/тест работодателя (пока не заполняем)", remember=True)
 
     def _questions_shown(self) -> bool:
         return self._visible(self.page.locator(S.QUESTIONS))
@@ -256,7 +356,7 @@ class Responder:
     def _handle_modal(self, vac: Vacancy, card: Locator) -> Result:
         time.sleep(0.5)  # страница вопросов может дорисоваться чуть позже кнопки
         if not self.on_search_page() or self._questions_shown():
-            return self._skip_questions()
+            return self._handle_questions(vac)
         dialog = self._response_dialog()
         if self._visible(dialog.locator(S.HIDDEN_RESUME_WARNING)):
             self._close_dialogs()
@@ -281,7 +381,7 @@ class Responder:
                 self._close_dialogs()
                 return Result(Status.LIMIT, "hh сообщил о лимите откликов")
             if "вопрос" in error or not self.on_search_page() or self._questions_shown():
-                return self._skip_questions()
+                return self._handle_questions(vac)
             self._snapshot(vac.id, "modal-submit")
             self._close_dialogs()
             return Result(Status.FAILED, error)
@@ -413,8 +513,19 @@ class Responder:
 
     # --- вспомогательное ---
 
-    def _submit(self, scope: Locator | Page, button: Locator, label: str) -> str | None:
-        """Жмёт кнопку отправки и ждёт, пока форма закроется. Возвращает текст ошибки или None."""
+    def _submit(
+        self,
+        scope: Locator | Page,
+        button: Locator,
+        label: str,
+        questions_page: bool = False,
+        until_hidden: bool = False,
+    ) -> str | None:
+        """Жмёт кнопку отправки и ждёт, пока форма закроется. Возвращает текст ошибки или None.
+
+        questions_page — жмём на странице вопросов: успех, когда она исчезла (или только кнопка,
+        если until_hidden — например, «Сохранить» в окне письма).
+        """
         if not self._wait_enabled(button, 10):
             return f"кнопка {label} неактивна"
         self._pause()
@@ -422,9 +533,12 @@ class Responder:
         button.click()
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            if not self.on_search_page() or self._questions_shown():
+            if questions_page:
+                if not self._visible(button) or (not until_hidden and not self._questions_shown()):
+                    return None
+            elif not self.on_search_page() or self._questions_shown():
                 return "hh открыл страницу с вопросами работодателя"
-            if not self._visible(button):
+            elif not self._visible(button):
                 return None
             error = self._error_text(scope)
             if error:

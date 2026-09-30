@@ -27,6 +27,33 @@ class Limits:
 
 
 @dataclass
+class Filters:
+    # слова в названии вакансии, при которых она пропускается без отклика (регистр не важен)
+    exclude_title_words: list[str] = field(default_factory=lambda: ["преподаватель", "куратор"])
+
+
+@dataclass
+class Questions:
+    # Работодатель задал ровно один вопрос и он о зарплате → отвечаем salary_answer,
+    # прикладываем сгенерированное письмо и откликаемся. Остальные вопросы пока пропускаем.
+    answer_salary: bool = True
+    salary_answer: str = "Рассматриваю от 100"
+    salary_keywords: list[str] = field(
+        default_factory=lambda: [
+            "зарплат", "заработн", "сумм", "доход", "оклад", "вознагражд", "компенсац", "з/п", "₽", "руб",
+        ]
+    )
+
+
+@dataclass
+class Chats:
+    url: str = "https://hh.ru/chat"
+    rejection_text: str = "Отказ"  # последнее сообщение чата, по которому узнаём отказ
+    delay_min: float = 1.5  # пауза после открытия чата, чтобы hh отметил его прочитанным
+    delay_max: float = 3.5
+
+
+@dataclass
 class Letter:
     generate_timeout: float = 60  # сколько ждать генерацию письма, сек
     min_length: int = 30  # письмо короче считаем несгенерированным
@@ -86,8 +113,11 @@ class Config:
     resume_url: str = ""
     skip_on_resume_mismatch: bool = True
     limits: Limits = field(default_factory=Limits)
+    filters: Filters = field(default_factory=Filters)
     letter: Letter = field(default_factory=Letter)
+    questions: Questions = field(default_factory=Questions)
     relocation: Relocation = field(default_factory=Relocation)
+    chats: Chats = field(default_factory=Chats)
     browser: Browser = field(default_factory=Browser)
     geo: Geo = field(default_factory=Geo)
 
@@ -130,8 +160,11 @@ def load_config(path: Path) -> Config:
         resume_url=raw.pop("resume_url", "").strip(),
         skip_on_resume_mismatch=raw.pop("skip_on_resume_mismatch", True),
         limits=_section(Limits, raw.pop("limits", {}), "limits"),
+        filters=_section(Filters, raw.pop("filters", {}), "filters"),
         letter=_section(Letter, raw.pop("letter", {}), "letter"),
+        questions=_section(Questions, raw.pop("questions", {}), "questions"),
         relocation=_section(Relocation, raw.pop("relocation", {}), "relocation"),
+        chats=_section(Chats, raw.pop("chats", {}), "chats"),
         browser=_section(Browser, raw.pop("browser", {}), "browser"),
         geo=_section(Geo, raw.pop("geo", {}), "geo"),
     )

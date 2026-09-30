@@ -43,10 +43,10 @@ class _ConsoleFormatter(logging.Formatter):
         return f"{color}{text}{_RESET}" if color else text
 
 
-def setup_logging(log_dir: Path, verbose: bool = False) -> Path:
-    """Настраивает логгер 'hh' и возвращает путь к файлу лога этого запуска."""
+def setup_logging(log_dir: Path, verbose: bool = False, name: str = "run") -> Path:
+    """Настраивает логгер 'hh' и возвращает путь к файлу лога этого запуска (<name>_<время>.log)."""
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"run_{datetime.now():%Y-%m-%d_%H-%M-%S}.log"
+    log_path = log_dir / f"{name}_{datetime.now():%Y-%m-%d_%H-%M-%S}.log"
 
     # Кириллица и символы ✓/→ в консоли Windows и при перенаправлении вывода в файл
     for stream in (sys.stdout, sys.stderr):

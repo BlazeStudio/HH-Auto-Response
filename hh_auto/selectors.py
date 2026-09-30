@@ -38,6 +38,19 @@ RELOCATION_ABORT = '[data-qa="relocation-warning-abort"]'  # «Отменить�
 # --- Страница с вопросами/тестом работодателя (открывается в той же вкладке,
 #     кнопка «Откликнуться» там тоже MODAL_SUBMIT — отличаем по этим маркерам) ---
 QUESTIONS = '[data-qa="employer-asking-for-test"], [data-qa="task-question"], [data-qa="task-body"]'
+QUESTION_BLOCK = '[data-qa="task-body"]'  # один вопрос: текст + поле ответа (textarea) или варианты
+QUESTION_TEXT = '[data-qa="task-question"]'
+# «Сопроводительное письмо → Добавить» на странице вопросов — тот же LETTER_TOGGLE,
+# отправка — та же MODAL_SUBMIT («Откликнуться»)
+
+# --- Чаты (hh.ru/chat) ---
+CHAT_CELL = 'a[data-qa^="chatik-open-chat-"]'  # data-qa="chatik-open-chat-<id>"
+CHAT_TITLE = '[data-qa="chat-cell-title"]'  # вакансия
+CHAT_SUBTITLE = '[data-qa="chat-cell-subtitle"]'  # компания
+CHAT_UNREAD_BADGE = '[data-qa="chatik-info-badges"]'  # счётчик непрочитанных
+# последнее сообщение: у «Отказ» класс last-message-color_red--<хеш>, data-qa нет
+CHAT_LAST_MESSAGE = '[class*="last-message-color"], [class*="last-message--"]'
+CHAT_ONLY_UNREAD = '[data-qa="chatik-checkbox-only-unread"]'
 
 # Любое всплывающее окно hh
 DIALOG = '[role="dialog"], [role="alertdialog"]'
