@@ -1,0 +1,143 @@
+"""Загрузка и проверка config.toml."""
+
+from __future__ import annotations
+
+import re
+import tomllib
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+
+class ConfigError(Exception):
+    pass
+
+
+@dataclass
+class Limits:
+    max_responses: int = 100  # откликов за запуск (у hh лимит ~200 в сутки)
+    max_pages: int = 40  # страниц выдачи
+    delay_min: float = 6  # пауза между вакансиями, сек
+    delay_max: float = 15
+    page_delay_min: float = 3  # пауза перед следующей страницей выдачи
+    page_delay_max: float = 7
+    action_delay_min: float = 0.6  # пауза между кликами внутри одной вакансии
+    action_delay_max: float = 1.6
+    max_consecutive_errors: int = 5  # подряд идущих ошибок до аварийной остановки
+
+
+@dataclass
+class Letter:
+    generate_timeout: float = 60  # сколько ждать генерацию письма, сек
+    min_length: int = 30  # письмо короче считаем несгенерированным
+    fallback_text: str = ""  # запасной текст, если генерация не удалась ("" = пропустить вакансию)
+
+
+@dataclass
+class Relocation:
+    confirm_other_region: bool = True  # соглашаться на «вакансия в другом регионе/стране»
+    decline_if_not_remote: bool = True  # другой регион без «Можно удалённо» = придётся переезжать → отказ
+    # слова в карточке вакансии, означающие переезд → отказ
+    decline_keywords: list[str] = field(
+        default_factory=lambda: ["переезд", "переех", "релокац", "перемещ", "relocat"]
+    )
+
+
+@dataclass
+class Browser:
+    channel: str = "chrome"  # chrome | msedge | "" (встроенный Chromium Playwright)
+    headless: bool = False
+    profile_dir: str = "browser-profile"
+    slow_mo: int = 0
+    login_timeout: int = 600  # сколько ждать ручного входа, сек
+
+
+@dataclass
+class Geo:
+    proxy: str = ""  # http://user:pass@host:port или socks5://host:port
+    locale: str = "ru-RU"
+    timezone: str = "Europe/Moscow"
+    check_ip: bool = True  # показывать страну внешнего IP перед стартом
+    require_ru_ip: bool = False  # останавливаться, если IP не российский
+
+    def playwright_proxy(self) -> dict | None:
+        if not self.proxy:
+            return None
+        u = urlparse(self.proxy)
+        if u.scheme not in ("http", "https", "socks5") or not u.hostname:
+            raise ConfigError(f"[geo] proxy: неверный формат «{self.proxy}», пример: http://user:pass@1.2.3.4:8080")
+        server = f"{u.scheme}://{u.hostname}" + (f":{u.port}" if u.port else "")
+        proxy = {"server": server}
+        if u.username:
+            proxy["username"] = unquote(u.username)
+            proxy["password"] = unquote(u.password or "")
+        return proxy
+
+    def proxy_for_log(self) -> str:
+        if not self.proxy:
+            return "не используется (прямое подключение)"
+        u = urlparse(self.proxy)
+        return f"{u.scheme}://{'***@' if u.username else ''}{u.hostname}:{u.port}"
+
+
+@dataclass
+class Config:
+    search_url: str
+    resume_url: str = ""
+    skip_on_resume_mismatch: bool = True
+    limits: Limits = field(default_factory=Limits)
+    letter: Letter = field(default_factory=Letter)
+    relocation: Relocation = field(default_factory=Relocation)
+    browser: Browser = field(default_factory=Browser)
+    geo: Geo = field(default_factory=Geo)
+
+    @property
+    def resume_id(self) -> str | None:
+        """ID резюме: из resume_url, иначе из параметра resume= ссылки поиска."""
+        if self.resume_url:
+            m = re.search(r"/resume/([0-9a-zA-Z]+)", self.resume_url)
+            if m:
+                return m.group(1)
+        return parse_qs(urlparse(self.search_url).query).get("resume", [None])[0]
+
+
+def _section(cls, data: dict, name: str):
+    known = {f.name for f in fields(cls)}
+    unknown = set(data) - known
+    if unknown:
+        raise ConfigError(f"[{name}]: неизвестные параметры {', '.join(sorted(unknown))}")
+    return cls(**data)
+
+
+def load_config(path: Path) -> Config:
+    if not path.exists():
+        raise ConfigError(f"не найден {path}. Скопируйте config.example.toml в config.toml и укажите ссылку поиска.")
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path}: ошибка синтаксиса TOML: {e}") from e
+
+    search_url = raw.pop("search_url", "").strip()
+    u = urlparse(search_url)
+    if u.hostname not in ("hh.ru", "www.hh.ru") or not u.path.startswith("/search/vacancy"):
+        raise ConfigError(
+            "search_url должен быть ссылкой на поиск вакансий hh.ru вида https://hh.ru/search/vacancy?... "
+            "(региональные сайты hh.kz, hh.uz и т.п. не поддерживаются)"
+        )
+
+    cfg = Config(
+        search_url=search_url,
+        resume_url=raw.pop("resume_url", "").strip(),
+        skip_on_resume_mismatch=raw.pop("skip_on_resume_mismatch", True),
+        limits=_section(Limits, raw.pop("limits", {}), "limits"),
+        letter=_section(Letter, raw.pop("letter", {}), "letter"),
+        relocation=_section(Relocation, raw.pop("relocation", {}), "relocation"),
+        browser=_section(Browser, raw.pop("browser", {}), "browser"),
+        geo=_section(Geo, raw.pop("geo", {}), "geo"),
+    )
+    if raw:
+        raise ConfigError(f"неизвестные параметры в config: {', '.join(sorted(raw))}")
+    if cfg.limits.delay_min > cfg.limits.delay_max:
+        raise ConfigError("[limits] delay_min больше delay_max")
+    cfg.geo.playwright_proxy()  # проверка формата прокси заранее
+    return cfg

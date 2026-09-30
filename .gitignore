@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# личные настройки, профиль браузера с сессией hh, логи и история откликов
+config.toml
+browser-profile/
+logs/
+data/
