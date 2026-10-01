@@ -274,21 +274,26 @@ class Responder:
         self._pause()
         answer_box.first.fill(rules.salary_answer)
 
-        form = self._open_questions_letter()
-        if form is None:
-            self._snapshot(vac.id, "questions-letter")
-            return self._skip_questions("не открылось поле сопроводительного письма", remember=False)
-        scope, textarea, save = form
-        if not self._write_letter(scope, textarea):
-            return self._skip_questions("не удалось получить сопроводительное письмо", remember=False)
-        if save is not None:
-            error = self._submit(scope, save, "«Сохранить» (письмо)", questions_page=True, until_hidden=True)
-            if error:
-                self._snapshot(vac.id, "questions-letter-save")
-                return self._skip_questions(f"письмо не сохранилось: {error}", remember=False)
+        letter = self.cfg.letter.mode != "none"
+        if letter:
+            form = self._open_questions_letter()
+            if form is None:
+                self._snapshot(vac.id, "questions-letter")
+                return self._skip_questions("не открылось поле сопроводительного письма", remember=False)
+            scope, textarea, save = form
+            if not self._write_letter(scope, textarea, vac):
+                return self._skip_questions("не удалось получить сопроводительное письмо", remember=False)
+            if save is not None:
+                error = self._submit(scope, save, "«Сохранить» (письмо)", questions_page=True, until_hidden=True)
+                if error:
+                    self._snapshot(vac.id, "questions-letter-save")
+                    return self._skip_questions(f"письмо не сохранилось: {error}", remember=False)
+        else:
+            log.info("  письма отключены ([letter] mode = none) — отправляю только ответ")
 
         submit = self.page.locator(S.MODAL_SUBMIT).filter(visible=True).first
-        error = self._submit(self.page, submit, "«Откликнуться» (ответ + письмо)", questions_page=True)
+        label = "«Откликнуться» (ответ + письмо)" if letter else "«Откликнуться» (ответ)"
+        error = self._submit(self.page, submit, label, questions_page=True)
         if error:
             if LIMIT_TEXT.search(error):
                 return Result(Status.LIMIT, "hh сообщил о лимите откликов")
@@ -296,9 +301,9 @@ class Responder:
             self._back_to_results(direct=True)
             return Result(Status.FAILED, f"страница вопросов: {error}")
 
-        log.success("  ✓ ОТКЛИК ОТПРАВЛЕН с ответом о зарплате и сопроводительным письмом")
+        log.success("  ✓ ОТКЛИК ОТПРАВЛЕН с ответом о зарплате" + (" и сопроводительным письмом" if letter else ""))
         self._back_to_results(direct=True)
-        return Result(Status.APPLIED, reason=f"ответ на вопрос: «{rules.salary_answer}»", letter=True)
+        return Result(Status.APPLIED, reason=f"ответ на вопрос: «{rules.salary_answer}»", letter=letter)
 
     def _open_questions_letter(self, timeout: float = 10) -> tuple[Locator | Page, Locator, Locator | None] | None:
         """«Сопроводительное письмо → Добавить» на странице вопросов.
@@ -367,16 +372,24 @@ class Responder:
             return Result(Status.SKIPPED, "в окне отклика выбрано другое резюме")
 
         letter = False
+        no_letters = self.cfg.letter.mode == "none"
         textarea = dialog.locator(S.LETTER_INPUT)
-        if textarea.count():
-            letter = self._write_letter(dialog, textarea.first)
+        if textarea.count() and not no_letters:
+            letter = self._write_letter(dialog, textarea.first, vac)
             if not letter:
                 self._close_dialogs()
                 return Result(Status.SKIPPED, "не удалось получить сопроводительное письмо")
+        elif textarea.count():
+            log.info("  письма отключены ([letter] mode = none) — откликаюсь без письма")
         else:
             log.warning("  ! в окне нет поля для письма — откликаюсь без него")
 
-        error = self._submit(dialog, dialog.locator(S.MODAL_SUBMIT).first, "«Откликнуться» в окне")
+        submit = dialog.locator(S.MODAL_SUBMIT).first
+        if no_letters and textarea.count() and not self._wait_enabled(submit, 3):
+            self._close_dialogs()
+            return Result(Status.SKIPPED, "работодатель требует сопроводительное письмо, а письма отключены",
+                          remember=True)
+        error = self._submit(dialog, submit, "«Откликнуться» в окне")
         if error:
             if LIMIT_TEXT.search(error) or self._limit_reached():
                 self._close_dialogs()
@@ -393,6 +406,10 @@ class Responder:
         return Result(Status.APPLIED, letter=letter)
 
     def _handle_quick(self, vac: Vacancy, card: Locator) -> Result:
+        if self.cfg.letter.mode == "none":
+            log.success("  ✓ ОТКЛИК ОТПРАВЛЕН сразу (письма отключены — не прикладываю)")
+            self._log_card_state(card)
+            return Result(Status.APPLIED)
         log.success("  ✓ ОТКЛИК ОТПРАВЛЕН сразу — прикладываю письмо")
         informer = card.locator(S.LETTER_INFORMER)
         informer = informer.first if informer.count() else self.page.locator(S.LETTER_INFORMER).last
@@ -411,7 +428,7 @@ class Responder:
             return Result(Status.APPLIED, "без письма: форма письма не появилась")
 
         scope, textarea, submit = form
-        if not self._write_letter(scope, textarea):
+        if not self._write_letter(scope, textarea, vac):
             self._close_dialogs()
             return Result(Status.APPLIED, "без письма: не удалось получить текст письма")
         error = self._submit(scope, submit, "«Отправить» (письмо)")
@@ -462,7 +479,11 @@ class Responder:
 
     # --- сопроводительное письмо ---
 
-    def _write_letter(self, scope: Locator | Page, textarea: Locator) -> bool:
+    def _write_letter(self, scope: Locator | Page, textarea: Locator, vac: Vacancy) -> bool:
+        """Заполняет поле письма: генерацией hh (mode = generate) или готовым текстом (mode = template)."""
+        if self.cfg.letter.mode == "template":
+            return self._fill_letter(textarea, self.cfg.letter.template_text, vac, "готовое письмо из настроек",
+                                     "[letter] template_text")
         before = textarea.input_value().strip()
         if before:
             log.debug(f"  в поле письма уже есть текст ({len(before)} симв.)")
@@ -480,13 +501,19 @@ class Responder:
         else:
             log.warning("  ! кнопки «Сгенерировать» нет (проверьте подписку)")
 
-        fallback = self.cfg.letter.fallback_text.strip()
-        if fallback:
-            textarea.fill(fallback)
-            log.info(f"  → вставил запасной текст письма из config ({len(fallback)} симв.)")
-            return True
-        log.warning("  ! запасного текста нет ([letter] fallback_text в config.toml)")
-        return False
+        return self._fill_letter(textarea, self.cfg.letter.fallback_text, vac, "запасной текст письма",
+                                 "[letter] fallback_text")
+
+    def _fill_letter(self, textarea: Locator, template: str, vac: Vacancy, what: str, setting: str) -> bool:
+        if not template.strip():
+            log.warning(f"  ! текст письма не задан ({setting} в настройках)")
+            return False
+        text = template.strip().replace("{vacancy}", vac.title).replace("{company}", vac.company)
+        self._pause()
+        textarea.fill(text)
+        log.info(f"  → вставил {what} ({len(text)} симв.): «{_preview(text)}»")
+        log.debug(f"  полный текст письма:\n{text}")
+        return True
 
     def _wait_generated(self, textarea: Locator, before: str) -> str:
         """Ждёт, пока текст в поле появится и перестанет меняться."""

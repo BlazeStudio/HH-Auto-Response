@@ -27,10 +27,33 @@ class Limits:
     max_consecutive_errors: int = 5  # подряд идущих ошибок до аварийной остановки
 
 
+# Встроенные фильтры поиска hh: значение параметра ссылки → подпись
+EXPERIENCE = {
+    "noExperience": "Нет опыта",
+    "between1And3": "От 1 года до 3 лет",
+    "between3And6": "От 3 до 6 лет",
+    "moreThan6": "Более 6 лет",
+}
+WORK_FORMAT = {
+    "REMOTE": "Удалённо",
+    "HYBRID": "Гибрид",
+    "ON_SITE": "На месте работодателя",
+    "FIELD_WORK": "Разъездной",
+}
+
+
 @dataclass
 class Filters:
+    # Фильтры самого hh (подставляются в ссылку поиска). Пусто — как в search_url.
+    experience: list[str] = field(default_factory=list)  # noExperience, between1And3, between3And6, moreThan6
+    work_format: list[str] = field(default_factory=list)  # REMOTE, HYBRID, ON_SITE, FIELD_WORK
     # слова в названии вакансии, при которых она пропускается без отклика (регистр не важен)
     exclude_title_words: list[str] = field(default_factory=lambda: ["преподаватель", "куратор"])
+    # слова в названии компании, при которых вакансия пропускается (регистр не важен)
+    exclude_company_words: list[str] = field(default_factory=list)
+    # откликаться ТОЛЬКО на вакансии, где есть хотя бы одно из слов (пусто — на все)
+    include_words: list[str] = field(default_factory=list)
+    include_in_snippet: bool = False  # искать include_words и в описании из карточки, не только в названии
 
 
 @dataclass
@@ -54,8 +77,15 @@ class Chats:
     delay_max: float = 3.5
 
 
+LETTER_MODES = ("generate", "template", "none")
+
+
 @dataclass
 class Letter:
+    # generate — кнопка hh «Сгенерировать» (нужна подписка), template — готовый текст template_text,
+    # none — откликаться без письма
+    mode: str = "generate"
+    template_text: str = ""  # для mode = template; можно вставить {vacancy} и {company}
     generate_timeout: float = 60  # сколько ждать генерацию письма, сек
     min_length: int = 30  # письмо короче считаем несгенерированным
     fallback_text: str = ""  # запасной текст, если генерация не удалась ("" = пропустить вакансию)
@@ -206,7 +236,20 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
     )
     if raw:
         raise ConfigError(f"неизвестные параметры в config: {', '.join(sorted(raw))}")
+    validate_config(cfg)
+    return cfg
+
+
+def validate_config(cfg: Config) -> None:
+    """Проверки значений, общие для config.toml и формы настроек в приложении."""
+    for key, allowed in (("experience", EXPERIENCE), ("work_format", WORK_FORMAT)):
+        wrong = [v for v in getattr(cfg.filters, key) if v not in allowed]
+        if wrong:
+            raise ConfigError(f"[filters] {key}: неизвестные значения {wrong}, допустимо: {', '.join(allowed)}")
+    if cfg.letter.mode not in LETTER_MODES:
+        raise ConfigError(f"[letter] mode: «{cfg.letter.mode}», допустимо: {', '.join(LETTER_MODES)}")
+    if cfg.letter.mode == "template" and not cfg.letter.template_text.strip():
+        raise ConfigError("[letter] mode = template, но template_text пустой")
     if cfg.limits.delay_min > cfg.limits.delay_max:
         raise ConfigError("[limits] delay_min больше delay_max")
     cfg.geo.playwright_proxy()  # проверка формата прокси заранее
-    return cfg

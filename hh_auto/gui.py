@@ -26,13 +26,14 @@ import customtkinter as ctk
 from . import control
 from .app import EXIT_OK, EXIT_STOPPED, run_chats, run_responses
 from .chats import ChatStats
-from .config import Config, ConfigError, load_config, save_config, validate_search_url
+from .config import (EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config, validate_config,
+                     validate_search_url)
 from .logger import SUCCESS, log, setup_logging
 from .paths import app_root, bundled
 from .runner import RunOptions, Stats
 
 APP_NAME = "hh-auto"
-APP_VERSION = "1.0"
+APP_VERSION = "1.0.0-beta"
 
 # --- палитра: (светлая тема, тёмная тема) ---
 ACCENT = ("#2563EB", "#3B82F6")
@@ -223,8 +224,16 @@ class Page(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         ctk.CTkLabel(self, text=title, font=ctk.CTkFont(size=24, weight="bold"), text_color=TEXT).pack(anchor="w")
         self.subtitle = ctk.CTkLabel(self, text=subtitle, text_color=MUTED, font=ctk.CTkFont(size=13),
-                                     justify="left", wraplength=820)
-        self.subtitle.pack(anchor="w", pady=(2, 14))
+                                     justify="left", anchor="w", wraplength=700)
+        self.subtitle.pack(fill="x", pady=(2, 14))
+        self.bind("<Configure>", self._rewrap)
+
+    def _rewrap(self, event) -> None:
+        """Перенос подзаголовка по фактической ширине страницы (с учётом масштаба Windows)."""
+        scaling = ctk.ScalingTracker.get_widget_scaling(self)
+        width = max(int(event.width / scaling) - 16, 300)
+        if self.subtitle.cget("wraplength") != width:
+            self.subtitle.configure(wraplength=width)
 
 
 def _primary_button(master, text: str, command, **kwargs):
@@ -241,15 +250,21 @@ def _secondary_button(master, text: str, command, **kwargs):
 
 
 def _stop_button(master, command):
-    return ctk.CTkButton(master, text="■  Остановить", command=command, height=40, corner_radius=10,
-                         fg_color=RED, hover_color=RED_HOVER, font=ctk.CTkFont(size=14, weight="bold"),
-                         state="disabled")
+    button = ctk.CTkButton(master, text="■  Остановить", command=command, height=40, width=150, corner_radius=10,
+                           hover_color=RED_HOVER, font=ctk.CTkFont(size=14, weight="bold"))
+    set_stop_enabled(button, False)
+    return button
+
+
+def set_stop_enabled(button: ctk.CTkButton, enabled: bool) -> None:
+    button.configure(state="normal" if enabled else "disabled", fg_color=RED if enabled else BORDER,
+                     text_color="white" if enabled else MUTED, text_color_disabled=MUTED)
 
 
 class ResponsesPage(Page):
     def __init__(self, master, app: "App"):
         super().__init__(master, "Отклики на вакансии",
-                         "Скрипт идёт по выдаче hh.ru и откликается с сопроводительным письмом, сгенерированным hh. "
+                         "Скрипт идёт по выдаче hh.ru и откликается с сопроводительным письмом (генерация hh, готовый текст или без письма — в «Настройках»). "
                          "При первом запуске откроется браузер — войдите в hh.ru сами, дальше всё автоматически.")
         self.app = app
 
@@ -273,11 +288,25 @@ class ResponsesPage(Page):
             cards.grid_columnconfigure(i, weight=1, uniform="cards")
             card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
 
+        # прогресс: дорожка того же цвета, пока откликов нет, — без «точки» на нуле
         self.progress = ctk.CTkProgressBar(self, height=8, progress_color=GREEN)
         self.progress.set(0)
         self.progress.pack(fill="x", pady=(14, 4))
         self.current = ctk.CTkLabel(self, text="Готов к работе", text_color=MUTED, anchor="w")
         self.current.pack(fill="x")
+
+        options = Card(self)
+        options.pack(fill="x", pady=(12, 0))
+        ctk.CTkLabel(options, text="Откликов:", text_color=MUTED).pack(side="left", padx=(16, 6), pady=10)
+        self.limit = ctk.CTkEntry(options, width=70, justify="center")
+        self.limit.pack(side="left")
+        ctk.CTkLabel(options, text="Со страницы:", text_color=MUTED).pack(side="left", padx=(20, 6))
+        self.start_page = ctk.CTkEntry(options, width=56, justify="center")
+        self.start_page.insert(0, "1")
+        self.start_page.pack(side="left")
+        self.retry = ctk.CTkCheckBox(options, text="Повторить пропущенные ранее",
+                                     checkbox_width=20, checkbox_height=20)
+        self.retry.pack(side="left", padx=(20, 16))
 
         controls = ctk.CTkFrame(self, fg_color="transparent")
         controls.pack(fill="x", pady=(12, 0))
@@ -287,22 +316,11 @@ class ResponsesPage(Page):
         self.dry_btn.pack(side="left", padx=10)
         self.stop_btn = _stop_button(controls, app.stop)
         self.stop_btn.pack(side="left")
-
-        options = ctk.CTkFrame(controls, fg_color="transparent")
-        options.pack(side="right")
-        ctk.CTkLabel(options, text="Откликов:", text_color=MUTED).grid(row=0, column=0, padx=(0, 6))
-        self.limit = ctk.CTkEntry(options, width=64, justify="center")
-        self.limit.grid(row=0, column=1)
-        ctk.CTkLabel(options, text="со страницы:", text_color=MUTED).grid(row=0, column=2, padx=(12, 6))
-        self.start_page = ctk.CTkEntry(options, width=48, justify="center")
-        self.start_page.insert(0, "1")
-        self.start_page.grid(row=0, column=3)
-        self.retry = ctk.CTkCheckBox(options, text="повторить пропущенные", checkbox_width=20, checkbox_height=20)
-        self.retry.grid(row=0, column=4, padx=(12, 0))
+        self._set_progress(0)
 
     def refresh_config(self, cfg: Config) -> None:
         text = cfg.search_url or "не указана — откройте «Настройки»"
-        self.search_label.configure(text=text if len(text) < 95 else text[:92] + "…",
+        self.search_label.configure(text=text if len(text) < 75 else text[:72] + "…",
                                     text_color=TEXT if cfg.search_url else RED)
         if not self.limit.get() or self.limit.cget("state") == "normal":
             self.limit.delete(0, "end")
@@ -312,14 +330,21 @@ class ResponsesPage(Page):
         state = "disabled" if running else "normal"
         for widget in (self.start_btn, self.dry_btn, self.limit, self.start_page, self.retry):
             widget.configure(state=state)
-        self.stop_btn.configure(state="normal" if running else "disabled")
+        set_stop_enabled(self.stop_btn, running)
 
     def update_stats(self, stats: Stats, limit: int) -> None:
         self.cards["applied"].set(stats.applied)
         self.cards["letters"].set(stats.with_letter)
         self.cards["skipped"].set(sum(stats.skipped.values()))
         self.cards["failed"].set(stats.failed)
-        self.progress.set(min(stats.applied / limit, 1) if limit else 0)
+        self._set_progress(min(stats.applied / limit, 1) if limit else 0)
+
+    def _set_progress(self, value: float) -> None:
+        if value == self.progress.get() and value:
+            return
+        # на нуле скругление рисует зелёную точку — красим заполнение в цвет дорожки
+        self.progress.configure(progress_color=GREEN if value > 0 else self.progress.cget("fg_color"))
+        self.progress.set(value)
 
 
 class ChatsPage(Page):
@@ -353,7 +378,7 @@ class ChatsPage(Page):
         state = "disabled" if running else "normal"
         self.start_btn.configure(state=state)
         self.dry_btn.configure(state=state)
-        self.stop_btn.configure(state="normal" if running else "disabled")
+        set_stop_enabled(self.stop_btn, running)
 
     def update_stats(self, stats: ChatStats) -> None:
         self.cards["opened"].set(stats.opened)
@@ -376,14 +401,29 @@ SETTINGS = [
         ("limits", "delay_min", "Пауза между вакансиями: от, сек", "float", ""),
         ("limits", "delay_max", "Пауза между вакансиями: до, сек", "float", ""),
     ]),
-    ("Фильтры", [
+    ("Фильтры hh: опыт и формат работы", [
+        ("filters", "experience", "Опыт работы", "multi",
+         "Ничего не отмечено — как в ссылке поиска. Отмеченное заменяет опыт в ссылке"),
+        ("filters", "work_format", "Формат работы", "multi",
+         "Ничего не отмечено — как в ссылке поиска. Отмеченное заменяет формат в ссылке"),
+    ]),
+    ("Фильтры по словам", [
+        ("filters", "include_words", "Откликаться ТОЛЬКО на вакансии, где есть хотя бы одно слово", "list",
+         "Через запятую, регистр не важен. Пусто — на все вакансии. Например: python, backend, django"),
+        ("filters", "include_in_snippet", "Искать эти слова и в описании из карточки, не только в названии", "bool", ""),
         ("filters", "exclude_title_words", "Пропускать вакансии, в названии которых есть", "list",
          "Через запятую, регистр не важен. Например: преподаватель, куратор"),
+        ("filters", "exclude_company_words", "Пропускать компании, в названии которых есть", "list",
+         "Через запятую, регистр не важен. Например: сбер, тинькофф"),
     ]),
     ("Сопроводительное письмо", [
+        ("letter", "mode", "Как писать письмо", "choice",
+         "«Генерировать» требует подписку hh. Без подписки — «Готовый текст» или «Без письма»"),
+        ("letter", "template_text", "Готовый текст письма", "text",
+         "Для режима «Готовый текст». {vacancy} и {company} заменятся на название вакансии и компанию"),
         ("letter", "generate_timeout", "Ждать генерацию письма, сек", "float", ""),
-        ("letter", "fallback_text", "Запасной текст письма", "text",
-         "Если «Сгенерировать» не сработала. Пусто — такая вакансия пропускается"),
+        ("letter", "fallback_text", "Запасной текст, если генерация не сработала", "text",
+         "Для режима «Генерировать». Пусто — такая вакансия пропускается"),
     ]),
     ("Вопросы работодателя", [
         ("questions", "answer_salary", "Отвечать, если вопрос один и он о зарплате", "bool", ""),
@@ -402,7 +442,15 @@ SETTINGS = [
         ("geo", "require_ru_ip", "Не запускаться с нероссийского IP", "bool", ""),
     ]),
 ]
-BROWSERS = {"Google Chrome": "chrome", "Microsoft Edge": "msedge"}
+# Варианты для полей с несколькими галочками: значение в config → подпись
+MULTI = {("filters", "experience"): EXPERIENCE, ("filters", "work_format"): WORK_FORMAT}
+
+# Варианты для полей-списков выбора: подпись → значение в config
+CHOICES = {
+    ("browser", "channel"): {"Google Chrome": "chrome", "Microsoft Edge": "msedge"},
+    ("letter", "mode"): {"Генерировать кнопкой hh (подписка)": "generate", "Готовый текст": "template",
+                         "Без письма": "none"},
+}
 
 
 class SettingsPage(Page):
@@ -451,8 +499,15 @@ class SettingsPage(Page):
             if kind == "text":
                 widget = ctk.CTkTextbox(row, height=70, border_width=1, border_color=BORDER)
                 widget.pack(fill="x")
+            elif kind == "multi":
+                box = ctk.CTkFrame(row, fg_color="transparent")
+                box.pack(anchor="w", pady=(2, 0))
+                widget = {value: ctk.CTkCheckBox(box, text=label, checkbox_width=20, checkbox_height=20)
+                          for value, label in MULTI[(section, key)].items()}
+                for i, checkbox in enumerate(widget.values()):
+                    checkbox.grid(row=0, column=i, padx=(0, 18), sticky="w")
             elif kind == "choice":
-                widget = ctk.CTkOptionMenu(row, values=list(BROWSERS), width=220)
+                widget = ctk.CTkOptionMenu(row, values=list(CHOICES[(section, key)]), width=300)
                 widget.pack(anchor="w")
             elif kind in ("int", "float"):
                 widget = ctk.CTkEntry(row, width=120)
@@ -474,8 +529,12 @@ class SettingsPage(Page):
             elif kind == "text":
                 widget.delete("1.0", "end")
                 widget.insert("1.0", value)
+            elif kind == "multi":
+                for item, checkbox in widget.items():
+                    checkbox.select() if item in value else checkbox.deselect()
             elif kind == "choice":
-                widget.set(next((k for k, v in BROWSERS.items() if v == value), "Google Chrome"))
+                options = CHOICES[(section, key)]
+                widget.set(next((k for k, v in options.items() if v == value), next(iter(options))))
             else:
                 widget.delete(0, "end")
                 widget.insert(0, ", ".join(value) if kind == "list" else str(value))
@@ -489,21 +548,23 @@ class SettingsPage(Page):
                     value = bool(widget.get())
                 elif kind == "text":
                     value = widget.get("1.0", "end").strip()
+                elif kind == "multi":
+                    value = [item for item, checkbox in widget.items() if checkbox.get()]
                 elif kind == "choice":
-                    value = BROWSERS[widget.get()]
+                    value = CHOICES[(section, key)][widget.get()]
                 elif kind == "list":
                     value = [w.strip() for w in widget.get().split(",") if w.strip()]
-                else:
+                elif kind == "str":
+                    value = widget.get().strip()
+                else:  # int / float
                     raw = widget.get().strip().replace(",", ".")
                     value = int(raw) if kind == "int" else float(raw)
                     if value < 0:
                         raise ValueError
-                setattr(target, key, value.strip() if isinstance(value, str) and kind == "str" else value)
+                setattr(target, key, value)
             if cfg.search_url:
                 validate_search_url(cfg.search_url)
-            if cfg.limits.delay_min > cfg.limits.delay_max:
-                raise ConfigError("пауза «от» больше паузы «до»")
-            cfg.geo.playwright_proxy()
+            validate_config(cfg)
         except ValueError:
             messagebox.showerror(APP_NAME, f"Неверное число в поле «{self._label(section, key)}»")
             return
@@ -812,7 +873,7 @@ class App(ctk.CTk):
             control.request_stop()
             self._set_status("●  Останавливаюсь…", AMBER, "дождитесь завершения шага")
             for page in (self.pages["responses"], self.pages["chats"]):
-                page.stop_btn.configure(state="disabled")
+                set_stop_enabled(page.stop_btn, False)
 
     def _set_running(self, running: bool) -> None:
         self.pages["responses"].set_running(running)
@@ -880,7 +941,36 @@ class App(ctk.CTk):
         self.destroy()
 
 
+def self_test() -> int:
+    """hh-auto.exe --self-test: запускает драйвер Playwright и браузер без окна, итог — в logs/self_test.txt."""
+    from playwright.sync_api import sync_playwright
+
+    out = app_root() / "logs" / "self_test.txt"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"hh-auto {APP_VERSION}, данные: {app_root()}"]
+    code = 1
+    try:
+        with sync_playwright() as pw:
+            for channel in ("chrome", "msedge"):
+                try:
+                    browser = pw.chromium.launch(channel=channel, headless=True)
+                    page = browser.new_page()
+                    page.set_content("<title>ok</title>")
+                    lines.append(f"{channel}: OK (версия {browser.version}, страница: {page.title()})")
+                    browser.close()
+                    code = 0
+                except Exception as e:
+                    lines.append(f"{channel}: нет ({(str(e).splitlines() or [''])[0]})")
+    except Exception:
+        lines.append("драйвер Playwright не запустился:\n" + traceback.format_exc())
+    lines.append("ИТОГ: " + ("всё работает" if code == 0 else "ОШИБКА — нет ни Chrome, ни Edge или сломан драйвер"))
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return code
+
+
 def main() -> None:
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     if sys.platform == "win32":
         try:  # своя иконка на панели задач вместо иконки Python
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("hh-auto.app")

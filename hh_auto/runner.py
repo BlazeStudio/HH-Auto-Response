@@ -15,7 +15,7 @@ from .browser import FatalError
 from .config import Config
 from .logger import log
 from .responder import Responder, Status
-from .search import has_next_page, open_results_page, results_page_url
+from .search import apply_hh_filters, describe_hh_filters, has_next_page, open_results_page, results_page_url
 from .state import ResultsCsv, State
 
 
@@ -55,11 +55,13 @@ def run(
         f"  лимит на этот запуск: {max_responses} откликов, пауза между вакансиями "
         f"{limits.delay_min:g}–{limits.delay_max:g} с, страниц выдачи максимум {limits.max_pages}"
     )
+    search_url = apply_hh_filters(cfg.search_url, cfg.filters.experience, cfg.filters.work_format)
+    log.info(f"  фильтры hh: {describe_hh_filters(search_url)}")
     responder = Responder(page, cfg, snapshots_dir, resume_title)
     errors_in_row = 0
 
     for page_num in range(opts.start_page, limits.max_pages):
-        url = results_page_url(cfg.search_url, page_num)
+        url = results_page_url(search_url, page_num)
         log.info("")
         log.info(f"━━━━━━━━━━ Страница выдачи №{page_num + 1} ━━━━━━━━━━")
         vacancies = open_results_page(page, url)
@@ -85,11 +87,22 @@ def run(
                 log.info(f"{tag} «{vac.title}» — кнопки «Откликнуться» нет ({vac.button_text or 'уже откликались'}), пропускаю")
                 continue
 
-            excluded = _excluded_word(vac.title, cfg.filters.exclude_title_words)
+            excluded = _find_word(vac.title, cfg.filters.exclude_title_words)
             if excluded:
                 stats.skipped[f"в названии «{excluded}»"] += 1
                 log.info(f"{tag} «{vac.title}» — в названии «{excluded}» ([filters]), пропускаю")
                 continue
+            company_word = _find_word(vac.company, cfg.filters.exclude_company_words)
+            if company_word:
+                stats.skipped[f"компания: «{company_word}»"] += 1
+                log.info(f"{tag} «{vac.title}» — компания «{vac.company}» содержит «{company_word}» ([filters]), пропускаю")
+                continue
+            if cfg.filters.include_words:
+                where = f"{vac.title} {vac.snippet}" if cfg.filters.include_in_snippet else vac.title
+                if not _find_word(where, cfg.filters.include_words):
+                    stats.skipped["нет нужных слов ([filters] include_words)"] += 1
+                    log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
+                    continue
 
             log.info("")
             log.info(f"{tag} ▶ «{vac.title}» — {vac.company}")
@@ -156,7 +169,7 @@ def log_summary(stats: Stats, elapsed: float) -> None:
     log.info(f"  время работы:               {minutes} мин {seconds} с")
 
 
-def _excluded_word(title: str, words: list[str]) -> str | None:
+def _find_word(title: str, words: list[str]) -> str | None:
     lowered = title.lower()
     return next((w for w in words if w.lower() in lowered), None)
 

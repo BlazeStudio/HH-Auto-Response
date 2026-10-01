@@ -7,3 +7,7 @@ config.toml
 browser-profile/
 logs/
 data/
+
+# сборка приложения
+build/
+dist/

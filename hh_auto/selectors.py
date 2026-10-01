@@ -12,6 +12,7 @@ VACANCY_TITLE_TEXT = '[data-qa="serp-item__title-text"]'
 VACANCY_EMPLOYER = '[data-qa="vacancy-serp__vacancy-employer-text"]'
 RESPONSE_BUTTON = '[data-qa="vacancy-serp__vacancy_response"]'
 REMOTE_LABEL = '[data-qa="vacancy-label-work-schedule-remote"]'  # «Можно удалённо»
+SNIPPET = '[data-qa="vacancy-serp__vacancy_snippet_responsibility"], [data-qa="vacancy-serp__vacancy_snippet_requirement"]'
 PAGER_NEXT = '[data-qa="pager-next"]'
 
 # --- Окно отклика с сопроводительным (bottom-sheet / модалка) ---

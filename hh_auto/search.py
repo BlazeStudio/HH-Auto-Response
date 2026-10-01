@@ -21,6 +21,7 @@ class Vacancy:
     company: str
     button_text: str  # текст кнопки отклика в карточке ("" — кнопки нет)
     remote: bool = False  # в карточке есть «Можно удалённо»
+    snippet: str = ""  # обязанности и требования из карточки (коротко)
 
     @property
     def url(self) -> str:
@@ -39,9 +40,37 @@ _COLLECT_JS = """
   return {
     id: match ? match[1] : '', title: text(s.title), company: text(s.employer),
     button_text: text(s.button), remote: !!card.querySelector(s.remote),
+    snippet: Array.from(card.querySelectorAll(s.snippet)).map((el) => el.textContent).join(' ').replace(/\s+/g, ' ').trim(),
   };
 }).filter((v) => v.id)
 """
+
+
+def apply_hh_filters(search_url: str, experience: list[str], work_format: list[str]) -> str:
+    """Подставляет в ссылку поиска фильтры hh «Опыт работы» и «Формат работы».
+
+    Пустой список — параметр не трогаем (остаётся как в исходной ссылке).
+    """
+    u = urlparse(search_url)
+    query = parse_qsl(u.query, keep_blank_values=True)
+    for key, values in (("experience", experience), ("work_format", work_format)):
+        if values:
+            query = [(k, v) for k, v in query if k != key] + [(key, v) for v in values]
+    if any(len(v) > 1 for v in (experience, work_format)) and not any(k == "ored_clusters" for k, _ in query):
+        query.append(("ored_clusters", "true"))  # несколько значений одного фильтра — через «ИЛИ»
+    return urlunparse(u._replace(query=urlencode(query)))
+
+
+def describe_hh_filters(search_url: str) -> str:
+    """Человекочитаемое описание фильтров опыта и формата в ссылке — для лога."""
+    from .config import EXPERIENCE, WORK_FORMAT
+
+    query = parse_qsl(urlparse(search_url).query)
+    parts = []
+    for key, title, names in (("experience", "опыт", EXPERIENCE), ("work_format", "формат", WORK_FORMAT)):
+        values = [names.get(v, v) for k, v in query if k == key]
+        parts.append(f"{title}: {', '.join(values) if values else 'любой'}")
+    return "; ".join(parts)
 
 
 def results_page_url(search_url: str, page_num: int) -> str:
@@ -72,6 +101,7 @@ def open_results_page(page: Page, url: str) -> list[Vacancy]:
         "employer": S.VACANCY_EMPLOYER,
         "button": S.RESPONSE_BUTTON,
         "remote": S.REMOTE_LABEL,
+        "snippet": S.SNIPPET,
     }
     vacancies = [Vacancy(**raw) for raw in page.evaluate(_COLLECT_JS, selectors)]
     for v in vacancies:
