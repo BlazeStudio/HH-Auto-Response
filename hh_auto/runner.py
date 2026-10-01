@@ -15,8 +15,9 @@ from .browser import FatalError
 from .config import Config
 from .logger import log
 from .responder import Responder, Status
-from .search import apply_hh_filters, describe_hh_filters, has_next_page, open_results_page, results_page_url
-from .state import ResultsCsv, State
+from .search import build_search_url, describe_hh_filters, has_next_page, open_results_page, results_page_url
+from .results import ResultsBook
+from .state import State
 
 
 @dataclass
@@ -42,7 +43,7 @@ def run(
     cfg: Config,
     opts: RunOptions,
     state: State,
-    results: ResultsCsv,
+    results: ResultsBook,
     stats: Stats,
     resume_title: str | None,
     snapshots_dir: Path,
@@ -55,7 +56,7 @@ def run(
         f"  лимит на этот запуск: {max_responses} откликов, пауза между вакансиями "
         f"{limits.delay_min:g}–{limits.delay_max:g} с, страниц выдачи максимум {limits.max_pages}"
     )
-    search_url = apply_hh_filters(cfg.search_url, cfg.filters.experience, cfg.filters.work_format)
+    search_url = build_search_url(cfg)
     log.info(f"  фильтры hh: {describe_hh_filters(search_url)}")
     responder = Responder(page, cfg, snapshots_dir, resume_title)
     errors_in_row = 0

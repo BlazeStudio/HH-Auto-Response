@@ -1,13 +1,11 @@
-"""Память между запусками (data/state.json) и таблица всех откликов (logs/responses.csv)."""
+"""Память между запусками (data/state.json): какие вакансии уже обработаны."""
 
 from __future__ import annotations
 
-import csv
 import json
 from datetime import datetime
 from pathlib import Path
 
-from .responder import Result
 from .search import Vacancy
 
 
@@ -45,27 +43,6 @@ class State:
             encoding="utf-8",
         )
         tmp.replace(self.path)
-
-
-class ResultsCsv:
-    """CSV с разделителем ';' и BOM — открывается в Excel с кириллицей без настроек."""
-
-    HEADER = ["время", "id", "вакансия", "компания", "статус", "письмо", "комментарий", "ссылка"]
-
-    def __init__(self, path: Path):
-        self.path = path
-
-    def add(self, vac: Vacancy, result: Result) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        is_new = not self.path.exists()
-        with self.path.open("a", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f, delimiter=";")
-            if is_new:
-                writer.writerow(self.HEADER)
-            writer.writerow([
-                _now(), vac.id, vac.title, vac.company, result.status.value,
-                "да" if result.letter else "нет", result.reason, vac.url,
-            ])
 
 
 def _now() -> str:

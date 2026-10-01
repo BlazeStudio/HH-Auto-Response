@@ -60,6 +60,7 @@ class Result:
     reason: str = ""
     letter: bool = False
     remember: bool = False  # запомнить пропуск и не трогать вакансию в следующих запусках
+    questions: list[str] | None = None  # вопросы работодателя, из-за которых пропустили (лист «Вопросы»)
 
 
 class _Outcome(Enum):
@@ -256,15 +257,17 @@ class Responder:
 
         rules = self.cfg.questions
         if not rules.answer_salary:
-            return self._skip_questions("вопросы работодателя ([questions] answer_salary = false)")
+            return self._skip_questions("вопросы работодателя ([questions] answer_salary = false)", questions=questions)
         if len(questions) != 1:
-            return self._skip_questions(f"вопросов работодателя {len(questions)} — отвечаем только на один о зарплате")
+            return self._skip_questions(f"вопросов работодателя {len(questions)} — отвечаем только на один о зарплате",
+                                        questions=questions)
         keyword = next((k for k in rules.salary_keywords if k.lower() in questions[0].lower()), None)
         if not keyword:
-            return self._skip_questions("вопрос работодателя не о зарплате")
+            return self._skip_questions("вопрос работодателя не о зарплате", questions=questions)
         answer_box = self.page.locator(S.QUESTION_BLOCK).first.locator("textarea")
         if not answer_box.count():
-            return self._skip_questions("у вопроса о зарплате нет поля для ответа (варианты выбора)")
+            return self._skip_questions("у вопроса о зарплате нет поля для ответа (варианты выбора)",
+                                        questions=questions)
         if self._visible(self.page.locator(S.HIDDEN_RESUME_WARNING)):
             return self._skip_questions("hh требует сделать резюме видимым всем работодателям")
         if not self._resume_matches(self.page):
@@ -337,11 +340,11 @@ class Responder:
             control.sleep(0.3)
         return None
 
-    def _skip_questions(self, reason: str, remember: bool = True) -> Result:
+    def _skip_questions(self, reason: str, remember: bool = True, questions: list[str] | None = None) -> Result:
         """Вопросы работодателя, на которые не отвечаем, — отматываем назад к выдаче."""
         log.info(f"  пропускаю: {reason}")
         self._back_to_results()
-        return Result(Status.SKIPPED, reason, remember=remember)
+        return Result(Status.SKIPPED, reason, remember=remember, questions=questions)
 
     def _back_to_results(self, direct: bool = False) -> None:
         """Возврат к выдаче: «Назад» в браузере, а после отправки формы — сразу на страницу выдачи."""

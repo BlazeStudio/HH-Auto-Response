@@ -1,7 +1,7 @@
 """Где лежат config.toml, логи, память и профиль браузера.
 
 Из исходников — в папке проекта (общие с консольными скриптами).
-В собранном приложении (.exe) — в %LOCALAPPDATA%\\hh-auto: туда всегда можно писать,
+В собранном приложении (.exe) — в %LOCALAPPDATA%\\HH-Auto-Response: туда всегда можно писать,
 даже если само приложение лежит в Program Files.
 """
 
@@ -18,7 +18,7 @@ def is_frozen() -> bool:
 
 def app_root() -> Path:
     if is_frozen():
-        root = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "hh-auto"
+        root = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "HH-Auto-Response"
     else:
         root = Path(__file__).resolve().parent.parent
     root.mkdir(parents=True, exist_ok=True)

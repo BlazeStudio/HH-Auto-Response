@@ -18,8 +18,10 @@ from .config import Config
 from .control import StopRequested
 from .logger import log
 from .resume import verify_resume
+from .search import describe_search
 from .runner import RunOptions, Stats, log_summary, run
-from .state import ResultsCsv, State
+from .results import ResultsBook, log_totals
+from .state import State
 
 EXIT_OK, EXIT_FATAL, EXIT_STOPPED = 0, 1, 130
 
@@ -27,9 +29,9 @@ EXIT_OK, EXIT_FATAL, EXIT_STOPPED = 0, 1, 130
 def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_path: Path) -> int:
     """Отклики на вакансии. Возвращает код завершения."""
     log_dir = root / "logs"
-    results = ResultsCsv(log_dir / "responses.csv")
+    results = ResultsBook(root)
     started = time.monotonic()
-    log.info(f"ссылка поиска: {cfg.search_url}")
+    log.info(f"поиск: {describe_search(cfg)}")
 
     def work(page):
         log.info("")
@@ -38,7 +40,9 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
 
     code = _with_browser(cfg, root, work)
     log_summary(stats, time.monotonic() - started)
-    log.info(f"таблица всех откликов: {results.path}")
+    log_totals(results.summary())
+    if results.save_xlsx():
+        log.info(f"таблица откликов (Excel): {results.xlsx_path}")
     log.info(f"подробный лог: {log_path}")
     return code
 

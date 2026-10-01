@@ -33,7 +33,7 @@ def main() -> int:
     args = parse_args()
     log_path = setup_logging(ROOT / "logs", args.verbose, name="chats")
     log.info("═" * 60)
-    log.info("hh-auto: прочитать отказы в чатах")
+    log.info("HH-Auto-Response: прочитать отказы в чатах")
     log.info(f"подробный лог этого запуска: {log_path}")
     try:
         cfg = load_config(args.config)

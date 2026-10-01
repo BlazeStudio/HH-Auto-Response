@@ -46,6 +46,34 @@ _COLLECT_JS = """
 """
 
 
+SEARCH_PAGE = "https://hh.ru/search/vacancy"
+
+
+def build_search_url(cfg) -> str:
+    """Ссылка выдачи для запуска: ссылка из настроек или общий поиск по запросу, плюс фильтры hh."""
+    if cfg.search.mode == "query":
+        query = [("text", cfg.search.query.strip())]
+        if cfg.search.area:
+            query.append(("area", cfg.search.area))
+        if cfg.search.title_only:
+            query.append(("search_field", "name"))
+        query += [("enable_snippets", "true"), ("hhtmFrom", "vacancy_search_list")]
+        url = f"{SEARCH_PAGE}?{urlencode(query)}"
+    else:
+        url = cfg.search_url
+    return apply_hh_filters(url, cfg.filters.experience, cfg.filters.work_format)
+
+
+def describe_search(cfg) -> str:
+    if cfg.search.mode == "query":
+        from .config import AREAS
+
+        area = AREAS.get(cfg.search.area, f"регион {cfg.search.area}")
+        where = "в названии" if cfg.search.title_only else "везде"
+        return f"запрос «{cfg.search.query.strip()}» ({area}, искать {where})"
+    return f"ссылка: {cfg.search_url}"
+
+
 def apply_hh_filters(search_url: str, experience: list[str], work_format: list[str]) -> str:
     """Подставляет в ссылку поиска фильтры hh «Опыт работы» и «Формат работы».
 

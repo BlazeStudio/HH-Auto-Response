@@ -27,6 +27,20 @@ class Limits:
     max_consecutive_errors: int = 5  # подряд идущих ошибок до аварийной остановки
 
 
+SEARCH_MODES = ("resume", "query")
+AREAS = {"": "Как в профиле hh", "1": "Москва", "2": "Санкт-Петербург", "113": "Вся Россия"}
+
+
+@dataclass
+class Search:
+    # resume — вакансии по ссылке search_url (обычно «подходящие к резюме»);
+    # query  — общий поиск hh по тексту query
+    mode: str = "resume"
+    query: str = ""  # как в строке поиска hh, например: python разработчик
+    area: str = ""  # регион hh: 1 — Москва, 2 — Санкт-Петербург, 113 — вся Россия; пусто — как в профиле hh
+    title_only: bool = False  # искать запрос только в названии вакансии
+
+
 # Встроенные фильтры поиска hh: значение параметра ссылки → подпись
 EXPERIENCE = {
     "noExperience": "Нет опыта",
@@ -143,6 +157,7 @@ class Config:
     search_url: str
     resume_url: str = ""
     skip_on_resume_mismatch: bool = True
+    search: Search = field(default_factory=Search)
     limits: Limits = field(default_factory=Limits)
     filters: Filters = field(default_factory=Filters)
     letter: Letter = field(default_factory=Letter)
@@ -165,7 +180,7 @@ class Config:
 def save_config(cfg: Config, path: Path) -> None:
     """Сохраняет настройки в TOML (используется приложением; комментарии не сохраняются)."""
     lines = [
-        "# Настройки hh-auto. Файл записан приложением; описание параметров — в config.example.toml",
+        "# Настройки HH-Auto-Response. Файл записан приложением; описание параметров — в config.example.toml",
         "",
     ]
     top = {"search_url": cfg.search_url, "resume_url": cfg.resume_url,
@@ -208,6 +223,15 @@ def validate_search_url(search_url: str) -> None:
         )
 
 
+def validate_search_source(cfg: Config) -> None:
+    """Есть ли откуда брать вакансии: ссылка (mode = resume) или текст запроса (mode = query)."""
+    if cfg.search.mode == "query":
+        if not cfg.search.query.strip():
+            raise ConfigError("[search] mode = query, но запрос (query) пустой")
+    else:
+        validate_search_url(cfg.search_url)
+
+
 def load_config(path: Path, check_search_url: bool = True) -> Config:
     """check_search_url=False — для формы настроек в приложении: ссылку ещё могут не вписать."""
     if not path.exists():
@@ -217,14 +241,11 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: ошибка синтаксиса TOML: {e}") from e
 
-    search_url = raw.pop("search_url", "").strip()
-    if check_search_url:
-        validate_search_url(search_url)
-
     cfg = Config(
-        search_url=search_url,
+        search_url=raw.pop("search_url", "").strip(),
         resume_url=raw.pop("resume_url", "").strip(),
         skip_on_resume_mismatch=raw.pop("skip_on_resume_mismatch", True),
+        search=_section(Search, raw.pop("search", {}), "search"),
         limits=_section(Limits, raw.pop("limits", {}), "limits"),
         filters=_section(Filters, raw.pop("filters", {}), "filters"),
         letter=_section(Letter, raw.pop("letter", {}), "letter"),
@@ -236,12 +257,20 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
     )
     if raw:
         raise ConfigError(f"неизвестные параметры в config: {', '.join(sorted(raw))}")
+    if check_search_url:
+        validate_search_source(cfg)
     validate_config(cfg)
     return cfg
 
 
 def validate_config(cfg: Config) -> None:
     """Проверки значений, общие для config.toml и формы настроек в приложении."""
+    if cfg.search.mode not in SEARCH_MODES:
+        raise ConfigError(f"[search] mode: «{cfg.search.mode}», допустимо: {', '.join(SEARCH_MODES)}")
+    if cfg.search.area and not cfg.search.area.isdigit():
+        raise ConfigError("[search] area — номер региона hh (1 — Москва, 2 — Санкт-Петербург, 113 — вся Россия)")
+    if cfg.search_url:
+        validate_search_url(cfg.search_url)
     for key, allowed in (("experience", EXPERIENCE), ("work_format", WORK_FORMAT)):
         wrong = [v for v in getattr(cfg.filters, key) if v not in allowed]
         if wrong:

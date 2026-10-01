@@ -1,4 +1,4 @@
-"""hh-auto — автоматические отклики на вакансии hh.ru с сопроводительным письмом.
+"""HH-Auto-Response — автоматические отклики на вакансии hh.ru с сопроводительным письмом.
 
     python main.py                 обычный запуск
     python main.py --dry-run       вход + проверка резюме + список вакансий, без откликов
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from hh_auto.app import run_responses
-from hh_auto.config import ConfigError, load_config
+from hh_auto.config import ConfigError, load_config, validate_search_source
 from hh_auto.logger import log, setup_logging
 from hh_auto.runner import RunOptions, Stats
 
@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Автоотклики на вакансии hh.ru")
     p.add_argument("--config", type=Path, default=ROOT / "config.toml", help="путь к config.toml")
     p.add_argument("--url", help="ссылка на поиск вакансий (вместо search_url из config)")
+    p.add_argument("--query", help="общий поиск hh по запросу, например \"python разработчик\" (вместо ссылки)")
     p.add_argument("--resume", help="ссылка на резюме для проверки (вместо resume_url из config)")
     p.add_argument("--dry-run", action="store_true", help="пройти выдачу и показать вакансии, не откликаясь")
     p.add_argument("--limit", type=int, help="максимум откликов за запуск (вместо [limits] max_responses)")
@@ -36,13 +37,16 @@ def main() -> int:
     args = parse_args()
     log_path = setup_logging(ROOT / "logs", args.verbose)
     log.info("═" * 60)
-    log.info("hh-auto: автоотклики на вакансии hh.ru")
+    log.info("HH-Auto-Response: автоотклики на вакансии hh.ru")
     log.info(f"подробный лог этого запуска: {log_path}")
 
     try:
-        cfg = load_config(args.config)
+        cfg = load_config(args.config, check_search_url=False)
         if args.url:
-            cfg.search_url = args.url
+            cfg.search_url, cfg.search.mode = args.url, "resume"
+        if args.query:
+            cfg.search.query, cfg.search.mode = args.query, "query"
+        validate_search_source(cfg)
         if args.resume:
             cfg.resume_url = args.resume
     except ConfigError as e:

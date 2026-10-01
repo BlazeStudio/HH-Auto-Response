@@ -1,4 +1,4 @@
-"""Оконное приложение hh-auto: отклики, отказы в чатах, настройки и журналы — без консоли.
+"""Оконное приложение HH-Auto-Response: отклики, отказы в чатах, настройки и журналы — без консоли.
 
 Работа с hh идёт в отдельном потоке (Playwright), окно только показывает лог и счётчики.
 """
@@ -26,13 +26,15 @@ import customtkinter as ctk
 from . import control
 from .app import EXIT_OK, EXIT_STOPPED, run_chats, run_responses
 from .chats import ChatStats
-from .config import (EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config, validate_config,
-                     validate_search_url)
+from .config import (AREAS, EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config,
+                     validate_config, validate_search_source)
+from .results import HH_DAILY_LIMIT, Summary, load_summary
+from .search import describe_search
 from .logger import SUCCESS, log, setup_logging
 from .paths import app_root, bundled
 from .runner import RunOptions, Stats
 
-APP_NAME = "hh-auto"
+APP_NAME = "HH-Auto-Response"
 APP_VERSION = "1.0.0-beta"
 
 # --- палитра: (светлая тема, тёмная тема) ---
@@ -276,10 +278,17 @@ class ResponsesPage(Page):
         ctk.CTkButton(link_row, text="Изменить", width=90, height=28, fg_color="transparent", text_color=ACCENT,
                       hover_color=ACCENT_SOFT, command=lambda: app.show_page("settings")).pack(side="right", padx=10)
 
+        totals = Card(self)
+        totals.pack(fill="x", pady=(0, 12))
+        self.totals = ctk.CTkLabel(totals, text="", text_color=TEXT, anchor="w")
+        self.totals.pack(side="left", fill="x", expand=True, padx=16, pady=10)
+        ctk.CTkButton(totals, text="Таблица Excel", width=120, height=28, fg_color="transparent", text_color=ACCENT,
+                      hover_color=ACCENT_SOFT, command=lambda: open_path(app.xlsx_path)).pack(side="right", padx=10)
+
         cards = ctk.CTkFrame(self, fg_color="transparent")
         cards.pack(fill="x")
         self.cards = {
-            "applied": StatCard(cards, "Откликов отправлено", GREEN),
+            "applied": StatCard(cards, "Отправлено за запуск", GREEN),
             "letters": StatCard(cards, "С письмом", ACCENT),
             "skipped": StatCard(cards, "Пропущено", AMBER),
             "failed": StatCard(cards, "Ошибок", RED),
@@ -319,12 +328,24 @@ class ResponsesPage(Page):
         self._set_progress(0)
 
     def refresh_config(self, cfg: Config) -> None:
-        text = cfg.search_url or "не указана — откройте «Настройки»"
-        self.search_label.configure(text=text if len(text) < 75 else text[:72] + "…",
-                                    text_color=TEXT if cfg.search_url else RED)
+        try:
+            validate_search_source(cfg)
+            text, color = describe_search(cfg), TEXT
+        except ConfigError:
+            text, color = "не задан — откройте «Настройки»", RED
+        self.search_label.configure(text=text if len(text) < 80 else text[:77] + "…", text_color=color)
         if not self.limit.get() or self.limit.cget("state") == "normal":
             self.limit.delete(0, "end")
             self.limit.insert(0, str(cfg.limits.max_responses))
+
+    def update_totals(self, summary: Summary, running_applied: int = 0) -> None:
+        """Сегодня / последний запуск / всего. Во время работы добавляем отклики текущего запуска."""
+        today = summary.today.applied + running_applied
+        last = running_applied if running_applied or not summary.last_run_at else summary.last_run.applied
+        text = (f"Сегодня: {today} из ~{HH_DAILY_LIMIT}     •     Последний запуск: {last}     •     "
+                f"Всего: {summary.total.applied + running_applied}")
+        if self.totals.cget("text") != text:
+            self.totals.configure(text=text, text_color=AMBER if today >= HH_DAILY_LIMIT * 0.9 else TEXT)
 
     def set_running(self, running: bool) -> None:
         state = "disabled" if running else "normal"
@@ -389,8 +410,13 @@ class ChatsPage(Page):
 # (раздел конфига, ключ, подпись, тип, подсказка). Раздел "" — верхний уровень.
 SETTINGS = [
     ("Поиск и резюме", [
-        ("", "search_url", "Ссылка на поиск вакансий", "str",
+        ("search", "mode", "Где искать вакансии", "choice", ""),
+        ("", "search_url", "Ссылка на поиск вакансий (режим «По ссылке»)", "str",
          "hh.ru → «Мои резюме» → «N подходящих вакансий» → скопируйте адрес из браузера"),
+        ("search", "query", "Поисковый запрос (режим «По запросу»)", "str",
+         "Как в строке поиска hh: python разработчик, backend OR бэкенд"),
+        ("search", "area", "Регион (режим «По запросу»)", "choice", ""),
+        ("search", "title_only", "Искать запрос только в названии вакансии", "bool", ""),
         ("", "resume_url", "Ссылка на резюме (необязательно)", "str",
          "Если пусто — ID резюме берётся из параметра resume= в ссылке поиска"),
         ("", "skip_on_resume_mismatch", "Пропускать вакансию, если hh подставил другое резюме", "bool", ""),
@@ -447,6 +473,8 @@ MULTI = {("filters", "experience"): EXPERIENCE, ("filters", "work_format"): WORK
 
 # Варианты для полей-списков выбора: подпись → значение в config
 CHOICES = {
+    ("search", "mode"): {"По ссылке (подходящие к резюме)": "resume", "По запросу (общий поиск hh)": "query"},
+    ("search", "area"): {label: code for code, label in AREAS.items()},
     ("browser", "channel"): {"Google Chrome": "chrome", "Microsoft Edge": "msedge"},
     ("letter", "mode"): {"Генерировать кнопкой hh (подписка)": "generate", "Готовый текст": "template",
                          "Без письма": "none"},
@@ -534,6 +562,9 @@ class SettingsPage(Page):
                     checkbox.select() if item in value else checkbox.deselect()
             elif kind == "choice":
                 options = CHOICES[(section, key)]
+                if value not in options.values():  # например, регион, которого нет в списке
+                    options[f"{value}"] = value
+                    widget.configure(values=list(options))
                 widget.set(next((k for k, v in options.items() if v == value), next(iter(options))))
             else:
                 widget.delete(0, "end")
@@ -562,9 +593,9 @@ class SettingsPage(Page):
                     if value < 0:
                         raise ValueError
                 setattr(target, key, value)
-            if cfg.search_url:
-                validate_search_url(cfg.search_url)
             validate_config(cfg)
+            if cfg.search.mode == "query":
+                validate_search_source(cfg)
         except ValueError:
             messagebox.showerror(APP_NAME, f"Неверное число в поле «{self._label(section, key)}»")
             return
@@ -590,7 +621,7 @@ class JournalsPage(Page):
         self.app = app
         toolbar = ctk.CTkFrame(self, fg_color="transparent")
         toolbar.pack(fill="x", pady=(0, 10))
-        _primary_button(toolbar, "Таблица откликов (Excel)", lambda: open_path(app.root_dir / "logs" / "responses.csv"),
+        _primary_button(toolbar, "Таблица откликов (Excel)", lambda: open_path(app.xlsx_path),
                         width=220, height=34).pack(side="left")
         _secondary_button(toolbar, "Папка логов", lambda: open_path(app.root_dir / "logs"), width=130,
                           height=34).pack(side="left", padx=8)
@@ -668,6 +699,8 @@ class App(ctk.CTk):
         self.run_limit = 0
         self.closing = False
         self.cfg = self.read_config_file(check_search_url=False)
+        self.xlsx_path = self.root_dir / "logs" / "responses.xlsx"
+        self.summary = load_summary(self.root_dir)
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -677,7 +710,10 @@ class App(ctk.CTk):
         self.reload_config()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(120, self._poll)
-        if not self.cfg.search_url:
+        self.pages["responses"].update_totals(self.summary)
+        try:
+            validate_search_source(self.cfg)
+        except ConfigError:
             self.after(400, self._first_run_hint)
 
     # ---------- построение окна ----------
@@ -686,7 +722,7 @@ class App(ctk.CTk):
         bar = ctk.CTkFrame(self, width=230, corner_radius=0, fg_color=SIDEBAR_BG)
         bar.grid(row=0, column=0, sticky="nsw")
         bar.grid_propagate(False)
-        ctk.CTkLabel(bar, text="hh-auto", font=ctk.CTkFont(size=26, weight="bold"), text_color=ACCENT).pack(
+        ctk.CTkLabel(bar, text=APP_NAME, font=ctk.CTkFont(size=21, weight="bold"), text_color=ACCENT).pack(
             anchor="w", padx=22, pady=(26, 0))
         ctk.CTkLabel(bar, text="автоотклики на hh.ru", text_color=MUTED).pack(anchor="w", padx=22, pady=(0, 22))
 
@@ -788,8 +824,9 @@ class App(ctk.CTk):
         self.pages["journals"].view.apply_colors()
 
     def _first_run_hint(self) -> None:
-        messagebox.showinfo(APP_NAME, "Добро пожаловать!\n\nСначала вставьте в «Настройках» ссылку на поиск вакансий "
-                                      "hh.ru (из «Мои резюме» → «N подходящих вакансий») и нажмите «Сохранить».")
+        messagebox.showinfo(APP_NAME, "Добро пожаловать!\n\nСначала укажите в «Настройках», где искать вакансии: "
+                                      "ссылку hh.ru (из «Мои резюме» → «N подходящих вакансий») или поисковый "
+                                      "запрос, — и нажмите «Сохранить».")
         self.show_page("settings")
 
     def reset_login(self) -> None:
@@ -857,7 +894,7 @@ class App(ctk.CTk):
                 log_path = setup_logging(self.root_dir / "logs", verbose=True, name=log_name,
                                          extra_handlers=(self.log_handler,))
                 self.last_log_path = log_path
-                log.info(f"hh-auto {APP_VERSION}: {title.lower()} • данные: {self.root_dir}")
+                log.info(f"{APP_NAME} {APP_VERSION}: {title.lower()} • данные: {self.root_dir}")
                 code = job(log_path)
             except Exception:
                 log.error("Непредвиденная ошибка:\n" + traceback.format_exc())
@@ -865,7 +902,7 @@ class App(ctk.CTk):
             finally:
                 self.events.put(("done", kind, code))
 
-        self.worker = threading.Thread(target=work, name="hh-auto-worker", daemon=True)
+        self.worker = threading.Thread(target=work, name="worker", daemon=True)
         self.worker.start()
 
     def stop(self) -> None:
@@ -886,6 +923,8 @@ class App(ctk.CTk):
     def _finish(self, kind: str, code: int) -> None:
         self._set_running(False)
         self.running_kind = None
+        self.summary = load_summary(self.root_dir)
+        self.pages["responses"].update_totals(self.summary)
         minutes, seconds = divmod(int(time.monotonic() - self.started_at), 60)
         if kind == "responses":
             summary = f"отправлено {self.stats.applied}, пропущено {sum(self.stats.skipped.values())}, " \
@@ -918,6 +957,7 @@ class App(ctk.CTk):
             pass
         if self.running_kind == "responses":
             self.pages["responses"].update_stats(self.stats, self.run_limit)
+            self.pages["responses"].update_totals(self.summary, self.stats.applied)
         elif self.running_kind == "chats":
             self.pages["chats"].update_stats(self.chat_stats)
         if self.running_kind and not control.stop_requested():
@@ -942,12 +982,12 @@ class App(ctk.CTk):
 
 
 def self_test() -> int:
-    """hh-auto.exe --self-test: запускает драйвер Playwright и браузер без окна, итог — в logs/self_test.txt."""
+    """HH-Auto-Response.exe --self-test: запускает драйвер Playwright и браузер без окна, итог — в logs/self_test.txt."""
     from playwright.sync_api import sync_playwright
 
     out = app_root() / "logs" / "self_test.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"hh-auto {APP_VERSION}, данные: {app_root()}"]
+    lines = [f"{APP_NAME} {APP_VERSION}, данные: {app_root()}"]
     code = 1
     try:
         with sync_playwright() as pw:
@@ -963,7 +1003,16 @@ def self_test() -> int:
                     lines.append(f"{channel}: нет ({(str(e).splitlines() or [''])[0]})")
     except Exception:
         lines.append("драйвер Playwright не запустился:\n" + traceback.format_exc())
-    lines.append("ИТОГ: " + ("всё работает" if code == 0 else "ОШИБКА — нет ни Chrome, ни Edge или сломан драйвер"))
+    try:  # Excel-отчёт (openpyxl внутри сборки)
+        from .report import build_workbook
+        from .results import Summary
+
+        build_workbook([], Summary()).save(out.with_name("self_test.xlsx"))
+        lines.append("Excel-отчёт: OK")
+    except Exception as e:
+        lines.append(f"Excel-отчёт: ОШИБКА ({e})")
+        code = 1
+    lines.append("ИТОГ: " + ("всё работает" if code == 0 else "ОШИБКА — см. строки выше"))
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return code
 
@@ -973,7 +1022,7 @@ def main() -> None:
         sys.exit(self_test())
     if sys.platform == "win32":
         try:  # своя иконка на панели задач вместо иконки Python
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("hh-auto.app")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("HH-Auto-Response")
         except Exception:
             pass
     app = App()
