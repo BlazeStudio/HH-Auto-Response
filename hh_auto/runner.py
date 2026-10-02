@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +46,8 @@ def run(
     stats: Stats,
     resume_title: str | None,
     snapshots_dir: Path,
+    ai=None,
+    resume_text: str = "",
 ) -> None:
     limits = cfg.limits
     max_responses = opts.limit or limits.max_responses
@@ -58,7 +59,7 @@ def run(
     )
     search_url = build_search_url(cfg)
     log.info(f"  фильтры hh: {describe_hh_filters(search_url)}")
-    responder = Responder(page, cfg, snapshots_dir, resume_title)
+    responder = Responder(page, cfg, snapshots_dir, resume_title, ai, resume_text)
     errors_in_row = 0
 
     for page_num in range(opts.start_page, limits.max_pages):

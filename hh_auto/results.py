@@ -87,6 +87,7 @@ class ResultsBook:
             "letter": result.letter,
             "reason": result.reason,
             "questions": result.questions or [],
+            "answers": [list(pair) for pair in result.answers or []],
             "url": vac.url,
         }
         self.data_path.parent.mkdir(parents=True, exist_ok=True)

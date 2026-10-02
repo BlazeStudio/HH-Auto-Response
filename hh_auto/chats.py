@@ -24,7 +24,7 @@ from playwright.sync_api import Error as PlaywrightError
 
 from . import control
 from . import selectors as S
-from .ai import AiClient, AiError
+from .ai import AiClient, AiError, is_done_message, ours_is_last, review
 from .auth import hh_role, is_auth_url
 from .browser import FatalError, wait_captcha
 from .config import Config
@@ -153,6 +153,11 @@ def read_rejections(
     seen: set[str] = set()
     found = 0
     for _ in range(500):  # защита от бесконечного цикла
+        # hh сбрасывает «Только непрочитанные» (например, при открытии чата) — проверяем каждый раз,
+        # иначе прочитанные чаты из полного списка были бы приняты за непрочитанные
+        if only_unread and not _filter_checked(page):
+            log.warning("  ! hh снял галочку «Только непрочитанные» — включаю снова")
+            only_unread = _enable_only_unread(page)
         chats = [_Chat(**raw) for raw in page.evaluate(_COLLECT_JS, _selectors())]
         if only_unread:  # в отфильтрованном списке непрочитанные все, даже без счётчика
             for chat in chats:
@@ -213,7 +218,7 @@ def _enable_only_unread(page: Page) -> bool:
         log.warning("  ! переключателя «Только непрочитанные» нет — ищу непрочитанные по счётчикам")
         return False
     box = box.first
-    if box.is_checked():
+    if _filter_checked(page):
         log.info("  фильтр «Только непрочитанные» уже включён")
         return True
 
@@ -229,13 +234,24 @@ def _enable_only_unread(page: Page) -> bool:
         except PlaywrightError as e:
             log.debug(f"  не получилось: {(str(e).splitlines() or [''])[0]}")
         for _ in range(10):
-            if box.is_checked():
+            if _filter_checked(page):
                 control.sleep(1.0)  # список перезагружается
-                log.success("  ✓ фильтр включён — в списке только непрочитанные чаты")
-                return True
+                if _filter_checked(page):  # и после перезагрузки галочка всё ещё стоит
+                    log.success("  ✓ фильтр включён — в списке только непрочитанные чаты")
+                    return True
             control.sleep(0.3)
-    log.warning("  ! не удалось включить фильтр — ищу непрочитанные по счётчикам")
+    log.warning("  ! не удалось включить фильтр — отличаю непрочитанные по счётчику сообщений")
     return False
+
+
+def _filter_checked(page: Page) -> bool:
+    """Галочка «Только непрочитанные» стоит: и свойство checked, и класс hh без «unchecked»."""
+    box = page.locator(S.CHAT_ONLY_UNREAD)
+    try:
+        return box.count() > 0 and box.first.evaluate(
+            "el => el.checked && !/unchecked/i.test(el.className)")
+    except PlaywrightError:
+        return False
 
 
 def _click_chat(page: Page, chat: _Chat, cfg: Config) -> None:
@@ -296,10 +312,21 @@ def _handle_with_ai(page, chat: _Chat, cfg: Config, ai: AiClient, resume: str, s
         sent: list[str] = []
         for _ in range(cfg.ai.max_answers_per_chat):
             control.check()
+            # Страховка от повторного ответа: переписка заканчивается нашим же ответом — ждём работодателя
+            if sent and ours_is_last(transcript, sent[-1]):
+                log.info("  последнее сообщение — ваше, ждём работодателя")
+                break
             log.info("  … спрашиваю ИИ, что ответить")
             decision = ai.decide(resume, cfg.ai.context, transcript[-6000:], sent)
+            # Страховки: документы, деньги, контакты, ссылки и повторы — что бы ни сказала модель
+            note = review(decision, transcript, sent)
+            if note:
+                log.warning(f"  ! {note}")
             if decision.kind == "info":
-                log.success("  ✓ ответ не нужен (уведомление) — прочитано" if not sent else "  ✓ анкета завершена")
+                if is_done_message(transcript):
+                    log.success("  ✓ робот завершил анкету — перехожу к следующему чату")
+                else:
+                    log.success("  ✓ ответ не нужен (уведомление) — прочитано" if not sent else "  ✓ анкета завершена")
                 if not sent:
                     stats.info_read += 1
                 break

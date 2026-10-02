@@ -27,6 +27,7 @@ from . import control
 from . import selectors as S
 from .auth import hh_role, is_auth_url
 from .browser import FatalError
+from .ai import SENSITIVE, AiClient, AiError, FormAnswer, FormQuestion
 from .config import Config
 from .logger import log
 from .search import Vacancy
@@ -47,6 +48,23 @@ RESPONDED_TEXT = re.compile(r"Вы откликнулись|Резюме дос�
 LETTER_SETTLE_SECONDS = 2.5  # текст письма не меняется столько секунд → генерация закончилась
 
 
+# Вопросы анкеты на странице отклика: текст, тип ответа и подписи вариантов
+_FORM_JS = """
+(s) => Array.from(document.querySelectorAll(s.block)).map((b, i) => {
+  const clean = (t) => (t || '').replace(/\\s+/g, ' ').trim();
+  const inputs = Array.from(b.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
+  const options = inputs.map((inp) => {
+    const label = inp.closest('label') || (inp.id && b.querySelector('label[for="' + CSS.escape(inp.id) + '"]'));
+    return clean((label && label.innerText) || inp.getAttribute('aria-label') || inp.value);
+  });
+  const hasText = !!b.querySelector('textarea, input[type="text"]');
+  const kind = inputs.length ? (inputs[0].type === 'radio' ? 'single' : 'multi') : (hasText ? 'text' : 'unknown');
+  return {index: i, text: clean(b.querySelector(s.question)?.innerText), kind, options};
+})
+"""
+_FORM_KIND = {"text": "текст", "single": "один вариант", "multi": "несколько вариантов", "unknown": "?"}
+
+
 class Status(str, Enum):
     APPLIED = "отклик отправлен"
     SKIPPED = "пропущена"
@@ -61,6 +79,7 @@ class Result:
     letter: bool = False
     remember: bool = False  # запомнить пропуск и не трогать вакансию в следующих запусках
     questions: list[str] | None = None  # вопросы работодателя, из-за которых пропустили (лист «Вопросы»)
+    answers: list[tuple[str, str]] | None = None  # (вопрос, ответ) — если откликнулись с анкетой
 
 
 class _Outcome(Enum):
@@ -75,11 +94,14 @@ class _Outcome(Enum):
 
 
 class Responder:
-    def __init__(self, page: Page, cfg: Config, snapshots_dir: Path, resume_title: str | None):
+    def __init__(self, page: Page, cfg: Config, snapshots_dir: Path, resume_title: str | None,
+                 ai: AiClient | None = None, resume_text: str = ""):
         self.page = page
         self.cfg = cfg
         self.snapshots_dir = snapshots_dir
         self.resume_title = resume_title
+        self.ai = ai  # если задан — анкеты работодателей заполняет нейросеть
+        self.resume_text = resume_text
         self._search_url = ""
 
     def apply(self, vac: Vacancy) -> Result:
@@ -255,6 +277,17 @@ class Responder:
         for i, question in enumerate(questions, 1):
             log.info(f"    {i}. {question}")
 
+        if self._visible(self.page.locator(S.HIDDEN_RESUME_WARNING)):
+            return self._skip_questions("hh требует сделать резюме видимым всем работодателям")
+        if not self._resume_matches(self.page):
+            return self._skip_questions("на странице вопросов выбрано другое резюме", remember=False)
+
+        if self.ai is not None:
+            filled = self._fill_form_with_ai(vac, questions)
+            if isinstance(filled, Result):
+                return filled
+            return self._send_questions_form(vac, filled, "с ответами ИИ на анкету")
+
         rules = self.cfg.questions
         if not rules.answer_salary:
             return self._skip_questions("вопросы работодателя ([questions] answer_salary = false)", questions=questions)
@@ -268,15 +301,74 @@ class Responder:
         if not answer_box.count():
             return self._skip_questions("у вопроса о зарплате нет поля для ответа (варианты выбора)",
                                         questions=questions)
-        if self._visible(self.page.locator(S.HIDDEN_RESUME_WARNING)):
-            return self._skip_questions("hh требует сделать резюме видимым всем работодателям")
-        if not self._resume_matches(self.page):
-            return self._skip_questions("на странице вопросов выбрано другое резюме", remember=False)
-
         log.info(f"  вопрос о зарплате (нашёл «{keyword}») → отвечаю: «{rules.salary_answer}»")
         self._pause()
         answer_box.first.fill(rules.salary_answer)
+        return self._send_questions_form(vac, [(questions[0], rules.salary_answer)], "с ответом о зарплате")
 
+    def _fill_form_with_ai(self, vac: Vacancy, questions: list[str]) -> list[tuple[str, str]] | Result:
+        """Анкета работодателя через нейросеть: читаем форму, получаем ответы, заполняем. Ошибка → пропуск."""
+        form = [FormQuestion(**raw) for raw in self.page.evaluate(_FORM_JS, {
+            "block": S.QUESTION_BLOCK, "question": S.QUESTION_TEXT})]
+        for q in form:
+            options = f": {' | '.join(q.options)}" if q.options else ""
+            log.info(f"    [{_FORM_KIND.get(q.kind, q.kind)}] {q.text[:100]}{options[:160]}")
+        unknown = [q for q in form if q.kind == "unknown"]
+        if unknown:
+            return self._skip_questions(f"в анкете поле, которое программа не умеет заполнять: «{unknown[0].text[:60]}»",
+                                        questions=questions)
+        if len(form) > self.cfg.questions.max_ai_questions:
+            return self._skip_questions(f"в анкете {len(form)} вопросов — больше лимита "
+                                        f"[questions] max_ai_questions = {self.cfg.questions.max_ai_questions}",
+                                        questions=questions)
+        sensitive = next((SENSITIVE.search(q.text) for q in form if SENSITIVE.search(q.text)), None)
+        if sensitive:
+            return self._skip_questions(f"в анкете «{sensitive.group(0)}» — такие вопросы решаете вы", questions=questions)
+        log.info(f"  … ИИ заполняет анкету ({len(form)} вопр.)")
+        started = time.monotonic()
+        try:
+            fill = self.ai.fill_form(self.resume_text, self.cfg.ai.context, f"«{vac.title}» — {vac.company}", form)
+        except AiError as e:
+            return self._skip_questions(f"ИИ не смог заполнить анкету: {e}", remember=False, questions=questions)
+        if not fill.can_answer:
+            return self._skip_questions(f"ИИ: {fill.reason}", questions=questions)
+        log.info(f"  ответы готовы за {time.monotonic() - started:.1f} с:")
+        pairs = []
+        for answer in fill.answers:
+            log.success(f"    {answer.question.text[:70]} → {answer.describe()[:200]}")
+            if not self._put_answer(answer):
+                self._snapshot(vac.id, "questions-fill")
+                return self._skip_questions(f"не удалось заполнить вопрос «{answer.question.text[:60]}»",
+                                            remember=False, questions=questions)
+            pairs.append((answer.question.text, answer.describe()))
+        return pairs
+
+    def _put_answer(self, answer: FormAnswer) -> bool:
+        """Вписывает ответ в форму: текст в поле, варианты — кликом по подписи. True — получилось."""
+        block = self.page.locator(S.QUESTION_BLOCK).nth(answer.question.index)
+        self._pause()
+        if answer.question.kind == "text":
+            box = block.locator("textarea, input[type='text']").first
+            box.fill(answer.text)
+            return box.input_value().strip() == answer.text.strip()
+        inputs = block.locator("input[type='radio'], input[type='checkbox']")
+        for k in answer.choices:
+            box = inputs.nth(k)
+            if box.is_checked():
+                continue
+            label = box.locator("xpath=ancestor::label[1]")
+            try:
+                (label if label.count() else box).first.click()
+            except PlaywrightError:
+                pass
+            if not box.is_checked():
+                box.check(force=True)  # кастомные переключатели hh: если клик по подписи не сработал
+            if not box.is_checked():
+                return False
+        return True
+
+    def _send_questions_form(self, vac: Vacancy, answers: list[tuple[str, str]], what: str) -> Result:
+        """Письмо (если включено) + «Откликнуться» на странице вопросов."""
         letter = self.cfg.letter.mode != "none"
         if letter:
             form = self._open_questions_letter()
@@ -304,9 +396,9 @@ class Responder:
             self._back_to_results(direct=True)
             return Result(Status.FAILED, f"страница вопросов: {error}")
 
-        log.success("  ✓ ОТКЛИК ОТПРАВЛЕН с ответом о зарплате" + (" и сопроводительным письмом" if letter else ""))
+        log.success(f"  ✓ ОТКЛИК ОТПРАВЛЕН {what}" + (" и сопроводительным письмом" if letter else ""))
         self._back_to_results(direct=True)
-        return Result(Status.APPLIED, reason=f"ответ на вопрос: «{rules.salary_answer}»", letter=letter)
+        return Result(Status.APPLIED, reason=f"анкета: {len(answers)} вопр.", letter=letter, answers=answers)
 
     def _open_questions_letter(self, timeout: float = 10) -> tuple[Locator | Page, Locator, Locator | None] | None:
         """«Сопроводительное письмо → Добавить» на странице вопросов.

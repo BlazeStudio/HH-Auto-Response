@@ -76,6 +76,8 @@ class Questions:
     # прикладываем сгенерированное письмо и откликаемся. Остальные вопросы пока пропускаем.
     answer_salary: bool = True
     salary_answer: str = "Рассматриваю от 100"
+    # с включённым ИИ ([ai] enabled) анкеты заполняет нейросеть: любые вопросы, текст и варианты
+    max_ai_questions: int = 15  # анкеты длиннее — пропускаем (обычно это тесты)
     salary_keywords: list[str] = field(
         default_factory=lambda: [
             "зарплат", "заработн", "сумм", "доход", "оклад", "вознагражд", "компенсац", "з/п", "₽", "руб",
@@ -97,7 +99,7 @@ AI_PROVIDERS = {
                  "platform.deepseek.com → API keys. Платно, но очень дёшево (копейки за анкету)"),
     "openrouter": ("https://openrouter.ai/api/v1", "deepseek/deepseek-chat-v3-0324:free",
                    "openrouter.ai → Keys. Бесплатные модели — с пометкой :free (актуальные — на openrouter.ai/models)"),
-    "ollama": ("http://localhost:11434/v1", "qwen2.5:7b",
+    "ollama": ("http://localhost:11434/v1", "qwen3:8b",
                "ollama.com — нейросеть на вашем компьютере, бесплатно, ключ не нужен"),
     "custom": ("", "", "любой OpenAI-совместимый сервис: укажите base_url и model"),
 }

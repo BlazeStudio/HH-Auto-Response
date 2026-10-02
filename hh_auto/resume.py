@@ -47,7 +47,11 @@ def verify_resume(page: Page, cfg: Config) -> str | None:
     return None
 
 
-_UI_LINES = {"редактировать", "добавить", "профиль", "/", "показать ещё", "скрыть", "изменить"}
+_UI_LINES = {"редактировать", "добавить", "профиль", "/", "показать ещё", "скрыть", "изменить", "указать уровни",
+             "перейти к тестам", "подробнее", "электронные сертификаты", "поднятие резюме", "портфолио",
+             "рекомендации", "желаемую зарплату", "категория прав", "наличие автомобиля"}
+# Реклама и подсказки hh на странице резюме — не часть резюме
+_UI_NOISE = re.compile(r"промокод|подобрали для вас|автоподнят|минус \d+[–-]\d+%|видно (?:всем|работодател)", re.I)
 _PHONE = re.compile(r"\+?\d[\d\s()\-]{8,}\d")
 _EMAIL = re.compile(r"\S+@\S+\.\S+")
 
@@ -57,7 +61,7 @@ def clean_resume_text(raw: str) -> str:
     lines: list[str] = []
     for line in raw.splitlines():
         line = line.strip()
-        if not line or line.lower() in _UI_LINES:
+        if not line or line.lower() in _UI_LINES or _UI_NOISE.search(line):
             continue
         line = _PHONE.sub(lambda m: "[телефон скрыт]" if 10 <= sum(c.isdigit() for c in m.group()) <= 15
                           else m.group(), line)  # «2018 - 2022» — это годы, а не телефон

@@ -16,7 +16,6 @@ import sys
 import threading
 import time
 import traceback
-from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox
@@ -24,11 +23,12 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from . import control
-from .app import EXIT_OK, EXIT_STOPPED, run_chats, run_responses
+from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_chats, run_responses
 from .chats import ChatStats
 from .config import (AI_PROVIDERS, AREAS, EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config,
                      validate_config, validate_search_source)
 from .ai import AiClient, AiError
+from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLES, Playground, fill_sample_form
 from .results import HH_DAILY_LIMIT, Summary, load_summary
 from .search import describe_search
 from .logger import SUCCESS, log, setup_logging
@@ -420,6 +420,190 @@ class ChatsPage(Page):
         self.cards["failed"].set(stats.failed)
 
 
+class AiTestPage(Page):
+    """Песочница ИИ: пишете от имени работодателя — нейросеть отвечает, в hh ничего не отправляется."""
+
+    SENDERS = {"Робот-рекрутер": ROBOT, "Живой HR": "Анна, HR"}
+
+    def __init__(self, master, app: "App"):
+        super().__init__(master, "Проверка ИИ",
+                         "Пишете от имени работодателя — нейросеть отвечает так, как ответила бы в чате hh, "
+                         "с теми же страховками. В hh ничего не отправляется. Переписка копится, как в настоящем чате.")
+        self.app = app
+        self.pg: Playground | None = None
+        self.busy = False
+
+        info = Card(self)
+        info.pack(fill="x")
+        self.info = ctk.CTkLabel(info, text="", text_color=TEXT, anchor="w", justify="left")
+        self.info.pack(fill="x", padx=16, pady=(10, 4))
+        buttons = ctk.CTkFrame(info, fg_color="transparent")
+        buttons.pack(fill="x", padx=12, pady=(0, 10))
+        _secondary_button(buttons, "Что получает нейросеть", self.show_prompt, width=200, height=32).pack(side="left")
+        self.fetch_btn = _secondary_button(buttons, "Загрузить резюме с hh", self.fetch_resume, width=190, height=32)
+        self.fetch_btn.pack(side="left", padx=8)
+        _secondary_button(buttons, "Новый диалог", self.new_dialog, width=130, height=32).pack(side="left", padx=(0, 8))
+        _secondary_button(buttons, "Тест анкеты", self.test_form, width=130, height=32).pack(side="left")
+
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(side="bottom", fill="x", pady=(10, 0))
+        row = ctk.CTkFrame(bottom, fg_color="transparent")
+        row.pack(fill="x")
+        self.sender = ctk.CTkOptionMenu(row, values=list(self.SENDERS), width=160)
+        self.sender.pack(side="left")
+        self.entry = ctk.CTkEntry(row, placeholder_text="Сообщение работодателя, например: Какой у вас опыт с Python?",
+                                  height=36)
+        self.entry.pack(side="left", fill="x", expand=True, padx=8)
+        self.entry.bind("<Return>", lambda _e: self.ask())
+        self.ask_btn = _primary_button(row, "Спросить ИИ", self.ask, width=140, height=36)
+        self.ask_btn.pack(side="left")
+        samples = ctk.CTkFrame(bottom, fg_color="transparent")
+        samples.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(samples, text="Примеры:", text_color=MUTED).pack(side="left")
+        labels = [f"{'HR' if s != ROBOT else 'Робот'}: {t[:70]}{'…' if len(t) > 70 else ''}" for s, t in SAMPLES]
+        self._samples = dict(zip(labels, SAMPLES))
+        self.sample = ctk.CTkOptionMenu(samples, values=labels, command=self._use_sample, width=520,
+                                        dynamic_resizing=False)
+        self.sample.set("выберите готовое сообщение…")
+        self.sample.pack(side="left", padx=8)
+        self.state = ctk.CTkLabel(samples, text="", text_color=MUTED)
+        self.state.pack(side="left", padx=8)
+
+        self.view = LogView(self)
+        self.view.pack(fill="both", expand=True, pady=(12, 0))
+
+    # ---------- состояние ----------
+
+    def refresh(self) -> None:
+        cfg = self.app.cfg
+        model = cfg.ai.model or AI_PROVIDERS.get(cfg.ai.provider, ("", ""))[1]
+        resume_path = self.app.root_dir / "data" / "resume.txt"
+        if resume_path.exists():
+            when = datetime.fromtimestamp(resume_path.stat().st_mtime).strftime("%d.%m.%Y %H:%M")
+            resume = f"{len(resume_path.read_text(encoding='utf-8'))} симв., загружено {when}"
+        else:
+            resume = "не загружено — нажмите «Загрузить резюме с hh»"
+        context = cfg.ai.context.strip()
+        context = (context[:90] + "…" if len(context) > 90 else context) if context else "не заполнен («Настройки» → ИИ)"
+        state = "включены" if cfg.ai.enabled else "выключены (здесь всё равно можно проверять)"
+        self.info.configure(text=f"Нейросеть: {cfg.ai.provider}, {model}   •   ИИ-ответы в чатах: {state}\n"
+                                 f"Резюме: {resume}\nВаш контекст: {context}")
+        if not self.view.get("1.0", "end").strip():
+            self.view.append("Напишите сообщение от имени работодателя или выберите пример ниже.", "debug")
+
+    def invalidate(self) -> None:
+        """Настройки или резюме поменялись — песочница пересоздастся при следующем вопросе."""
+        self.pg = None
+
+    def set_running(self, running: bool) -> None:
+        self.fetch_btn.configure(state="disabled" if running else "normal")
+
+    def _use_sample(self, label: str) -> None:
+        sender, text = self._samples[label]
+        self.sender.set("Робот-рекрутер" if sender == ROBOT else "Живой HR")
+        self.entry.delete(0, "end")
+        self.entry.insert(0, text)
+        self.sample.set("выберите готовое сообщение…")
+
+    # ---------- действия ----------
+
+    def _run(self, action: str, job) -> None:
+        """Запрос к нейросети в фоне; результат придёт в App._poll через очередь событий."""
+        if self.busy:
+            return
+        self.busy = True
+        self.ask_btn.configure(state="disabled")
+        self.state.configure(text="нейросеть думает…", text_color=ACCENT)
+
+        def work():
+            try:
+                if self.pg is None:
+                    self.pg = Playground(self.app.read_config_file(check_search_url=False), self.app.root_dir)
+                self.app.events.put(("ai_pg", action, job(self.pg)))
+            except Exception as e:  # AiError и любые другие — показываем в переписке
+                self.app.events.put(("ai_pg", "error", str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def ask(self) -> None:
+        text = self.entry.get().strip()
+        if not text or self.busy:
+            return
+        sender = self.SENDERS[self.sender.get()]
+        self.entry.delete(0, "end")
+        self.view.append("", "info")
+        self.view.append(f"{sender}: {text}", "info")
+        self._run("turn", lambda pg: pg.ask(sender, text))
+
+    def show_prompt(self) -> None:
+        self._run("prompt", lambda pg: pg.preview())
+
+    def test_form(self) -> None:
+        """Как ИИ заполнит пример анкеты при отклике: текст, один вариант, несколько вариантов."""
+        self.view.append("", "info")
+        self.view.append("Пример анкеты при отклике (ничего не отправляется):", "info")
+        for n, q in enumerate(SAMPLE_FORM, 1):
+            self.view.append(f"  {n}. {q.text}" + (f"  [{' | '.join(q.options)}]" if q.options else ""), "info")
+        self._run("form", fill_sample_form)
+
+    def new_dialog(self) -> None:
+        if self.pg is not None:
+            self.pg.reset()
+        self.view.clear()
+        self.view.append("Новый диалог.", "debug")
+
+    def fetch_resume(self) -> None:
+        cfg = self.app._config_for_run(need_search_url=False)
+        if cfg is None:
+            return
+        self.view.append("Загружаю резюме с hh — откроется браузер, ход видно в «Журналах»…", "debug")
+        self.app._start("resume", "Загрузка резюме", "resume",
+                        lambda log_path: fetch_resume(cfg, self.app.root_dir, log_path))
+
+    def on_result(self, action: str, payload) -> None:
+        self.busy = False
+        self.ask_btn.configure(state="normal")
+        self.state.configure(text="")
+        if action == "error":
+            self.view.append(f"  ошибка: {payload}", "error")
+        elif action == "prompt":
+            PromptWindow(self, payload)
+        elif action == "form":
+            fill, seconds = payload
+            if not fill.can_answer:
+                self.view.append(f"  ИИ ({seconds:.1f} с): не стал бы отвечать — вакансия ушла бы вам: {fill.reason}", "warn")
+            else:
+                self.view.append(f"  ИИ заполнил анкету за {seconds:.1f} с:", "ok")
+                for answer in fill.answers:
+                    self.view.append(f"  {answer.question.text}", "info")
+                    self.view.append(f"    → {answer.describe()}", "ok")
+        else:
+            turn = payload
+            d = turn.decision
+            tag = {"question": "ok", "info": "debug", "human": "warn", "wait": "debug"}[d.kind]
+            self.view.append(f"  ИИ ({turn.seconds:.1f} с): {turn.action}", tag)
+            if d.kind == "question":
+                self.view.append(f"  Вы (ответ ИИ, НЕ отправлен): {d.reply}", "ok")
+            elif d.reply:
+                self.view.append(f"  черновик, который не был бы отправлен: {d.reply}", "debug")
+            if turn.note:
+                self.view.append(f"  страховка: {turn.note}", "warn")
+
+
+class PromptWindow(ctk.CTkToplevel):
+    """Отдельное окно: ровно то, что получает нейросеть."""
+
+    def __init__(self, master, text: str):
+        super().__init__(master)
+        self.title("Что получает нейросеть")
+        self.geometry("900x700")
+        box = ctk.CTkTextbox(self, wrap="word", font=ctk.CTkFont(family="Consolas", size=12))
+        box.pack(fill="both", expand=True, padx=12, pady=12)
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+        self.after(100, self.lift)
+
+
 # (раздел конфига, ключ, подпись, тип, подсказка). Раздел "" — верхний уровень.
 SETTINGS = [
     ("Поиск и резюме", [
@@ -467,6 +651,8 @@ SETTINGS = [
     ("Вопросы работодателя", [
         ("questions", "answer_salary", "Отвечать, если вопрос один и он о зарплате", "bool", ""),
         ("questions", "salary_answer", "Ответ о зарплате", "str", "Например: Рассматриваю от 100 000 ₽ на руки"),
+        ("questions", "max_ai_questions", "С ИИ: максимум вопросов в анкете", "int",
+         "Если включены ИИ-ответы, анкеты (текст и варианты) заполняет нейросеть; анкеты длиннее — пропускаются"),
     ]),
     ("Вакансии в другом регионе", [
         ("relocation", "confirm_other_region", "Соглашаться на предупреждение hh о другом регионе", "bool", ""),
@@ -501,7 +687,7 @@ CHOICES = {
     ("ai", "provider"): {
         "OpenRouter — есть бесплатные модели": "openrouter",
         "DeepSeek API — платно, но копейки": "deepseek",
-        "Ollama — на вашем компьютере, бесплатно": "ollama",
+        "Ollama — на вашем компьютере, бесплатно (qwen3:8b)": "ollama",
         "Другой сервис (OpenAI-совместимый)": "custom",
     },
     ("search", "mode"): {"По ссылке (подходящие к резюме)": "resume", "По запросу (общий поиск hh)": "query"},
@@ -799,7 +985,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(bar, text="автоотклики на hh.ru", text_color=MUTED).pack(anchor="w", padx=22, pady=(0, 22))
 
         self.nav: dict[str, ctk.CTkButton] = {}
-        for key, text in (("responses", "➤   Отклики"), ("chats", "✉   Чаты"),
+        for key, text in (("responses", "➤   Отклики"), ("chats", "✉   Чаты"), ("ai", "✦   Проверка ИИ"),
                           ("settings", "⚙   Настройки"), ("journals", "☰   Журналы")):
             button = ctk.CTkButton(bar, text=text, anchor="w", height=42, corner_radius=10, fg_color="transparent",
                                    text_color=TEXT, hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=15),
@@ -833,6 +1019,7 @@ class App(ctk.CTk):
         self.pages = {
             "responses": ResponsesPage(main, self),
             "chats": ChatsPage(main, self),
+            "ai": AiTestPage(main, self),
             "settings": SettingsPage(main, self),
             "journals": JournalsPage(main, self),
         }
@@ -852,7 +1039,7 @@ class App(ctk.CTk):
             page.grid(row=0, column=0, rowspan=2, sticky="nsew")
         if key == "settings":
             page.load()
-        elif key == "journals":
+        elif key in ("journals", "ai"):
             page.refresh()
 
     # ---------- настройки ----------
@@ -872,6 +1059,7 @@ class App(ctk.CTk):
             return
         self.pages["responses"].refresh_config(self.cfg)
         self.pages["chats"].refresh_config(self.cfg)
+        self.pages["ai"].invalidate()
 
     def _load_prefs(self) -> dict:
         try:
@@ -988,6 +1176,7 @@ class App(ctk.CTk):
     def _set_running(self, running: bool) -> None:
         self.pages["responses"].set_running(running)
         self.pages["chats"].set_running(running)
+        self.pages["ai"].set_running(running)
 
     def _set_status(self, text: str, color, detail: str = "") -> None:
         self.status.configure(text=text, text_color=color)
@@ -1002,6 +1191,11 @@ class App(ctk.CTk):
         if kind == "responses":
             summary = f"отправлено {self.stats.applied}, пропущено {sum(self.stats.skipped.values())}, " \
                       f"ошибок {self.stats.failed}"
+        elif kind == "resume":
+            summary = "резюме загружено" if code == EXIT_OK else "резюме не загружено — см. «Журналы»"
+            self.pages["ai"].invalidate()
+            self.pages["ai"].refresh()
+            self.pages["ai"].view.append(f"  {summary}", "ok" if code == EXIT_OK else "error")
         else:
             summary = (f"прочитано отказов {self.chat_stats.opened}, ответов ИИ {self.chat_stats.answered}, "
                        f"ждут вас {len(self.chat_stats.other_unread)}")
@@ -1025,6 +1219,8 @@ class App(ctk.CTk):
                     self.console.add(levelno, text)
                     if "▶" in text and self.running_kind == "responses":
                         self.pages["responses"].current.configure(text=text.split("▶", 1)[1].strip())
+                elif event[0] == "ai_pg":
+                    self.pages["ai"].on_result(event[1], event[2])
                 elif event[0] == "ai_test":
                     self.pages["settings"]._ai_tested(event[1], event[2])
                 elif event[0] == "done":

@@ -36,7 +36,9 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
     def work(page):
         log.info("")
         resume_title = verify_resume(page, cfg)
-        run(page, cfg, opts, State(root / "data" / "state.json"), results, stats, resume_title, log_dir / "snapshots")
+        ai, resume_text = _form_ai(page, cfg, root)
+        run(page, cfg, opts, State(root / "data" / "state.json"), results, stats, resume_title, log_dir / "snapshots",
+            ai, resume_text)
 
     code = _with_browser(cfg, root, work)
     log_summary(stats, time.monotonic() - started)
@@ -45,6 +47,23 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
         log.info(f"таблица откликов (Excel): {results.xlsx_path}")
     log.info(f"подробный лог: {log_path}")
     return code
+
+
+def _form_ai(page, cfg: Config, root: Path):
+    """ИИ для анкет работодателей при отклике: включён ли, отвечает ли, плюс текст резюме."""
+    if not cfg.ai.enabled:
+        log.info("  анкеты работодателей: без ИИ (отвечаем только на один вопрос о зарплате)")
+        return None, ""
+    from .ai import AiClient, AiError
+    from .resume import fetch_resume_text
+
+    try:
+        ai = AiClient(cfg.ai)
+    except AiError as e:
+        log.warning(f"  ! ИИ для анкет недоступен ({e}) — отвечаем только на вопрос о зарплате")
+        return None, ""
+    log.info(f"  анкеты работодателей заполняет ИИ: {ai.describe()}")
+    return ai, fetch_resume_text(page, cfg, root / "data" / "resume.txt")
 
 
 def run_chats(cfg: Config, dry_run: bool, root: Path, stats: ChatStats, log_path: Path) -> int:
@@ -94,3 +113,12 @@ def _with_browser(cfg: Config, root: Path, work) -> int:
                     context.close()
                 except Exception:
                     pass
+
+
+def fetch_resume(cfg: Config, root: Path, log_path: Path) -> int:
+    """Загрузить свежий текст резюме с hh в data/resume.txt (для ИИ и песочницы)."""
+    from .resume import fetch_resume_text
+
+    code = _with_browser(cfg, root, lambda page: fetch_resume_text(page, cfg, root / "data" / "resume.txt"))
+    log.info(f"подробный лог: {log_path}")
+    return code

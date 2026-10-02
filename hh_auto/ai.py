@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .config import AI_PROVIDERS, Ai
 
@@ -29,8 +32,11 @@ SYSTEM_PROMPT = """Ты помогаешь соискателю на hh.ru от�
 
 kind:
 - "question" — работодатель (обычно «Робот-рекрутер») задал вопрос анкеты, на который можно ответить по резюме
-  и контексту. Сюда же относится вопрос «Начнём?» — ответь согласием.
+  и контексту. Сюда же относятся «Начнём?» и вопросы-подтверждения робота («Используем эти ответы?»,
+  «Всё верно?», «Подтверждаете?») — ответь коротким согласием («Да»).
 - "info" — ответ не нужен: благодарность за отклик, уведомление, «мы рассмотрим», отказ, завершение анкеты.
+  Если в последнем сообщении есть вопрос к соискателю или просьба что-то указать, рассказать, прислать —
+  это НИКОГДА не "info".
 - "human" — нужен ответ самого человека: приглашение на собеседование, предложение созвониться, тестовое
   задание, просьба прислать документы, контакты или персональные данные, вопрос о деньгах/оплате,
   ссылка на внешний сайт, или вопрос, на который нельзя честно ответить по резюме и контексту.
@@ -42,8 +48,16 @@ reply — ответ для kind = "question", иначе "".
 Правила ответа:
 - от первого лица, по-русски (или на языке вопроса), коротко: 1–2 предложения, не длиннее {max_chars} символов;
 - только факты из резюме и контекста; не выдумывай опыт, цифры, компании, навыки и даты;
-- если точного ответа в резюме нет, ответь честно и нейтрально (например: «Готов обсудить на собеседовании»);
-- на вопрос о сроках и количестве лет опыта отвечай числом из резюме;
+- если точного ответа в резюме и контексте нет (например, о зарплате или графике), это всё равно "question":
+  ответь честно и нейтрально (например: «Готов обсудить на собеседовании»);
+- на вопрос о количестве лет опыта отвечай числом из резюме; срок по отдельной технологии называй, только
+  если он прямо следует из резюме (технология указана в конкретном месте работы с датами). Навыкам из
+  списка «Навыки» и тому, что соискатель «изучает в свободное время», коммерческий стаж не приписывай —
+  так и скажи (например: «Коммерческого опыта с NLP нет, изучаю LLM и RAG в свободное время»);
+- не соглашайся на условия, которых нет в резюме или контексте: формат работы бери из строки резюме
+  «Формат работы» (если там нет офиса, на вопрос про офис ответь, что предпочитаешь указанный формат);
+- сроки выхода на работу, зарплату, готовность к переезду бери ТОЛЬКО из контекста соискателя;
+  если там этого нет — «Готов обсудить на собеседовании». Никогда не придумывай сроки, суммы и ссылки;
 - никаких приветствий, подписей, ссылок, телефонов, почты и паспортных данных."""
 
 
@@ -51,11 +65,167 @@ class AiError(Exception):
     pass
 
 
+FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН вопрос анкеты работодателя при отклике на вакансию hh.ru.
+Тебе дают ключевые факты и полное резюме соискателя, его дополнительный контекст, вакансию и вопрос.
+
+Верни строго JSON без пояснений:
+- текстовый вопрос: {"can_answer": true, "text": "ответ"}
+- вопрос с вариантами: {"can_answer": true, "choices": ["точный текст варианта", ...]}
+- нельзя честно ответить: {"can_answer": false, "reason": "коротко почему"}
+
+Правила:
+- текст — от первого лица, грамотно по-русски («Меня заинтересовала…», «У меня 3 года опыта…»), коротко:
+  1–2 предложения, до {max_chars} символов;
+- варианты копируй ДОСЛОВНО из списка; для «выбери один» — ровно один вариант;
+- только факты из резюме и контекста; не выдумывай опыт, сроки, суммы, компании и ссылки;
+- стаж: общий — из строки «Опыт работы» в ключевых фактах; по отдельной технологии — только если он прямо
+  следует из резюме. Навыкам «из списка» и тому, что «изучаю в свободное время», коммерческий стаж не приписывай;
+- список технологий/навыков: выбирай ТОЛЬКО то, что прямо написано в резюме, остальное не выбирай;
+- зарплата, сроки выхода, переезд, график — ТОЛЬКО из контекста. Для вилок выбирай вариант, в который попадает
+  сумма из контекста («от 150 000» → вилка, начинающаяся со 150 000). Если в контексте этого нет — текстом
+  «Готов обсудить на собеседовании», а в вариантах — «Готов обсудить» или ближайший честный вариант;
+- формат работы — из строки резюме «Формат работы»; не соглашайся на то, чего там нет;
+- can_answer = false: тестовое задание, код, решение задачи, ссылка на портфолио/GitHub, документы, контакты,
+  персональные данные, оплата — или если на вопрос нельзя честно ответить по резюме и контексту."""
+
+
+@dataclass
+class FormQuestion:
+    index: int  # номер блока вопроса на странице (с 0)
+    text: str
+    kind: str  # text | single | multi | unknown
+    options: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FormAnswer:
+    question: FormQuestion
+    text: str = ""
+    choices: list[int] = field(default_factory=list)  # номера вариантов с 0
+
+    def describe(self) -> str:
+        if self.question.kind == "text":
+            return self.text
+        return "; ".join(self.question.options[c] for c in self.choices)
+
+
+@dataclass
+class FormFill:
+    can_answer: bool
+    reason: str = ""
+    answers: list[FormAnswer] = field(default_factory=list)
+
+
+def ensure_ollama(base_url: str, wait: float = 20) -> bool:
+    """Если Ollama не запущена — запускает её в фоне (Windows: обычная установка с ollama.com). True — отвечает."""
+    root = base_url.rsplit("/v1", 1)[0]
+
+    def alive() -> bool:
+        try:
+            with urllib.request.urlopen(f"{root}/api/version", timeout=2):
+                return True
+        except (urllib.error.URLError, OSError):
+            return False
+
+    if alive():
+        return True
+    candidates = [shutil.which("ollama"), os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")]
+    exe = next((c for c in candidates if c and os.path.exists(c)), None)
+    if not exe:
+        return False
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+    subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        if alive():
+            return True
+    return False
+
+
 @dataclass
 class Decision:
     kind: str
     question: str = ""
     reply: str = ""
+
+
+# ─────────── страховки поверх нейросети (общие для боевого режима и песочницы) ───────────
+
+SENSITIVE = re.compile(
+    r"паспорт|снилс|\bинн\b|номер карт|на карту|банковск|реквизит|оплатить|предоплат|"
+    r"внести (?:плат|оплат|взнос)|взнос|"
+    r"http|www\.|ссылк|телеграм|telegram|whatsapp|ватсап|номер телефона|ваш телефон|e-?mail|почт",
+    re.I,
+)
+
+
+def norm(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def ours_is_last(transcript: str, last_sent: str) -> bool:
+    """Переписка заканчивается нашим ответом: после него только время и подписи («Вы», «прочитано»)."""
+    text, probe = norm(transcript), norm(last_sent)[:60]
+    at = text.rfind(probe)
+    if at < 0:
+        return False
+    rest = re.sub(r"\d{1,2}:\d{2}", "", text[at + len(norm(last_sent)):])
+    return len(rest.strip()) < 20
+
+
+# Провайдеры, которые понимают response_format = json_object (у остальных просим JSON словами)
+JSON_MODE_PROVIDERS = ("ollama", "deepseek")
+
+# Сообщения о завершении анкеты: отвечать не нужно, переходим к следующему чату
+DONE = re.compile(
+    r"ответы отправлены работодателю|анкет\w* (?:завершен|заполнен|пройден)|опрос (?:завершен|пройден)|"
+    r"спасибо за (?:ваши )?ответы|благодарим за (?:ваши )?ответы",
+    re.I,
+)
+
+
+def is_done_message(transcript: str) -> bool:
+    return bool(DONE.search(last_message(transcript)))
+
+
+_SERVICE_LINE = re.compile(r"\d{1,2}:\d{2}|вы|прочитано|доставлено|отправлено|сегодня|вчера", re.I)
+
+
+def last_message(transcript: str) -> str:
+    """Последнее сообщение переписки: последняя содержательная строка (без времени и служебных подписей)."""
+    for line in reversed(transcript.splitlines()):
+        line = line.strip()
+        if line and not _SERVICE_LINE.fullmatch(line):
+            return line
+    return ""
+
+
+def review(decision: Decision, transcript: str, sent: list[str]) -> str:
+    """Проверяет решение модели страховками. Может поменять decision.kind. Возвращает пояснение или "".
+
+    Модель может ошибиться, поэтому правила ниже работают всегда:
+      • документы, деньги, контакты, ссылки — решает человек, что бы ни выбрала модель;
+      • в последнем сообщении есть вопрос, а модель «не стала отвечать» — тоже решает человек
+        (иначе приглашение на созвон можно тихо «прочитать» и пропустить);
+      • повтор нашего прошлого ответа — значит, ждём работодателя.
+    """
+    ours_last = bool(sent) and ours_is_last(transcript, sent[-1])
+    if ours_last:
+        return ""
+    tail = last_message(transcript)
+    sensitive = SENSITIVE.search(decision.question) if decision.question else None
+    sensitive = sensitive or SENSITIVE.search(tail)
+    if sensitive and decision.kind != "human":
+        decision.kind = "human"
+        return f"в сообщении «{sensitive.group(0)}» — такие вопросы решаете вы"
+    if decision.kind in ("info", "wait") and tail.rstrip().endswith("?"):
+        decision.kind = "human"
+        return "в последнем сообщении есть вопрос, а ИИ не стал отвечать — оставляю вам"
+    if decision.kind == "question" and sent and norm(decision.reply) == norm(sent[-1]):
+        decision.kind = "wait"
+        return "ИИ предлагает повторить прошлый ответ — значит, ждём работодателя"
+    return ""
 
 
 class AiClient:
@@ -69,14 +239,20 @@ class AiClient:
             raise AiError("для ИИ не задан адрес API или модель ([ai] base_url / model)")
         if cfg.provider in ("deepseek", "openrouter") and not self.api_key:
             raise AiError(f"для {cfg.provider} нужен API-ключ ([ai] api_key)")
+        if cfg.provider == "ollama" and not ensure_ollama(self.base_url):
+            raise AiError("Ollama не запущена и не нашлась — установите её с ollama.com и скачайте модель: "
+                          f"ollama pull {self.model}")
 
     def describe(self) -> str:
         return f"{self.cfg.provider}: {self.model} ({self.base_url})"
 
-    def complete(self, messages: list[dict], max_tokens: int = 500) -> str:
-        body = json.dumps({
-            "model": self.model, "messages": messages, "temperature": 0.3, "max_tokens": max_tokens, "stream": False,
-        }).encode("utf-8")
+    def complete(self, messages: list[dict], max_tokens: int = 800, json_mode: bool = False) -> str:
+        payload = {"model": self.model, "messages": messages, "temperature": 0.3, "max_tokens": max_tokens,
+                   "stream": False}
+        if json_mode and self.cfg.provider in JSON_MODE_PROVIDERS:
+            # Режим «строго JSON»: модель не может ответить пересказом переписки вместо решения
+            payload["response_format"] = {"type": "json_object"}
+        body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -105,20 +281,125 @@ class AiClient:
         prompt = "Ответь одним словом: работает" + (" /no_think" if "qwen3" in self.model.lower() else "")
         return self.complete([{"role": "user", "content": prompt}], max_tokens=20).strip()
 
-    def decide(self, resume: str, context: str, transcript: str, sent: list[str]) -> Decision:
+    def build_messages(self, resume: str, context: str, transcript: str) -> list[dict]:
+        """Ровно то, что уходит нейросети: инструкция + резюме + контекст + переписка."""
         system = SYSTEM_PROMPT.replace("{max_chars}", str(self.cfg.max_answer_chars))
         parts = [
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
             f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
             f"ПЕРЕПИСКА (последние сообщения внизу):\n{transcript}",
+            f"ПОСЛЕДНЕЕ СООБЩЕНИЕ В ПЕРЕПИСКЕ (реши, что с ним делать):\n{last_message(transcript)}",
         ]
-        if sent:
-            parts.append("ОТВЕТЫ, КОТОРЫЕ СОИСКАТЕЛЬ УЖЕ ОТПРАВИЛ В ЭТОМ ЧАТЕ:\n" + "\n".join(f"- {s}" for s in sent))
+        # Отправленные ответы уже есть в переписке. Отдельным списком их не даём: модели (проверено на qwen3)
+        # принимают такой список за «анкета пройдена» и перестают отвечать. От повторов защищает chats.py.
         user = "\n\n".join(parts)
         if "qwen3" in self.model.lower():
             user += "\n\n/no_think"  # у qwen3 рассуждения отключаются этой командой — ответ в разы быстрее
-        raw = self.complete([{"role": "system", "content": system}, {"role": "user", "content": user}])
-        return self._parse(raw)
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def decide(self, resume: str, context: str, transcript: str, sent: list[str]) -> Decision:
+        if is_done_message(transcript):  # завершение анкеты узнаём сами — без нейросети
+            self.last_raw = ""
+            return Decision("info")
+        messages = self.build_messages(resume, context, transcript)
+        self.last_raw = self.complete(messages, json_mode=True)
+        try:
+            return self._parse(self.last_raw)
+        except AiError:
+            # Модель ответила текстом вместо JSON — переспрашиваем один раз
+            retry = messages + [
+                {"role": "assistant", "content": self.last_raw[:2000]},
+                {"role": "user", "content": 'Ответь ТОЛЬКО JSON вида {"kind": "...", "question": "...", "reply": "..."} '
+                                            "без пояснений и форматирования."},
+            ]
+            self.last_raw = self.complete(retry, json_mode=True)
+            return self._parse(self.last_raw)
+
+    def fill_form(self, resume: str, context: str, vacancy: str, questions: list[FormQuestion]) -> FormFill:
+        """Анкета при отклике: каждый вопрос — отдельным запросом (так 8B-моделям заметно проще)."""
+        answers: list[FormAnswer] = []
+        for n, q in enumerate(questions, 1):
+            # «Отметьте технологии»: короткие варианты отмечаем по резюме сами — точно и без выдумок
+            picked = skills_from_resume(q, f"{resume}\n{context}")
+            if picked is not None:
+                answers.append(FormAnswer(q, choices=picked))
+                continue
+            # Зарплата и сроки — слишком важны, чтобы доверять модели: считаем сами
+            fixed = context_topic_answer(q, context)
+            if fixed is not None:
+                answers.append(fixed)
+                continue
+            item = self._answer_question(resume, context, vacancy, q)
+            for _ in range(2):  # 8B-модели изредка отдают пустой ответ — переспрашиваем
+                if not item.get("can_answer", True) or any(item.get(k) for k in ("text", "answer", "reply",
+                                                                                 "choices", "choice")):
+                    break
+                item = self._answer_question(resume, context, vacancy, q)
+            if not item.get("can_answer", True):
+                # Модель отказалась, а в вариантах есть «Готов обсудить» — это честный ответ (кроме опасных тем)
+                neutral = _neutral_option(q)
+                if neutral is not None and not SENSITIVE.search(q.text):
+                    answers.append(FormAnswer(q, choices=[neutral]))
+                    continue
+                return FormFill(False, f"вопрос {n}: " + (str(item.get("reason", "")).strip() or "нельзя честно ответить"))
+            try:
+                answers.append(self._to_answer(q, item, n))
+            except AiError:
+                neutral = _neutral_option(q)
+                if neutral is None:
+                    raise
+                answers.append(FormAnswer(q, choices=[neutral]))
+        return FormFill(True, answers=answers)
+
+    def _answer_question(self, resume: str, context: str, vacancy: str, q: FormQuestion) -> dict:
+        kind = {"text": "текстовый ответ", "single": "выбери ОДИН вариант",
+                "multi": "выбери ОДИН ИЛИ НЕСКОЛЬКО вариантов"}.get(q.kind, q.kind)
+        question = f"[{kind}] {q.text}"
+        if q.options:
+            question += "\nВарианты:\n" + "\n".join(f"- {o}" for o in q.options)
+        user = "\n\n".join([
+            f"КЛЮЧЕВЫЕ ФАКТЫ ИЗ РЕЗЮМЕ:\n{key_facts(resume) or '(нет)'}",
+            f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
+            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
+            f"ВАКАНСИЯ: {vacancy}",
+            f"ВОПРОС:\n{question}",
+        ])
+        if "qwen3" in self.model.lower():
+            user += "\n\n/no_think"
+        messages = [{"role": "system", "content": FORM_PROMPT.replace("{max_chars}", str(self.cfg.max_answer_chars))},
+                    {"role": "user", "content": user}]
+        for attempt in range(2):
+            self.last_raw = self.complete(messages, json_mode=True)
+            match = re.search(r"\{.*\}", self.last_raw, re.S)
+            try:
+                if match:
+                    return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+            messages = messages + [{"role": "assistant", "content": self.last_raw[:2000]},
+                                   {"role": "user", "content": "Ответь ТОЛЬКО JSON по схеме из инструкции."}]
+        raise AiError(f"ИИ вернул не JSON: {self.last_raw[:200]}")
+
+    def _to_answer(self, q: FormQuestion, item: dict, n: int) -> FormAnswer:
+        if q.kind == "text":
+            raw = item.get("text") or item.get("answer") or item.get("reply") or ""  # модели путают ключи
+            text = _clean_reply(str(raw), self.cfg.max_answer_chars)
+            if not text:
+                raise AiError(f"ИИ дал пустой ответ на вопрос {n}")
+            return FormAnswer(q, text=text)
+        picked = item.get("choices") or item.get("choice") or item.get("answer") or []
+        if isinstance(picked, str):
+            picked = [picked]
+        choices = []
+        for value in picked:
+            k = _match_option(str(value), q.options)
+            if k is None:
+                raise AiError(f"ИИ выбрал вариант, которого нет в вопросе {n}: «{value}»")
+            if k not in choices:
+                choices.append(k)
+        if not choices:
+            raise AiError(f"ИИ не выбрал ни одного варианта в вопросе {n}")
+        return FormAnswer(q, choices=sorted(choices[:1] if q.kind == "single" else choices))
 
     def _parse(self, raw: str) -> Decision:
         match = re.search(r"\{.*\}", raw, re.S)  # модели иногда оборачивают JSON в ```json … ```
@@ -135,6 +416,114 @@ class AiClient:
         if kind == "question" and not reply:
             kind = "human"  # вопрос есть, а ответа нет — пусть отвечает человек
         return Decision(kind=kind, question=str(data.get("question", "")).strip(), reply=reply)
+
+
+_KEY_FACT = re.compile(r"^(?:Опыт работы|Формат работы|Тип занятости|Уровень дохода|Командировки|Переезд|"
+                       r"Гражданство|Проживает|Желательное время в пути)", re.I)
+
+
+def key_facts(resume: str) -> str:
+    """Строки резюме, которые чаще всего нужны для анкет: общий стаж, формат, занятость…"""
+    return "\n".join(line for line in resume.splitlines() if _KEY_FACT.match(line.strip()))
+
+
+_SALARY_Q = re.compile(r"зарплат|заработн|доход|оклад|вознагражд|ожидани[яй] по (?:оплате|зп)|сколько.*получать", re.I)
+_TIMING_Q = re.compile(r"приступить|выйти на работу|выход на работу|когда (?:готов|сможете|можете)|срок.*выход|"
+                       r"переезд|релокац|график|командировк", re.I)
+# Есть ли в контексте соискателя данные на эту тему
+_SALARY_CTX = re.compile(r"зарплат|заработн|доход|оклад|на руки|\d\s*(?:к\b|тыс|₽|руб)", re.I)
+_TIMING_CTX = re.compile(r"выйти|выход|приступ|недел|месяц|сразу|немедленно|переезд|релокац|график|командиров", re.I)
+
+
+def _amount(text: str) -> int | None:
+    """Первая сумма в тексте: «от 150» и «150к» → 150 000, «150 000 ₽» → 150 000."""
+    match = re.search(r"(?:от|не менее|минимум)?\s*(\d[\d\s]{0,9}\d|\d)\s*(к|тыс)?", text, re.I)
+    if not match:
+        return None
+    value = int(re.sub(r"\s", "", match.group(1)))
+    if match.group(2) or value < 1000:
+        value *= 1000
+    return value
+
+
+def _range(option: str) -> tuple[float, float] | None:
+    """Вилка из текста варианта: «до 150 000» → (0, 150000), «150 000–250 000» → (150000, 250000)."""
+    numbers = [_amount(part) for part in re.findall(r"\d[\d\s]*\d|\d+", option)]
+    numbers = [n for n in numbers if n]
+    if not numbers:
+        return None
+    low = option.lower()
+    if re.search(r"\bдо\b|менее|меньше", low):
+        return 0, numbers[0]
+    if re.search(r"более|больше|свыше|\bот\b", low) and len(numbers) == 1:
+        return numbers[0], float("inf")
+    if len(numbers) >= 2:
+        return numbers[0], numbers[1]
+    return numbers[0], numbers[0]
+
+
+def context_topic_answer(q: FormQuestion, context: str) -> FormAnswer | None:
+    """Зарплата и сроки: без данных в контексте — «Готов обсудить»; вилку зарплат выбираем расчётом.
+
+    None — вопрос не про эти темы или решить сами не можем (тогда отвечает нейросеть).
+    """
+    salary, timing = _SALARY_Q.search(q.text), _TIMING_Q.search(q.text)
+    if not salary and not timing:
+        return None
+    relevant = _SALARY_CTX if salary else _TIMING_CTX
+    has_info = bool(relevant.search(context))
+    if not has_info:  # в контексте об этом ничего — честно «обсудим», а не выдумка модели
+        if q.kind == "text":
+            return FormAnswer(q, text="Готов обсудить на собеседовании.")
+        neutral = _neutral_option(q)
+        return FormAnswer(q, choices=[neutral]) if neutral is not None else None
+    if salary and q.kind == "single":
+        marked = re.search(r"(\d[\d\s]{0,9}\d|\d)\s*(?:к\b|тыс|₽|руб)", context, re.I)  # «400к», «150 000 ₽»
+        start = marked.start() if marked else relevant.search(context).start()
+        wanted = _amount(context[start:])
+        if wanted:
+            for k, option in enumerate(q.options):
+                bounds = _range(option)
+                if bounds and bounds[0] <= wanted < bounds[1] or (bounds and bounds[0] == bounds[1] == wanted):
+                    return FormAnswer(q, choices=[k])
+    return None  # текстовый ответ про зарплату/сроки по контексту — пусть сформулирует нейросеть
+
+
+_NEUTRAL = re.compile(r"готов обсудить|обсудим|по договор[её]нности|обсуждается|на собеседовании", re.I)
+
+
+def _neutral_option(q: FormQuestion) -> int | None:
+    return next((k for k, o in enumerate(q.options) if _NEUTRAL.search(o)), None)
+
+
+def skills_from_resume(q: FormQuestion, resume: str) -> list[int] | None:
+    """Вопрос «отметьте технологии/навыки» с короткими вариантами: отмечаем те, что есть в резюме.
+
+    None — вопрос не такой (решает нейросеть). Пустой результат тоже None: пусть решает модель.
+    """
+    if q.kind != "multi" or not q.options or any(len(o) > 30 or len(o.split()) > 3 for o in q.options):
+        return None
+    text = norm(resume)
+    found = []
+    for k, option in enumerate(q.options):
+        name = norm(option)
+        if name and re.search(rf"(?<![\w]){re.escape(name)}(?![\w])", text):
+            found.append(k)
+    return found or None
+
+
+def _match_option(value: str, options: list[str]) -> int | None:
+    """Номер варианта по тексту от модели: точное совпадение, затем вхождение, затем номер «3»."""
+    v = norm(value).strip(" .«»\"")
+    for k, option in enumerate(options):
+        if norm(option) == v:
+            return k
+    if v.isdigit():  # модель вернула номер варианта, а не текст
+        return int(v) - 1 if 1 <= int(v) <= len(options) else None
+    for k, option in enumerate(options):
+        if v and (v in norm(option) or norm(option) in v):
+            return k
+    return None
 
 
 def _clean_reply(text: str, max_chars: int) -> str:

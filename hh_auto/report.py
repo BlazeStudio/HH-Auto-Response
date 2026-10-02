@@ -29,7 +29,8 @@ def build_workbook(records: list[dict], summary: Summary, chat_answers: list[dic
         ("Вакансия", 50, lambda r: (r["title"], r["url"])),
         ("Компания", 34, lambda r: r["company"]),
         ("Письмо", 9, lambda r: "да" if r.get("letter") else "нет"),
-        ("Комментарий", 50, lambda r: r.get("reason", "")),
+        ("Комментарий", 30, lambda r: r.get("reason", "")),
+        ("Ответы на анкету", 70, lambda r: "\n".join(f"{q} → {a}" for q, a in r.get("answers") or [])),
     ])
     # По пропущенным и неудачным — последняя попытка по каждой вакансии, если отклик так и не ушёл
     pending = _latest_per_vacancy([r for r in records if r["id"] not in applied_ids])
