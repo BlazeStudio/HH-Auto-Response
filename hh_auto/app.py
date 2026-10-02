@@ -50,8 +50,10 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
 def run_chats(cfg: Config, dry_run: bool, root: Path, stats: ChatStats, log_path: Path) -> int:
     """Прочитать отказы в чатах. Возвращает код завершения."""
     started = time.monotonic()
-    code = _with_browser(cfg, root, lambda page: read_rejections(page, cfg, dry_run, stats))
+    code = _with_browser(cfg, root, lambda page: read_rejections(page, cfg, dry_run, stats, root))
     log_chat_summary(stats, time.monotonic() - started)
+    if (stats.answered or dry_run and cfg.ai.enabled) and ResultsBook(root).save_xlsx():
+        log.info(f"ответы ИИ — в таблице: {root / 'logs' / 'responses.xlsx'} (лист «Ответы в чатах»)")
     log.info(f"подробный лог: {log_path}")
     return code
 

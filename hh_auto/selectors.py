@@ -52,6 +52,10 @@ CHAT_UNREAD_BADGE = '[data-qa="chatik-info-badges"]'  # счётчик непр�
 # последнее сообщение: у «Отказ» класс last-message-color_red--<хеш>, data-qa нет
 CHAT_LAST_MESSAGE = '[class*="last-message-color"], [class*="last-message--"]'
 CHAT_ONLY_UNREAD = '[data-qa="chatik-checkbox-only-unread"]'
+# Открытый чат: поле сообщения и кнопка отправки. Вёрстки открытого чата у нас ещё не было —
+# ищем широко; если не найдётся кнопка, сообщение отправляется клавишей Enter.
+CHAT_INPUT = 'textarea, [contenteditable="true"]'
+CHAT_SEND = '[data-qa*="send" i], button[aria-label*="тправить"], button[title*="тправить"]'
 
 # Любое всплывающее окно hh
 DIALOG = '[role="dialog"], [role="alertdialog"]'

@@ -18,7 +18,7 @@ WRAP = Alignment(wrap_text=True, vertical="top")
 TOP = Alignment(vertical="top")
 
 
-def build_workbook(records: list[dict], summary: Summary) -> Workbook:
+def build_workbook(records: list[dict], summary: Summary, chat_answers: list[dict] | None = None) -> Workbook:
     applied_ids = {r["id"] for r in records if r["category"] == APPLIED}
     wb = Workbook()
     _summary_sheet(wb.active, summary)
@@ -53,6 +53,15 @@ def build_workbook(records: list[dict], summary: Summary) -> Workbook:
         ("Компания", 34, lambda r: r["company"]),
         ("Ошибка", 70, lambda r: r.get("reason", "")),
     ], note="Ошибки и лимит hh. Такие вакансии программа попробует снова при следующем запуске.")
+    if chat_answers:
+        _table(wb.create_sheet("Ответы в чатах"), chat_answers, [
+            ("Дата", 19, lambda r: r["at"]),
+            ("Вакансия", 40, lambda r: (r["title"], f"https://hh.ru/chat/{r['chat_id']}")),
+            ("Компания", 28, lambda r: r["company"]),
+            ("Вопрос", 60, lambda r: r.get("question", "")),
+            ("Ответ ИИ", 60, lambda r: r.get("answer", "")),
+            ("Отправлен", 11, lambda r: "да" if r.get("sent") else "нет (пробный)"),
+        ], note="Ответы нейросети на анкеты работодателей. Ссылка в названии вакансии открывает чат.")
     return wb
 
 

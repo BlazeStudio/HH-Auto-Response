@@ -67,6 +67,7 @@ class ResultsBook:
     def __init__(self, root: Path):
         self.data_path = root / "data" / "responses.jsonl"
         self.xlsx_path = root / "logs" / "responses.xlsx"
+        self.chat_answers_path = root / "data" / "chat_answers.jsonl"
         self.run_id = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._last_save = 0.0
         self._lock_warned = False
@@ -123,7 +124,7 @@ class ResultsBook:
         records = self.records()
         self.xlsx_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.xlsx_path.with_name("~responses.tmp.xlsx")
-        build_workbook(records, summarize(records, self.run_id)).save(tmp)
+        build_workbook(records, summarize(records, self.run_id), _read_jsonl(self.chat_answers_path)).save(tmp)
         try:
             os.replace(tmp, self.xlsx_path)
         except PermissionError:
@@ -159,6 +160,18 @@ class ResultsBook:
         self.data_path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
         csv_path.rename(csv_path.with_name("responses_old.csv"))
         log.info(f"  перенёс {len(rows)} записей из responses.csv в новый журнал (старый файл: responses_old.csv)")
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
 
 
 def summarize(records: list[dict], current_run: str = "") -> Summary:

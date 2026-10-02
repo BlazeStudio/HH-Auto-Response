@@ -87,8 +87,38 @@ class Questions:
 class Chats:
     url: str = "https://hh.ru/chat"
     rejection_text: str = "Отказ"  # последнее сообщение чата, по которому узнаём отказ
-    delay_min: float = 1.5  # пауза после открытия чата, чтобы hh отметил его прочитанным
-    delay_max: float = 3.5
+    delay_min: float = 0.5  # пауза после открытия чата, чтобы hh отметил его прочитанным
+    delay_max: float = 1.0
+
+
+# Провайдеры ИИ: (адрес OpenAI-совместимого API, модель по умолчанию, где взять ключ)
+AI_PROVIDERS = {
+    "deepseek": ("https://api.deepseek.com", "deepseek-chat",
+                 "platform.deepseek.com → API keys. Платно, но очень дёшево (копейки за анкету)"),
+    "openrouter": ("https://openrouter.ai/api/v1", "deepseek/deepseek-chat-v3-0324:free",
+                   "openrouter.ai → Keys. Бесплатные модели — с пометкой :free (актуальные — на openrouter.ai/models)"),
+    "ollama": ("http://localhost:11434/v1", "qwen2.5:7b",
+               "ollama.com — нейросеть на вашем компьютере, бесплатно, ключ не нужен"),
+    "custom": ("", "", "любой OpenAI-совместимый сервис: укажите base_url и model"),
+}
+
+
+@dataclass
+class Ai:
+    # ИИ-ответы на анкеты работодателей («Робот-рекрутер») в чатах
+    enabled: bool = False
+    provider: str = "openrouter"  # deepseek | openrouter | ollama | custom
+    api_key: str = ""  # или переменная окружения HH_AI_API_KEY
+    model: str = ""  # пусто — модель провайдера по умолчанию
+    base_url: str = ""  # пусто — адрес провайдера
+    # Что ещё нейросети знать о вас, кроме резюме: зарплата, формат работы, город, когда готовы выйти…
+    context: str = ""
+    only_robot: bool = True  # отвечать только «Роботу-рекрутеру»; живым людям отвечаете вы
+    robot_markers: list[str] = field(default_factory=lambda: ["Робот-рекрутер", "робот-рекрутер"])
+    max_answer_chars: int = 300  # длина одного ответа
+    reply_wait: float = 25  # сколько ждать следующего вопроса робота после ответа, сек
+    max_answers_per_chat: int = 20
+    timeout: float = 60  # ожидание ответа нейросети, сек
 
 
 LETTER_MODES = ("generate", "template", "none")
@@ -164,6 +194,7 @@ class Config:
     questions: Questions = field(default_factory=Questions)
     relocation: Relocation = field(default_factory=Relocation)
     chats: Chats = field(default_factory=Chats)
+    ai: Ai = field(default_factory=Ai)
     browser: Browser = field(default_factory=Browser)
     geo: Geo = field(default_factory=Geo)
 
@@ -252,6 +283,7 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         questions=_section(Questions, raw.pop("questions", {}), "questions"),
         relocation=_section(Relocation, raw.pop("relocation", {}), "relocation"),
         chats=_section(Chats, raw.pop("chats", {}), "chats"),
+        ai=_section(Ai, raw.pop("ai", {}), "ai"),
         browser=_section(Browser, raw.pop("browser", {}), "browser"),
         geo=_section(Geo, raw.pop("geo", {}), "geo"),
     )
@@ -265,6 +297,8 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
 
 def validate_config(cfg: Config) -> None:
     """Проверки значений, общие для config.toml и формы настроек в приложении."""
+    if cfg.ai.provider not in AI_PROVIDERS:
+        raise ConfigError(f"[ai] provider: «{cfg.ai.provider}», допустимо: {', '.join(AI_PROVIDERS)}")
     if cfg.search.mode not in SEARCH_MODES:
         raise ConfigError(f"[search] mode: «{cfg.search.mode}», допустимо: {', '.join(SEARCH_MODES)}")
     if cfg.search.area and not cfg.search.area.isdigit():

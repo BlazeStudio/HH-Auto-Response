@@ -26,8 +26,9 @@ import customtkinter as ctk
 from . import control
 from .app import EXIT_OK, EXIT_STOPPED, run_chats, run_responses
 from .chats import ChatStats
-from .config import (AREAS, EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config,
+from .config import (AI_PROVIDERS, AREAS, EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config,
                      validate_config, validate_search_source)
+from .ai import AiClient, AiError
 from .results import HH_DAILY_LIMIT, Summary, load_summary
 from .search import describe_search
 from .logger import SUCCESS, log, setup_logging
@@ -370,16 +371,17 @@ class ResponsesPage(Page):
 
 class ChatsPage(Page):
     def __init__(self, master, app: "App"):
-        super().__init__(master, "Отказы в чатах",
-                         "Включает в чатах hh фильтр «Только непрочитанные» и открывает чаты с последним сообщением "
-                         "«Отказ», чтобы они не висели в непрочитанных. Приглашения и живые сообщения не трогает — "
-                         "показывает их списком, чтобы вы ответили сами.")
+        super().__init__(master, "Чаты",
+                         "Включает в чатах hh «Только непрочитанные» и читает отказы. Если в «Настройках» включены "
+                         "ИИ-ответы, отвечает «Роботу-рекрутеру» на анкеты по вашему резюме и читает уведомления. "
+                         "Живым людям, приглашениям и просьбам о документах не отвечает — показывает их списком.")
         self.app = app
         cards = ctk.CTkFrame(self, fg_color="transparent")
         cards.pack(fill="x")
         self.cards = {
             "opened": StatCard(cards, "Прочитано отказов", GREEN),
-            "other": StatCard(cards, "Непрочитанные не отказы", AMBER),
+            "answered": StatCard(cards, "Ответов ИИ", ACCENT),
+            "other": StatCard(cards, "Ждут вашего ответа", AMBER),
             "failed": StatCard(cards, "Ошибок", RED),
         }
         for i, card in enumerate(self.cards.values()):
@@ -388,12 +390,22 @@ class ChatsPage(Page):
 
         controls = ctk.CTkFrame(self, fg_color="transparent")
         controls.pack(fill="x", pady=(16, 0))
-        self.start_btn = _primary_button(controls, "✉  Прочитать отказы", lambda: app.start_chats(False), width=200)
+        self.start_btn = _primary_button(controls, "✉  Обработать чаты", lambda: app.start_chats(False), width=200)
         self.start_btn.pack(side="left")
         self.dry_btn = _secondary_button(controls, "Только показать", lambda: app.start_chats(True), width=150)
         self.dry_btn.pack(side="left", padx=10)
         self.stop_btn = _stop_button(controls, app.stop)
         self.stop_btn.pack(side="left")
+        self.ai_state = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w")
+        self.ai_state.pack(fill="x", pady=(10, 0))
+
+    def refresh_config(self, cfg: Config) -> None:
+        if cfg.ai.enabled:
+            model = cfg.ai.model or AI_PROVIDERS.get(cfg.ai.provider, ("", ""))[1]
+            text = f"ИИ-ответы на анкеты: включены ({cfg.ai.provider}, {model})"
+        else:
+            text = "ИИ-ответы на анкеты выключены — только чтение отказов. Включить: «Настройки» → «ИИ-ответы в чатах»"
+        self.ai_state.configure(text=text, text_color=GREEN if cfg.ai.enabled else MUTED)
 
     def set_running(self, running: bool) -> None:
         state = "disabled" if running else "normal"
@@ -403,6 +415,7 @@ class ChatsPage(Page):
 
     def update_stats(self, stats: ChatStats) -> None:
         self.cards["opened"].set(stats.opened)
+        self.cards["answered"].set(stats.answered)
         self.cards["other"].set(len(stats.other_unread))
         self.cards["failed"].set(stats.failed)
 
@@ -460,6 +473,18 @@ SETTINGS = [
         ("relocation", "decline_if_not_remote", "Отказываться, если нет удалёнки (нужен переезд)", "bool", ""),
         ("relocation", "decline_keywords", "Слова о переезде в карточке → отказ", "list", ""),
     ]),
+    ("ИИ-ответы в чатах", [
+        ("ai", "enabled", "Отвечать на анкеты «Робота-рекрутера» с помощью нейросети", "bool",
+         "Нейросеть получает ваше резюме с hh, контекст ниже и переписку и отвечает коротко от вашего имени"),
+        ("ai", "provider", "Нейросеть", "choice", ""),
+        ("ai", "api_key", "API-ключ", "secret", ""),
+        ("ai", "model", "Модель (необязательно)", "str", "Пусто — модель по умолчанию для выбранной нейросети"),
+        ("ai", "base_url", "Адрес API (только для «Другой сервис»)", "str", "Например: https://api.example.com/v1"),
+        ("ai", "context", "Что ещё знать о вас, кроме резюме", "text",
+         "Зарплатные ожидания, формат работы, город, когда готовы выйти, готовность к переезду и т.п."),
+        ("ai", "only_robot", "Отвечать только «Роботу-рекрутеру» (живым людям отвечаете вы)", "bool", ""),
+        ("ai", "max_answer_chars", "Максимальная длина ответа, символов", "int", ""),
+    ]),
     ("Браузер и сеть", [
         ("browser", "channel", "Браузер", "choice", ""),
         ("geo", "proxy", "Российский прокси (если вы не в РФ или с VPN)", "str",
@@ -473,6 +498,12 @@ MULTI = {("filters", "experience"): EXPERIENCE, ("filters", "work_format"): WORK
 
 # Варианты для полей-списков выбора: подпись → значение в config
 CHOICES = {
+    ("ai", "provider"): {
+        "OpenRouter — есть бесплатные модели": "openrouter",
+        "DeepSeek API — платно, но копейки": "deepseek",
+        "Ollama — на вашем компьютере, бесплатно": "ollama",
+        "Другой сервис (OpenAI-совместимый)": "custom",
+    },
     ("search", "mode"): {"По ссылке (подходящие к резюме)": "resume", "По запросу (общий поиск hh)": "query"},
     ("search", "area"): {label: code for code, label in AREAS.items()},
     ("browser", "channel"): {"Google Chrome": "chrome", "Microsoft Edge": "msedge"},
@@ -496,6 +527,15 @@ class SettingsPage(Page):
                 anchor="w", padx=16, pady=(12, 4))
             for section, key, label, kind, hint in items:
                 self._add_field(card, section, key, label, kind, hint)
+            if section_title == "ИИ-ответы в чатах":
+                row = ctk.CTkFrame(card, fg_color="transparent")
+                row.pack(fill="x", padx=16, pady=(8, 0))
+                self.ai_test_btn = _secondary_button(row, "Проверить подключение к ИИ", self.test_ai, width=240, height=32)
+                self.ai_test_btn.pack(side="left")
+                ctk.CTkLabel(row, text="Где взять ключ: OpenRouter — openrouter.ai → Keys; DeepSeek — "
+                                       "platform.deepseek.com → API keys; Ollama — ключ не нужен",
+                             text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w", justify="left",
+                             wraplength=480).pack(side="left", padx=12)
             ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
 
         danger = Card(scroll)
@@ -540,6 +580,9 @@ class SettingsPage(Page):
             elif kind in ("int", "float"):
                 widget = ctk.CTkEntry(row, width=120)
                 widget.pack(anchor="w")
+            elif kind == "secret":
+                widget = ctk.CTkEntry(row, show="•")
+                widget.pack(fill="x")
             else:
                 widget = ctk.CTkEntry(row)
                 widget.pack(fill="x")
@@ -571,6 +614,15 @@ class SettingsPage(Page):
                 widget.insert(0, ", ".join(value) if kind == "list" else str(value))
 
     def save(self) -> None:
+        cfg = self.collect()
+        if cfg is None:
+            return
+        save_config(cfg, self.app.config_path)
+        self.app.reload_config()
+        self.app.toast("Настройки сохранены")
+
+    def collect(self) -> Config | None:
+        """Значения формы → Config с проверкой. None — ошибка уже показана пользователю."""
         cfg = self.app.read_config_file(check_search_url=False)
         try:
             for (section, key), (kind, widget) in self.widgets.items():
@@ -585,7 +637,7 @@ class SettingsPage(Page):
                     value = CHOICES[(section, key)][widget.get()]
                 elif kind == "list":
                     value = [w.strip() for w in widget.get().split(",") if w.strip()]
-                elif kind == "str":
+                elif kind in ("str", "secret"):
                     value = widget.get().strip()
                 else:  # int / float
                     raw = widget.get().strip().replace(",", ".")
@@ -598,13 +650,33 @@ class SettingsPage(Page):
                 validate_search_source(cfg)
         except ValueError:
             messagebox.showerror(APP_NAME, f"Неверное число в поле «{self._label(section, key)}»")
-            return
+            return None
         except ConfigError as e:
             messagebox.showerror(APP_NAME, f"Не сохранено: {e}")
+            return None
+        return cfg
+
+    def test_ai(self) -> None:
+        """Короткий запрос к нейросети с текущими (даже несохранёнными) настройками — в фоне."""
+        cfg = self.collect()
+        if cfg is None:
             return
-        save_config(cfg, self.app.config_path)
-        self.app.reload_config()
-        self.app.toast("Настройки сохранены")
+        self.ai_test_btn.configure(state="disabled", text="Проверяю…")
+
+        def work():
+            try:
+                client = AiClient(cfg.ai)
+                answer = client.ping()
+                result = (True, f"Нейросеть отвечает ✓\n\n{client.describe()}\nОтвет: «{answer[:100]}»")
+            except AiError as e:
+                result = (False, f"Не получилось: {e}")
+            self.app.events.put(("ai_test", *result))  # окно трогаем только из главного потока (_poll)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ai_tested(self, ok: bool, text: str) -> None:
+        self.ai_test_btn.configure(state="normal", text="Проверить подключение к ИИ")
+        (messagebox.showinfo if ok else messagebox.showerror)(APP_NAME, text)
 
     @staticmethod
     def _label(section: str, key: str) -> str:
@@ -799,6 +871,7 @@ class App(ctk.CTk):
             messagebox.showerror(APP_NAME, f"Ошибка в config.toml: {e}")
             return
         self.pages["responses"].refresh_config(self.cfg)
+        self.pages["chats"].refresh_config(self.cfg)
 
     def _load_prefs(self) -> dict:
         try:
@@ -930,7 +1003,8 @@ class App(ctk.CTk):
             summary = f"отправлено {self.stats.applied}, пропущено {sum(self.stats.skipped.values())}, " \
                       f"ошибок {self.stats.failed}"
         else:
-            summary = f"прочитано отказов {self.chat_stats.opened}, ошибок {self.chat_stats.failed}"
+            summary = (f"прочитано отказов {self.chat_stats.opened}, ответов ИИ {self.chat_stats.answered}, "
+                       f"ждут вас {len(self.chat_stats.other_unread)}")
         if code == EXIT_OK:
             self._set_status("●  Готово", GREEN, f"{summary} • {minutes} мин {seconds} с")
         elif code == EXIT_STOPPED:
@@ -951,6 +1025,8 @@ class App(ctk.CTk):
                     self.console.add(levelno, text)
                     if "▶" in text and self.running_kind == "responses":
                         self.pages["responses"].current.configure(text=text.split("▶", 1)[1].strip())
+                elif event[0] == "ai_test":
+                    self.pages["settings"]._ai_tested(event[1], event[2])
                 elif event[0] == "done":
                     self._finish(event[1], event[2])
         except queue.Empty:
