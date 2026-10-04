@@ -27,7 +27,7 @@ from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_chats, run_responses
 from .chats import ChatStats
 from .config import (AI_PROVIDERS, AREAS, EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config,
                      validate_config, validate_search_source)
-from .ai import AiClient, AiError
+from .ai import AiClient, AiError, shutdown_ollama
 from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLES, Playground, fill_sample_form
 from .results import HH_DAILY_LIMIT, Summary, load_summary
 from .search import describe_search
@@ -36,7 +36,7 @@ from .paths import app_root, bundled
 from .runner import RunOptions, Stats
 
 APP_NAME = "HH-Auto-Response"
-APP_VERSION = "1.0.0-beta"
+APP_VERSION = "1.0.2-beta"
 
 # --- палитра: (светлая тема, тёмная тема) ---
 ACCENT = ("#2563EB", "#3B82F6")
@@ -1248,9 +1248,53 @@ class App(ctk.CTk):
             self.closing = True
             self.stop()
             # если шаг завис — через 25 с закрываемся принудительно
-            self.after(25_000, lambda: os._exit(0))
+            self.after(25_000, force_exit)
             return
         self.destroy()
+
+
+def force_exit() -> None:
+    """Жёсткий выход, когда рабочий шаг завис. os._exit пропускает уборку — поэтому сами закрываем
+    браузер с драйвером Playwright (node.exe → chrome) и Ollama, если её запускали мы."""
+    try:
+        shutdown_ollama()
+        for pid in _child_pids({"node.exe", "ollama.exe"}):
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    finally:
+        os._exit(0)
+
+
+def _child_pids(names: set[str]) -> list[int]:
+    """PID прямых дочерних процессов с такими именами (Windows; Excel и проводник, открытые из приложения, не трогаем)."""
+    if sys.platform != "win32":
+        return []
+    from ctypes import wintypes
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    kernel = ctypes.windll.kernel32
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snapshot = kernel.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snapshot or snapshot == wintypes.HANDLE(-1).value:
+        return []
+    me, found = os.getpid(), []
+    entry = Entry()
+    entry.dwSize = ctypes.sizeof(Entry)
+    try:
+        ok = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            if entry.th32ParentProcessID == me and entry.szExeFile.lower() in names:
+                found.append(entry.th32ProcessID)
+            ok = kernel.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel.CloseHandle(wintypes.HANDLE(snapshot))
+    return found
 
 
 def self_test() -> int:

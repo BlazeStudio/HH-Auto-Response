@@ -7,6 +7,7 @@ Ollama (нейросеть на своём компьютере) и т.п. Не�
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -39,7 +40,8 @@ kind:
   это НИКОГДА не "info".
 - "human" — нужен ответ самого человека: приглашение на собеседование, предложение созвониться, тестовое
   задание, просьба прислать документы, контакты или персональные данные, вопрос о деньгах/оплате,
-  ссылка на внешний сайт, или вопрос, на который нельзя честно ответить по резюме и контексту.
+  ссылка на внешний сайт. Отсутствие нужного опыта в резюме — НЕ причина для "human": это "question",
+  на который отвечаешь честно (см. правила ниже).
 - "wait" — последнее сообщение в переписке от соискателя: он уже ответил и ждёт работодателя.
 
 question — текст вопроса, на который отвечаешь (для kind = "question"), иначе "".
@@ -58,6 +60,10 @@ reply — ответ для kind = "question", иначе "".
   «Формат работы» (если там нет офиса, на вопрос про офис ответь, что предпочитаешь указанный формат);
 - сроки выхода на работу, зарплату, готовность к переезду бери ТОЛЬКО из контекста соискателя;
   если там этого нет — «Готов обсудить на собеседовании». Никогда не придумывай сроки, суммы и ссылки;
+- если прямого опыта с тем, о чём спрашивают, в резюме нет: найди смежный опыт и подай его выгодно
+  («работал со смежным X, с Y знаком на базовом уровне — быстро освою»); если и смежного нет — честно
+  «Особого опыта с Y не было, готов быстро освоить». Опыт, которого нет в резюме, не приписывай;
+- пиши своими словами, живо и по делу; не копируй строки резюме дословно и не перечисляй весь стек подряд;
 - никаких приветствий, подписей, ссылок, телефонов, почты и паспортных данных."""
 
 
@@ -85,8 +91,13 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
   сумма из контекста («от 150 000» → вилка, начинающаяся со 150 000). Если в контексте этого нет — текстом
   «Готов обсудить на собеседовании», а в вариантах — «Готов обсудить» или ближайший честный вариант;
 - формат работы — из строки резюме «Формат работы»; не соглашайся на то, чего там нет;
-- can_answer = false: тестовое задание, код, решение задачи, ссылка на портфолио/GitHub, документы, контакты,
-  персональные данные, оплата — или если на вопрос нельзя честно ответить по резюме и контексту."""
+- нет прямого опыта с тем, о чём спрашивают: в тексте — подай смежный опыт выгодно («работал со смежным X,
+  с Y знаком на базовом уровне — быстро освою») или честно «особого опыта с Y не было, готов освоить»;
+  в вариантах — ближайший честный вариант («базовый», «до 1 года», «нет опыта»). Опыт, которого нет
+  в резюме, не приписывай. Отсутствие опыта — НЕ причина для can_answer = false;
+- пиши своими словами, живо и по делу; не копируй строки резюме дословно и не перечисляй весь стек подряд;
+- can_answer = false — ТОЛЬКО если просят: тестовое задание, код, решение задачи, ссылку на портфолио/GitHub,
+  документы, контакты, персональные данные или оплату."""
 
 
 @dataclass
@@ -116,6 +127,39 @@ class FormFill:
     answers: list[FormAnswer] = field(default_factory=list)
 
 
+_ollama_proc: subprocess.Popen | None = None  # Ollama, которую запустили мы сами
+_ollama_models: set[tuple[str, str]] = set()  # (адрес, модель), которые мы загружали в память
+
+
+def shutdown_ollama() -> None:
+    """При выходе: выгрузить наши модели из видеопамяти и остановить Ollama, если её запускали мы.
+
+    Ollama, которую запустил сам пользователь, продолжает работать — из неё только выгружаются наши модели.
+    """
+    global _ollama_proc
+    for root, model in list(_ollama_models):
+        try:
+            body = json.dumps({"model": model, "keep_alive": 0}).encode()
+            request = urllib.request.Request(f"{root}/api/generate", data=body,
+                                             headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=3):
+                pass
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+    _ollama_models.clear()
+    proc, _ollama_proc = _ollama_proc, None
+    if proc is None or proc.poll() is not None:
+        return
+    if os.name == "nt":  # вместе с дочерними процессами модели (ollama runner держит видеопамять)
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    else:
+        proc.terminate()
+
+
+atexit.register(shutdown_ollama)
+
+
 def ensure_ollama(base_url: str, wait: float = 20) -> bool:
     """Если Ollama не запущена — запускает её в фоне (Windows: обычная установка с ollama.com). True — отвечает."""
     root = base_url.rsplit("/v1", 1)[0]
@@ -133,8 +177,10 @@ def ensure_ollama(base_url: str, wait: float = 20) -> bool:
     exe = next((c for c in candidates if c and os.path.exists(c)), None)
     if not exe:
         return False
+    global _ollama_proc
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-    subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+    _ollama_proc = subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    creationflags=flags)
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         time.sleep(1)
@@ -242,6 +288,8 @@ class AiClient:
         if cfg.provider == "ollama" and not ensure_ollama(self.base_url):
             raise AiError("Ollama не запущена и не нашлась — установите её с ollama.com и скачайте модель: "
                           f"ollama pull {self.model}")
+        if cfg.provider == "ollama":
+            _ollama_models.add((self.base_url.rsplit("/v1", 1)[0], self.model))
 
     def describe(self) -> str:
         return f"{self.cfg.provider}: {self.model} ({self.base_url})"
@@ -325,7 +373,7 @@ class AiClient:
                 answers.append(FormAnswer(q, choices=picked))
                 continue
             # Зарплата и сроки — слишком важны, чтобы доверять модели: считаем сами
-            fixed = context_topic_answer(q, context)
+            fixed = context_topic_answer(q, context) or language_answer(q, resume, context)
             if fixed is not None:
                 answers.append(fixed)
                 continue
@@ -336,12 +384,15 @@ class AiClient:
                     break
                 item = self._answer_question(resume, context, vacancy, q)
             if not item.get("can_answer", True):
-                # Модель отказалась, а в вариантах есть «Готов обсудить» — это честный ответ (кроме опасных тем)
-                neutral = _neutral_option(q)
-                if neutral is not None and not SENSITIVE.search(q.text):
-                    answers.append(FormAnswer(q, choices=[neutral]))
-                    continue
-                return FormFill(False, f"вопрос {n}: " + (str(item.get("reason", "")).strip() or "нельзя честно ответить"))
+                reason = str(item.get("reason", "")).strip() or "нельзя честно ответить"
+                # Отказываться можно только из-за теста/кода/ссылок/документов/оплаты — не из-за нехватки опыта
+                if SENSITIVE.search(q.text) or _REFUSE_OK.search(q.text):
+                    return FormFill(False, f"вопрос {n}: {reason}")
+                fallback = self._honest_fallback(resume, context, vacancy, q)
+                if fallback is None:
+                    return FormFill(False, f"вопрос {n}: {reason}")
+                answers.append(fallback)
+                continue
             try:
                 answers.append(self._to_answer(q, item, n))
             except AiError:
@@ -350,6 +401,24 @@ class AiClient:
                     raise
                 answers.append(FormAnswer(q, choices=[neutral]))
         return FormFill(True, answers=answers)
+
+    def _honest_fallback(self, resume: str, context: str, vacancy: str, q: FormQuestion) -> FormAnswer | None:
+        """Модель отказалась из-за «нет опыта в резюме» — так нельзя. Даём честный ответ вместо пропуска вакансии."""
+        forced = FormQuestion(q.index, q.text + "\n(Отказаться нельзя: если прямого опыта нет — подай смежный опыт "
+                                                  "или честно ответь, что особого опыта не было и готов освоить; "
+                                                  "из вариантов выбери ближайший честный.)", q.kind, q.options)
+        item = self._answer_question(resume, context, vacancy, forced)
+        if item.get("can_answer", True):
+            try:
+                return self._to_answer(q, item, q.index + 1)
+            except AiError:
+                pass
+        if q.kind == "text":
+            return FormAnswer(q, text="Опыта с этим не было, но готов быстро освоить.")
+        k = _modest_option(q)
+        if k is None:
+            k = _neutral_option(q)
+        return FormAnswer(q, choices=[k]) if k is not None else None
 
     def _answer_question(self, resume: str, context: str, vacancy: str, q: FormQuestion) -> dict:
         kind = {"text": "текстовый ответ", "single": "выбери ОДИН вариант",
@@ -487,6 +556,31 @@ def context_topic_answer(q: FormQuestion, context: str) -> FormAnswer | None:
                 if bounds and bounds[0] <= wanted < bounds[1] or (bounds and bounds[0] == bounds[1] == wanted):
                     return FormAnswer(q, choices=[k])
     return None  # текстовый ответ про зарплату/сроки по контексту — пусть сформулирует нейросеть
+
+
+# Причины, по которым анкету правда нельзя заполнять за человека
+_REFUSE_OK = re.compile(r"тестов\w* задани|тестовое|\bзадани[еяю]\b|реши(?:те)? задач|решени[еяю] задач|"
+                        r"напиши(?:те)? (?:код|функци|запрос|скрипт|программ)|ссылк|github|gitlab|портфолио|"
+                        r"документ|контакт|паспорт|оплат", re.I)
+# Скромные варианты: «нет опыта», «базовый», «A1» — честный выбор, когда в резюме ничего нет
+_MODEST = re.compile(r"нет опыта|не было|не работал|не владею|базов|начальн|elementary|beginner|\bA1\b|A1–A2|A1-A2|"
+                     r"до 1 года|менее (?:1|года)", re.I)
+_LANG_Q = re.compile(r"английск|english|немецк|китайск|иностранн\w* язык|уровень языка", re.I)
+_LANG_CTX = re.compile(r"английск|english|немецк|китайск|\b[ABC][12]\b|intermediate|upper|advanced|fluent", re.I)
+
+
+def _modest_option(q: FormQuestion) -> int | None:
+    return next((k for k, o in enumerate(q.options) if _MODEST.search(o)), None)
+
+
+def language_answer(q: FormQuestion, resume: str, context: str) -> FormAnswer | None:
+    """Уровень языка: если в резюме и контексте о нём ничего — самый скромный вариант, а не «угаданный» моделью."""
+    if not _LANG_Q.search(q.text) or _LANG_CTX.search(f"{resume}\n{context}"):
+        return None
+    if q.kind == "text":
+        return FormAnswer(q, text="Базовый уровень, читаю техническую документацию.")
+    k = _modest_option(q)
+    return FormAnswer(q, choices=[k if k is not None else 0]) if q.options else None
 
 
 _NEUTRAL = re.compile(r"готов обсудить|обсудим|по договор[её]нности|обсуждается|на собеседовании", re.I)

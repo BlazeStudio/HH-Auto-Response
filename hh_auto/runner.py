@@ -14,7 +14,7 @@ from .browser import FatalError
 from .config import Config
 from .logger import log
 from .responder import Responder, Status
-from .search import build_search_url, describe_hh_filters, has_next_page, open_results_page, results_page_url
+from .search import build_search_url, describe_hh_filters, next_page_info, open_results_page, results_page_url
 from .results import ResultsBook
 from .state import State
 
@@ -77,6 +77,7 @@ def run(
             f"обработаны в прошлых запусках: {done_before}"
         )
 
+        skipped_before = sum(stats.skipped.values())
         for i, vac in enumerate(vacancies, 1):
             tag = f"[стр. {page_num + 1}, {i}/{len(vacancies)}]"
             seen = state.seen(vac.id, opts.retry_skipped)
@@ -148,9 +149,15 @@ def run(
             responder.back_to_results(url)
             _sleep(limits.delay_min, limits.delay_max, "перед следующей вакансией")
 
-        if not has_next_page(page):
-            log.info("  это последняя страница выдачи")
+        skipped_on_page = sum(stats.skipped.values()) - skipped_before
+        if skipped_on_page >= len(vacancies) * 0.8:
+            log.warning(f"  ! на этой странице фильтры отсеяли {skipped_on_page} из {len(vacancies)} вакансий — "
+                        "если откликов мало, проверьте [filters] (особенно «только со словами»)")
+        has_next, why = next_page_info(page, page_num)
+        if not has_next:
+            log.info(f"  выдача закончилась: {why}")
             return
+        log.info(f"  дальше: {why}")
         _sleep(limits.page_delay_min, limits.page_delay_max, "перед следующей страницей выдачи")
 
     log.info(f"Пройдено максимальное число страниц ([limits] max_pages = {limits.max_pages})")

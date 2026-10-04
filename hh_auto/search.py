@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -137,5 +138,39 @@ def open_results_page(page: Page, url: str) -> list[Vacancy]:
     return vacancies
 
 
-def has_next_page(page: Page) -> bool:
-    return page.locator(S.PAGER_NEXT).count() > 0
+_PAGER_JS = """
+(s) => ({
+  next: document.querySelectorAll(s.next).length,
+  pages: Array.from(document.querySelectorAll(s.page)).map((a) => parseInt(a.textContent, 10)).filter((n) => !isNaN(n)),
+  cards: document.querySelectorAll(s.card).length,
+  header: (document.querySelector(s.header) || {}).innerText || '',
+})
+"""
+
+
+def next_page_info(page: Page, page_num: int) -> tuple[bool, str]:
+    """Есть ли страница после page_num (с нуля) и почему так решили — для понятного лога.
+
+    hh то показывает стрелку «дальше», то только номера страниц (стрелки нет, а страниц 9),
+    поэтому смотрим на всё: стрелку, номера страниц и «Найдено N вакансий» в шапке.
+    """
+    try:
+        info = page.evaluate(_PAGER_JS, {"next": S.PAGER_NEXT, "page": S.PAGER_PAGE, "card": S.VACANCY_CARD,
+                                         "header": S.SEARCH_HEADER})
+    except Exception:
+        return False, "не удалось прочитать переключатель страниц"
+    current = page_num + 1
+    found = re.search(r"Найден\w*\s+([\d\s ]+)", info["header"])
+    total = int(re.sub(r"\D", "", found.group(1))) if found else None
+    total_note = f"найдено {total} вакансий, " if total else ""
+    if info["next"]:
+        return True, "есть кнопка «дальше»"
+    if info["pages"]:  # номера страниц видны — решают они (на последней странице карточек меньше)
+        if max(info["pages"]) > current:
+            return True, f"{total_note}страниц не меньше {max(info['pages'])}"
+        return False, f"{total_note}это последняя страница ({current} из {max(info['pages'])})"
+    if total and info["cards"] and total > current * info["cards"]:
+        return True, f"{total_note}по {info['cards']} на странице"
+    if total is not None:
+        return False, f"{total_note}это последняя страница ({current})"
+    return False, "переключателя страниц нет — выдача на одной странице"
