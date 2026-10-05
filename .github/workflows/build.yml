@@ -1,15 +1,22 @@
-# Сборка приложения сразу под Windows, macOS (Apple Silicon и Intel) и Linux на машинах GitHub.
-# Запуск: вкладка Actions → «Сборка» → Run workflow (архивы — в Artifacts внизу страницы запуска),
-# или git-тег вида v1.0.3-beta: тогда архивы ещё и прикладываются к релизу на GitHub.
+# Сборка приложения под Windows, macOS (Apple Silicon и Intel) и Linux на машинах GitHub.
+#
+# Релиз: Releases → Draft a new release → тег вида v1.0.3-beta → Publish release.
+#   Workflow запустится сам, соберёт все системы и приложит архивы и SHA256SUMS.txt к этому релизу
+#   (~10–15 минут). Описание релиза не трогается.
+# Пробная сборка без релиза: Actions → «Сборка» → Run workflow — архивы будут в Artifacts запуска.
 name: Сборка
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
-  push:
-    tags: ["v*"]
 
 permissions:
   contents: write  # приложить архивы к релизу
+
+concurrency:  # повторная публикация того же релиза не запускает две сборки параллельно
+  group: build-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -50,8 +57,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Релиз
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: Архивы → релиз
+    if: github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -59,8 +66,22 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          prerelease: ${{ contains(github.ref_name, 'beta') }}
-          generate_release_notes: true
+
+      - name: Версия в именах файлов и контрольные суммы
+        working-directory: dist
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${TAG#v}"
+          # HH-Auto-Response-windows.zip → HH-Auto-Response-1.0.3-beta-windows.zip
+          for f in HH-Auto-Response-*; do
+            mv "$f" "HH-Auto-Response-${version}-${f#HH-Auto-Response-}"
+          done
+          sha256sum HH-Auto-Response-* > SHA256SUMS.txt
+          ls -la
+
+      - name: Приложить к релизу
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "${{ github.repository }}"
