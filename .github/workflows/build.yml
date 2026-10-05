@@ -1,0 +1,66 @@
+# Сборка приложения сразу под Windows, macOS (Apple Silicon и Intel) и Linux на машинах GitHub.
+# Запуск: вкладка Actions → «Сборка» → Run workflow (архивы — в Artifacts внизу страницы запуска),
+# или git-тег вида v1.0.3-beta: тогда архивы ещё и прикладываются к релизу на GitHub.
+name: Сборка
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write  # приложить архивы к релизу
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows, os: windows-latest, optional: false }
+          - { name: macOS Apple Silicon, os: macos-latest, optional: false }
+          - { name: macOS Intel, os: macos-15-intel, optional: true }  # последний образ GitHub с Intel
+          - { name: Linux, os: ubuntu-22.04, optional: false }         # старая glibc — запустится на большем числе систем
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Системные библиотеки (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends binutils libtk8.6 libxft2
+
+      - name: Сборка
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python packaging/build.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HH-Auto-Response-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            dist/HH-Auto-Response-*.zip
+            dist/HH-Auto-Response-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Релиз
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: ${{ contains(github.ref_name, 'beta') }}
+          generate_release_notes: true

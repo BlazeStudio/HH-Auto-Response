@@ -4,6 +4,7 @@
     python ai_test.py --demo           прогнать готовую анкету из примеров
     python ai_test.py --show-prompt    показать, что получает нейросеть, и выйти
     python ai_test.py --form           как ИИ заполнит пример анкеты при отклике (текст + варианты)
+    python ai_test.py --letter         какое сопроводительное письмо ИИ напишет к примеру вакансии
     python ai_test.py --fetch-resume   сначала загрузить свежее резюме с hh (откроется браузер)
 
 В диалоге:  текст — сообщение от «Робота-рекрутера»;  hr: текст — от живого HR;
@@ -18,7 +19,8 @@ import sys
 from pathlib import Path
 
 from hh_auto.ai import AiError
-from hh_auto.ai_playground import ROBOT, SAMPLE_FORM, SAMPLES, Playground, Turn, fill_sample_form
+from hh_auto.ai_playground import (ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, Turn, fill_sample_form,
+                                   write_sample_letter)
 from hh_auto.config import ConfigError, load_config
 
 ROOT = Path(__file__).resolve().parent
@@ -49,6 +51,7 @@ def main() -> int:
     p.add_argument("--show-prompt", action="store_true", help="показать, что получает нейросеть, и выйти")
     p.add_argument("--fetch-resume", action="store_true", help="загрузить свежее резюме с hh")
     p.add_argument("--form", action="store_true", help="заполнить пример анкеты при отклике")
+    p.add_argument("--letter", action="store_true", help="написать письмо к примеру вакансии")
     p.add_argument("--raw", action="store_true", help="показывать сырой ответ модели")
     args = p.parse_args()
 
@@ -77,6 +80,17 @@ def main() -> int:
     print("═" * 70)
     if args.show_prompt:
         print(pg.preview())
+        return 0
+
+    if args.letter:
+        title, company, description = SAMPLE_VACANCY
+        print(f"Пример вакансии: «{title}» — {company}\n{description}\n")
+        try:
+            text, seconds = write_sample_letter(pg)
+        except AiError as e:
+            print(f"  ошибка ИИ: {e}")
+            return 1
+        print(f"Письмо ИИ ({seconds:.1f} с, {len(text)} симв.):\n{text}")
         return 0
 
     if args.form:

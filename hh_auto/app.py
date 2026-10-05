@@ -42,27 +42,51 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
 
     code = _with_browser(cfg, root, work)
     log_summary(stats, time.monotonic() - started)
-    log_totals(results.summary())
+    summary = results.summary()
+    log_totals(summary)
+    notify_summary(cfg, f"Отклики: {_ending(code)}",
+                   f"Отправлено {stats.applied} (с письмом {stats.with_letter}), пропущено {sum(stats.skipped.values())}, "
+                   f"ошибок {stats.failed}. Сегодня всего {summary.today.applied}.")
     if results.save_xlsx():
         log.info(f"таблица откликов (Excel): {results.xlsx_path}")
     log.info(f"подробный лог: {log_path}")
     return code
 
 
+def _ending(code: int) -> str:
+    return {EXIT_OK: "готово", EXIT_STOPPED: "остановлено"}.get(code, "остановлено с ошибкой")
+
+
+def notify_summary(cfg: Config, title: str, text: str) -> None:
+    """Уведомление по итогам — только если вы его разрешили ([notify])."""
+    if cfg.notify.desktop or cfg.notify.telegram:
+        from . import notify
+
+        notify.send(cfg.notify, f"HH-Auto-Response — {title}", text)
+
+
 def _form_ai(page, cfg: Config, root: Path):
-    """ИИ для анкет работодателей при отклике: включён ли, отвечает ли, плюс текст резюме."""
+    """ИИ для откликов: анкеты работодателей ([ai] enabled) и письма ([letter] mode = ai). Плюс текст резюме."""
+    letters = cfg.letter.mode == "ai"
     if not cfg.ai.enabled:
         log.info("  анкеты работодателей: без ИИ (отвечаем только на один вопрос о зарплате)")
-        return None, ""
+        if not letters:
+            return None, ""
     from .ai import AiClient, AiError
     from .resume import fetch_resume_text
 
     try:
         ai = AiClient(cfg.ai)
     except AiError as e:
+        if letters:
+            raise FatalError(f"письма пишет нейросеть ([letter] mode = ai), но она недоступна: {e}. "
+                             "Проверьте «Настройки» → «ИИ-ответы в чатах» → «Проверить подключение к ИИ»") from e
         log.warning(f"  ! ИИ для анкет недоступен ({e}) — отвечаем только на вопрос о зарплате")
         return None, ""
-    log.info(f"  анкеты работодателей заполняет ИИ: {ai.describe()}")
+    if cfg.ai.enabled:
+        log.info(f"  анкеты работодателей заполняет ИИ: {ai.describe()}")
+    if letters or cfg.letter.mode == "generate" and cfg.ai.enabled:
+        log.info(f"  сопроводительные письма {'пишет' if letters else 'без подписки hh пишет'} ИИ: {ai.describe()}")
     return ai, fetch_resume_text(page, cfg, root / "data" / "resume.txt")
 
 
@@ -71,6 +95,9 @@ def run_chats(cfg: Config, dry_run: bool, root: Path, stats: ChatStats, log_path
     started = time.monotonic()
     code = _with_browser(cfg, root, lambda page: read_rejections(page, cfg, dry_run, stats, root))
     log_chat_summary(stats, time.monotonic() - started)
+    notify_summary(cfg, f"Чаты: {_ending(code)}",
+                   f"Прочитано отказов {stats.opened}, ответов ИИ {stats.answered}, "
+                   f"ждут вашего ответа {len(stats.other_unread)}.")
     if (stats.answered or dry_run and cfg.ai.enabled) and ResultsBook(root).save_xlsx():
         log.info(f"ответы ИИ — в таблице: {root / 'logs' / 'responses.xlsx'} (лист «Ответы в чатах»)")
     log.info(f"подробный лог: {log_path}")
@@ -113,6 +140,13 @@ def _with_browser(cfg: Config, root: Path, work) -> int:
                     context.close()
                 except Exception:
                     pass
+
+
+def run_login(cfg: Config, root: Path, log_path: Path) -> int:
+    """Только вход в hh: открыть браузер, дождаться входа и сохранить сессию (первый запуск на сервере)."""
+    code = _with_browser(cfg, root, lambda page: log.success("Сессия сохранена — можно запускать отклики и чаты"))
+    log.info(f"подробный лог: {log_path}")
+    return code
 
 
 def fetch_resume(cfg: Config, root: Path, log_path: Path) -> int:

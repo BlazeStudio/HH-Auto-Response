@@ -140,7 +140,8 @@ def run(
             if errors_in_row >= limits.max_consecutive_errors:
                 raise FatalError(
                     f"{errors_in_row} ошибок подряд — похоже, hh поменял вёрстку или слетела сессия. "
-                    f"Скриншоты и HTML страниц: {snapshots_dir}"
+                    + (f"Скриншоты и HTML страниц: {snapshots_dir}" if cfg.logs.snapshots else
+                       "Включите снимки страниц ([logs] snapshots), чтобы было по чему разобраться")
                 )
             if stats.applied >= max_responses:
                 log.success(f"Достигнут лимит этого запуска: {max_responses} откликов")

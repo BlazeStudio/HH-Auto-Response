@@ -123,18 +123,19 @@ class Ai:
     timeout: float = 60  # ожидание ответа нейросети, сек
 
 
-LETTER_MODES = ("generate", "template", "none")
+LETTER_MODES = ("generate", "ai", "template", "none")
 
 
 @dataclass
 class Letter:
-    # generate — кнопка hh «Сгенерировать» (нужна подписка), template — готовый текст template_text,
-    # none — откликаться без письма
+    # generate — кнопка hh «Сгенерировать» (нужна подписка), ai — пишет нейросеть из [ai] (подписка не нужна),
+    # template — готовый текст template_text, none — откликаться без письма
     mode: str = "generate"
     template_text: str = ""  # для mode = template; можно вставить {vacancy} и {company}
     generate_timeout: float = 60  # сколько ждать генерацию письма, сек
     min_length: int = 30  # письмо короче считаем несгенерированным
     fallback_text: str = ""  # запасной текст, если генерация не удалась ("" = пропустить вакансию)
+    ai_max_chars: int = 900  # длина письма нейросети (mode = ai или запасной вариант для generate)
 
 
 @dataclass
@@ -185,6 +186,23 @@ class Geo:
 
 
 @dataclass
+class Logs:
+    # скриншот и HTML страницы при каждой ошибке (logs/snapshots) — по ним чинят селекторы, если hh поменял
+    # вёрстку. Занимают место (~1–3 МБ на снимок); false — не сохранять
+    snapshots: bool = True
+
+
+@dataclass
+class Notify:
+    # уведомление по итогам запуска (откликов отправлено, пропущено, ошибок). Включается только с вашего
+    # разрешения: приложение спросит после первого запуска, в консоли — вручную здесь
+    desktop: bool = False  # системное уведомление Windows / macOS / Linux
+    telegram: bool = False  # сообщение в Telegram от вашего бота (удобно при запуске на сервере)
+    telegram_token: str = ""  # токен бота от @BotFather (или переменная окружения HH_TELEGRAM_TOKEN)
+    telegram_chat_id: str = ""  # ваш chat id (узнать: написать боту и открыть api.telegram.org/bot<токен>/getUpdates)
+
+
+@dataclass
 class Config:
     search_url: str
     resume_url: str = ""
@@ -199,6 +217,8 @@ class Config:
     ai: Ai = field(default_factory=Ai)
     browser: Browser = field(default_factory=Browser)
     geo: Geo = field(default_factory=Geo)
+    logs: Logs = field(default_factory=Logs)
+    notify: Notify = field(default_factory=Notify)
 
     @property
     def resume_id(self) -> str | None:
@@ -288,6 +308,8 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         ai=_section(Ai, raw.pop("ai", {}), "ai"),
         browser=_section(Browser, raw.pop("browser", {}), "browser"),
         geo=_section(Geo, raw.pop("geo", {}), "geo"),
+        logs=_section(Logs, raw.pop("logs", {}), "logs"),
+        notify=_section(Notify, raw.pop("notify", {}), "notify"),
     )
     if raw:
         raise ConfigError(f"неизвестные параметры в config: {', '.join(sorted(raw))}")

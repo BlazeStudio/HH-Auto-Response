@@ -134,3 +134,19 @@ def fill_sample_form(pg: Playground) -> tuple[FormFill, float]:
     started = time.monotonic()
     fill = pg.client.fill_form(pg.resume, pg.cfg.ai.context, pg.vacancy, SAMPLE_FORM)
     return fill, time.monotonic() - started
+
+
+SAMPLE_VACANCY = ("Backend-разработчик (Python)", "Тестовая компания", """Чем предстоит заниматься:
+разработка и поддержка микросервисов на Python (FastAPI), интеграции с внешними API, оптимизация запросов к PostgreSQL,
+участие в код-ревью и проектировании.
+Требования: опыт коммерческой разработки на Python от 2 лет, PostgreSQL, Docker, понимание REST и очередей сообщений
+(Kafka или RabbitMQ). Будет плюсом: Kubernetes, CI/CD, опыт в финтехе.
+Условия: удалённо или гибрид, официальное оформление.""")
+
+
+def write_sample_letter(pg: Playground) -> tuple[str, float]:
+    """Песочница писем: письмо нейросети к примеру вакансии. Ничего не отправляется."""
+    started = time.monotonic()
+    title, company, description = SAMPLE_VACANCY
+    text = pg.client.write_letter(pg.resume, pg.cfg.ai.context, title, company, description, pg.cfg.letter.ai_max_chars)
+    return text, time.monotonic() - started

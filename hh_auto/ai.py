@@ -64,6 +64,7 @@ reply — ответ для kind = "question", иначе "".
   («работал со смежным X, с Y знаком на базовом уровне — быстро освою»); если и смежного нет — честно
   «Особого опыта с Y не было, готов быстро освоить». Опыт, которого нет в резюме, не приписывай;
 - пиши своими словами, живо и по делу; не копируй строки резюме дословно и не перечисляй весь стек подряд;
+- ты говоришь как сам соискатель: никогда не пиши «в резюме не указано» / «в резюме нет» — пиши «опыта с X не было»;
 - никаких приветствий, подписей, ссылок, телефонов, почты и паспортных данных."""
 
 
@@ -80,8 +81,12 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
 - нельзя честно ответить: {"can_answer": false, "reason": "коротко почему"}
 
 Правила:
-- текст — от первого лица, грамотно по-русски («Меня заинтересовала…», «У меня 3 года опыта…»), коротко:
-  1–2 предложения, до {max_chars} символов;
+- текст — от первого лица, грамотно по-русски, коротко: 1–2 предложения, до {max_chars} символов;
+- отвечай ТОЛЬКО на заданный вопрос: не начинай с «Меня заинтересовала вакансия…» и не пересказывай резюме,
+  если об этом не спрашивали. На вопрос о доходе и грейде — только доход и грейд;
+- доход — это ОЖИДАНИЯ соискателя («Ожидаю от 150 000 ₽»), а не «текущий доход». Если в блоке
+  «РАСЧЁТ ПРОГРАММЫ» есть ожидаемый доход или грейд — используй их как есть, свои цифры не придумывай;
+- грейд — Junior / Middle / Senior, а не цифры;
 - варианты копируй ДОСЛОВНО из списка; для «выбери один» — ровно один вариант;
 - только факты из резюме и контекста; не выдумывай опыт, сроки, суммы, компании и ссылки;
 - стаж: общий — из строки «Опыт работы» в ключевых фактах; по отдельной технологии — только если он прямо
@@ -96,8 +101,28 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
   в вариантах — ближайший честный вариант («базовый», «до 1 года», «нет опыта»). Опыт, которого нет
   в резюме, не приписывай. Отсутствие опыта — НЕ причина для can_answer = false;
 - пиши своими словами, живо и по делу; не копируй строки резюме дословно и не перечисляй весь стек подряд;
+- ты говоришь как сам соискатель: никогда не пиши «в резюме не указано» / «в резюме нет» — пиши «опыта с X не было»;
 - can_answer = false — ТОЛЬКО если просят: тестовое задание, код, решение задачи, ссылку на портфолио/GitHub,
   документы, контакты, персональные данные или оплату."""
+
+
+LETTER_PROMPT = """Ты пишешь сопроводительное письмо соискателя к отклику на вакансию hh.ru.
+Тебе дают резюме соискателя, его дополнительный контекст и вакансию (название, компания, описание).
+
+Как писать:
+- от первого лица, по-русски, живо и по-деловому, без канцелярита и штампов («динамично развивающаяся компания»);
+- вакансию называй в кавычках, компанию — по имени: «Меня заинтересовала вакансия «Python-разработчик» в Ромашке»
+  (если компания не указана — просто «ваша компания»);
+- начни с «Здравствуйте!», затем 3–5 предложений: чем заинтересовала именно эта вакансия, 2–3 факта из резюме,
+  которые совпадают с требованиями вакансии (своими словами, с конкретикой: задачи, результаты, технологии),
+  и короткое предложение обсудить детали;
+- если требования вакансии шире опыта — сделай упор на смежный опыт и быстрое обучение, но опыт,
+  которого нет в резюме, не приписывай;
+- никаких контактов, ссылок, подписи с именем, заполнителей в квадратных скобках, темы письма и markdown;
+- зарплату упоминай только если о ней просят в вакансии и она есть в контексте;
+- до {max_chars} символов.
+
+Верни только текст письма."""
 
 
 @dataclass
@@ -400,7 +425,65 @@ class AiClient:
                 if neutral is None:
                     raise
                 answers.append(FormAnswer(q, choices=[neutral]))
+        answers = [self._no_invented_tech(resume, context, vacancy, a) for a in answers]
+        for answer in answers:
+            if answer.question.kind == "text":
+                answer.text = fix_text_answer(answer.question, answer.text, resume, context)
         return FormFill(True, answers=answers)
+
+    def _no_invented_tech(self, resume: str, context: str, vacancy: str, answer: FormAnswer) -> FormAnswer:
+        """Вопрос про технологию, которой нет в резюме, а модель «вспомнила» опыт с ней — не пропускаем выдумку."""
+        q = answer.question
+        techs = unbacked_tech(q, resume, context)
+        if not techs or not _EXPERIENCE_Q.search(q.text):
+            return answer
+        names = ", ".join(techs)
+        if q.kind != "text":  # в вариантах — скромный вариант вместо «1–3 года» с технологией, которой нет в резюме
+            modest = _modest_option(q)
+            if modest is not None and answer.choices and not any(_MODEST.search(q.options[c]) for c in answer.choices):
+                return FormAnswer(q, choices=[modest])
+            return answer
+        if not claims_experience(answer.text, techs):
+            return answer
+        forced = FormQuestion(q.index, f"{q.text}\n(В резюме НЕТ {names}. Не утверждай, что работал с этим: подай "
+                                       f"смежный опыт из резюме или честно скажи, что опыта с {names} не было.)", "text")
+        try:
+            item = self._answer_question(resume, context, vacancy, forced)
+            text = _clean_reply(str(item.get("text") or item.get("answer") or ""), self.cfg.max_answer_chars)
+        except AiError:
+            text = ""
+        if not text or claims_experience(text, techs):
+            text = f"С {names} напрямую не работал, но готов быстро освоить."
+        return FormAnswer(q, text=text)
+
+    def write_letter(self, resume: str, context: str, title: str, company: str, description: str,
+                     max_chars: int = 900) -> str:
+        """Сопроводительное письмо под вакансию — для тех, у кого нет подписки hh (кнопки «Сгенерировать»)."""
+        user = "\n\n".join([
+            f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
+            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
+            f"ВАКАНСИЯ: «{title}», компания {company}",
+            f"ОПИСАНИЕ ВАКАНСИИ:\n{description or '(не загрузилось — пиши по названию вакансии)'}",
+        ])
+        if "qwen3" in self.model.lower():
+            user += "\n\n/no_think"
+        messages = [{"role": "system", "content": LETTER_PROMPT.replace("{max_chars}", str(max_chars))},
+                    {"role": "user", "content": user}]
+        self.last_raw = self.complete(messages, max_tokens=900)
+        text = clean_letter(self.last_raw, max_chars)
+        known = f"{resume}\n{context}\n{title}\n{company}"
+        invented = letter_invented_tech(text, known)
+        if invented:  # технологии из вакансии, которых нет в резюме, модель записала себе в опыт — переписываем
+            names = ", ".join(invented)
+            messages += [{"role": "assistant", "content": self.last_raw},
+                         {"role": "user", "content": f"В резюме НЕТ {names}. Перепиши письмо: не упоминай их как свой "
+                                                     "опыт — только то, что есть в резюме. Верни только текст письма."}]
+            self.last_raw = self.complete(messages, max_tokens=900)
+            text = clean_letter(self.last_raw, max_chars)
+            invented = letter_invented_tech(text, known)
+            if invented:  # снова — убираем предложения с выдуманным опытом
+                text = drop_sentences_with(text, invented)
+        return text
 
     def _honest_fallback(self, resume: str, context: str, vacancy: str, q: FormQuestion) -> FormAnswer | None:
         """Модель отказалась из-за «нет опыта в резюме» — так нельзя. Даём честный ответ вместо пропуска вакансии."""
@@ -431,8 +514,11 @@ class AiClient:
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
             f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
             f"ВАКАНСИЯ: {vacancy}",
-            f"ВОПРОС:\n{question}",
         ])
+        hints = program_hints(q, resume, context)
+        if hints:
+            user += "\n\nРАСЧЁТ ПРОГРАММЫ (используй как есть):\n" + "\n".join(hints)
+        user += f"\n\nВОПРОС:\n{question}"
         if "qwen3" in self.model.lower():
             user += "\n\n/no_think"
         messages = [{"role": "system", "content": FORM_PROMPT.replace("{max_chars}", str(self.cfg.max_answer_chars))},
@@ -531,6 +617,97 @@ def _range(option: str) -> tuple[float, float] | None:
     return numbers[0], numbers[0]
 
 
+_GRADE_Q = re.compile(r"грейд|junior|middle|senior|джун|мидл|сеньор|синьор|уровень (?:специалиста|квалификации)", re.I)
+_INTEREST_Q = re.compile(r"заинтересова|почему|привлека|мотивац|интересн|о себе|расскажите", re.I)
+_OFFTOPIC_OPENER = re.compile(r"^\s*(?:Меня (?:заинтересовала|привлекла)|Мне интересна|Я заинтересован)[^.!?]*[.!?]\s*")
+
+
+_TECH_WORD = re.compile(r"\b[A-Za-z][A-Za-z0-9+#.\-]*[A-Za-z0-9+#]\b")
+_NO_EXPERIENCE = re.compile(r"не работал|не использовал|не было|нет (?:прямого |коммерческого )?опыта|напрямую не|"
+                            r"не применял|не доводилось|знаком на базовом|готов (?:быстро )?освоить|изуча", re.I)
+_EXPERIENCE_Q = re.compile(r"опыт|работал|использовал|владеете|знаете|уровень|сколько лет", re.I)
+
+
+def unbacked_tech(q: FormQuestion, resume: str, context: str) -> list[str]:
+    """Технологии из вопроса, которых нет ни в резюме, ни в контексте (Airflow, Kafka…)."""
+    known = f"{resume}\n{context}".lower()
+    words = dict.fromkeys(w for w in _TECH_WORD.findall(q.text) if len(w) > 1)
+    return [w for w in words if not re.search(rf"(?<![a-z0-9]){re.escape(w.lower())}(?![a-z0-9])", known)]
+
+
+def claims_experience(text: str, techs: list[str]) -> bool:
+    """Ответ утверждает опыт с технологией, которой нет в резюме, и без оговорки «не работал / готов освоить»."""
+    lowered = text.lower()
+    return any(t.lower() in lowered for t in techs) and not _NO_EXPERIENCE.search(text)
+
+
+def salary_phrase(context: str) -> str | None:
+    """Ожидаемый доход из контекста: «Уровень дохода от 150» → «от 150 000 ₽»."""
+    found = _SALARY_CTX.search(context)
+    if not found:
+        return None
+    marked = re.search(r"(\d[\d\s]{0,9}\d|\d)\s*(?:к\b|тыс|₽|руб)", context, re.I)  # «400к», «150 000 ₽»
+    start = marked.start() if marked else found.start()
+    amount = _amount(context[start:])
+    if not amount:
+        return None
+    window = context[max(0, min(found.start(), start) - 12):start + 25].lower()
+    prefix = "от " if re.search(r"\bот\b|не менее|минимум", window) else ""
+    net = " на руки" if "на руки" in context.lower() else ""
+    return f"{prefix}{amount:,}".replace(",", " ") + f" ₽{net}"
+
+
+def grade_from_resume(resume: str) -> str | None:
+    """Грейд по общему стажу из строки «Опыт работы: 3 года 2 месяца»."""
+    line = re.search(r"^Опыт работы:?\s*(.+)$", resume, re.M | re.I)
+    if not line:
+        return None
+    years = re.search(r"(\d+)\s*(?:год|лет)", line.group(1))
+    months = re.search(r"(\d+)\s*месяц", line.group(1))
+    total = (int(years.group(1)) if years else 0) + (int(months.group(1)) / 12 if months else 0)
+    if not years and not months:
+        return None
+    if total < 1:
+        return "Junior"
+    if total < 3:
+        return "Junior+"
+    if total < 6:
+        return "Middle"
+    return "Senior"
+
+
+def program_hints(q: FormQuestion, resume: str, context: str) -> list[str]:
+    """Факты, которые программа считает сама и подсказывает модели (доход, грейд)."""
+    hints = []
+    if _SALARY_Q.search(q.text) and (phrase := salary_phrase(context)):
+        hints.append(f"ожидаемый доход: {phrase}")
+    if _GRADE_Q.search(q.text) and (grade := grade_from_resume(resume)):
+        hints.append(f"грейд по стажу: {grade}")
+    return hints
+
+
+def fix_text_answer(q: FormQuestion, text: str, resume: str, context: str) -> str:
+    """Страховка для текстовых ответов: без вступления «Меня заинтересовала…» не по теме,
+    а в ответе о доходе — ровно сумма из контекста (иначе собираем ответ сами)."""
+    if not _INTEREST_Q.search(q.text):
+        text = _OFFTOPIC_OPENER.sub("", text).strip() or text
+        text = text[:1].upper() + text[1:]
+    text = re.sub(r"[Мм]ой текущий (?:уровень )?доход", "Мои ожидания по доходу —", text)
+    grade = grade_from_resume(resume) if _GRADE_Q.search(q.text) else None
+    if grade and not _SALARY_Q.search(q.text) and (grade not in text or text.startswith("Ожидаю")):
+        return f"Оцениваю свой уровень как {grade}."
+    phrase = salary_phrase(context) if _SALARY_Q.search(q.text) else None
+    if phrase:
+        digits = re.sub(r"\D", "", phrase)
+        if digits not in re.sub(r"\D", "", text) and digits[:-3] not in re.findall(r"\d+", text):
+            parts = [f"Ожидаю доход {phrase}."]
+            grade = grade_from_resume(resume) if _GRADE_Q.search(q.text) else None
+            if grade:
+                parts.append(f"Свой уровень оцениваю как {grade}.")
+            return " ".join(parts)
+    return text
+
+
 def context_topic_answer(q: FormQuestion, context: str) -> FormAnswer | None:
     """Зарплата и сроки: без данных в контексте — «Готов обсудить»; вилку зарплат выбираем расчётом.
 
@@ -563,7 +740,7 @@ _REFUSE_OK = re.compile(r"тестов\w* задани|тестовое|\bзад
                         r"напиши(?:те)? (?:код|функци|запрос|скрипт|программ)|ссылк|github|gitlab|портфолио|"
                         r"документ|контакт|паспорт|оплат", re.I)
 # Скромные варианты: «нет опыта», «базовый», «A1» — честный выбор, когда в резюме ничего нет
-_MODEST = re.compile(r"нет опыта|не было|не работал|не владею|базов|начальн|elementary|beginner|\bA1\b|A1–A2|A1-A2|"
+_MODEST = re.compile(r"^\s*нет\b|нет опыта|не было|не работал|не владею|базов|начальн|elementary|beginner|\bA1\b|A1–A2|A1-A2|"
                      r"до 1 года|менее (?:1|года)", re.I)
 _LANG_Q = re.compile(r"английск|english|немецк|китайск|иностранн\w* язык|уровень языка", re.I)
 _LANG_CTX = re.compile(r"английск|english|немецк|китайск|\b[ABC][12]\b|intermediate|upper|advanced|fluent", re.I)
@@ -627,3 +804,50 @@ def _clean_reply(text: str, max_chars: int) -> str:
     cut = text[:max_chars]
     end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
     return cut[: end + 1] if end > max_chars * 0.5 else cut.rstrip() + "…"
+
+
+_LETTER_JUNK = re.compile(r"\[[^\]]{2,40}\]|^\s*(?:Тема|Subject)\s*:|^\s*С уважением|^\s*---", re.I | re.M)
+
+
+def clean_letter(text: str, max_chars: int) -> str:
+    """Письмо от нейросети: без markdown, подписи, заполнителей «[Ваше имя]» и с абзацами как в hh."""
+    text = text.replace("**", "").replace("__", "").strip().strip('"«»').strip()
+    lines = []
+    for line in text.splitlines():
+        if _LETTER_JUNK.search(line):
+            if re.match(r"\s*С уважением", line, re.I):
+                break  # дальше подпись — имя и контакты не нужны
+            continue
+        lines.append(line.strip().lstrip("#").strip())
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    text = re.sub(r"^(Здравствуйте[!,.]|Добрый день[!,.])\s*(?=\S)", r"\1\n\n", text)  # приветствие — отдельной строкой
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+    return cut[: end + 1] if end > max_chars * 0.5 else cut.rstrip() + "…"
+
+
+def letter_invented_tech(text: str, known: str) -> list[str]:
+    """Технологии (латиницей) в письме, которых нет ни в резюме, ни в контексте, — если о них не сказано
+    честно («не работал», «готов освоить»)."""
+    known = known.lower()
+    found = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if _NO_EXPERIENCE.search(sentence):
+            continue
+        for word in _TECH_WORD.findall(sentence):
+            if len(word) > 1 and word not in found and not re.search(
+                    rf"(?<![a-z0-9]){re.escape(word.lower())}(?![a-z0-9])", known):
+                found.append(word)
+    return found
+
+
+def drop_sentences_with(text: str, words: list[str]) -> str:
+    """Убирает из письма предложения, где упомянуты эти слова (абзацы сохраняются)."""
+    paragraphs = []
+    for paragraph in text.split("\n"):
+        kept = [s for s in re.split(r"(?<=[.!?])\s+", paragraph)
+                if not any(re.search(rf"(?<![A-Za-z0-9]){re.escape(w)}(?![A-Za-z0-9])", s) for w in words)]
+        paragraphs.append(" ".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(paragraphs)).strip()

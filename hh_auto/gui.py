@@ -16,8 +16,10 @@ import sys
 import threading
 import time
 import traceback
+import webbrowser
 from datetime import datetime
 from pathlib import Path
+import tkinter
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -28,7 +30,7 @@ from .chats import ChatStats
 from .config import (AI_PROVIDERS, AREAS, EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config,
                      validate_config, validate_search_source)
 from .ai import AiClient, AiError, shutdown_ollama
-from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLES, Playground, fill_sample_form
+from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, fill_sample_form, write_sample_letter
 from .results import HH_DAILY_LIMIT, Summary, load_summary
 from .search import describe_search
 from .logger import SUCCESS, log, setup_logging
@@ -36,7 +38,8 @@ from .paths import app_root, bundled
 from .runner import RunOptions, Stats
 
 APP_NAME = "HH-Auto-Response"
-APP_VERSION = "1.0.2-beta"
+APP_VERSION = "1.0.3-beta"
+GITHUB_URL = "https://github.com/BlazeStudio/hh-auto-response"
 
 # --- палитра: (светлая тема, тёмная тема) ---
 ACCENT = ("#2563EB", "#3B82F6")
@@ -138,6 +141,49 @@ class LogView(ctk.CTkTextbox):
                          border_width=1, border_color=BORDER, corner_radius=12, **kwargs)
         self.apply_colors()
         self.configure(state="disabled")
+        self._menu = tkinter.Menu(self, tearoff=0)
+        self._menu.add_command(label="Копировать", command=self.copy_selection)
+        self._menu.add_command(label="Копировать всё", command=self.copy_all)
+        self._menu.add_separator()
+        self._menu.add_command(label="Выделить всё", command=self.select_all)
+        text = self._textbox
+        for button in ("<Button-3>", "<Button-2>") if sys.platform == "darwin" else ("<Button-3>",):
+            text.bind(button, self._popup)
+        text.bind("<Command-KeyPress>" if sys.platform == "darwin" else "<Control-KeyPress>", self._on_ctrl)
+        text.bind("<Button-1>", lambda _e: text.focus_set(), add="+")  # иначе Ctrl+C уйдёт в другое поле
+
+    def _popup(self, event) -> None:
+        self._menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_ctrl(self, event):
+        # keycode 67/65 — клавиши C/A на Windows в любой раскладке (в русской keysym другой)
+        key = event.keysym.lower()
+        if key in ("c", "cyrillic_es") or event.keycode == 67:
+            self.copy_selection()
+            return "break"
+        if key in ("a", "cyrillic_ef") or event.keycode == 65:
+            self.select_all()
+            return "break"
+        return None
+
+    def selected_text(self) -> str:
+        try:
+            return self._textbox.get("sel.first", "sel.last")
+        except tkinter.TclError:
+            return ""
+
+    def copy_selection(self) -> None:
+        self._to_clipboard(self.selected_text() or self.get("1.0", "end-1c"))
+
+    def copy_all(self) -> None:
+        self._to_clipboard(self.get("1.0", "end-1c"))
+
+    def select_all(self) -> None:
+        self._textbox.tag_add("sel", "1.0", "end-1c")
+
+    def _to_clipboard(self, text: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(text)
 
     def apply_colors(self) -> None:
         dark = ctk.get_appearance_mode() == "Dark"
@@ -179,7 +225,8 @@ class Console(ctk.CTkFrame):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(header, text="Журнал выполнения", font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
-        for text, command in (("Папка логов", self.open_folder), ("Файл лога", self.open_log), ("Очистить", self.clear)):
+        for text, command in (("Папка логов", self.open_folder), ("Файл лога", self.open_log), ("Очистить", self.clear),
+                              ("Копировать", self.copy)):
             ctk.CTkButton(header, text=text, width=96, height=28, fg_color="transparent", border_width=1,
                           border_color=BORDER, text_color=TEXT, hover_color=ACCENT_SOFT,
                           command=command).pack(side="right", padx=(6, 0))
@@ -208,6 +255,11 @@ class Console(ctk.CTkFrame):
     def clear(self) -> None:
         self.records.clear()
         self.view.clear()
+
+    def copy(self) -> None:
+        """Выделенное — если есть, иначе весь журнал (то, что сейчас видно)."""
+        self.view.copy_selection()
+        self.app.toast("Скопировано в буфер обмена")
 
     def open_folder(self) -> None:
         open_path(self.app.root_dir / "logs")
@@ -444,6 +496,7 @@ class AiTestPage(Page):
         self.fetch_btn.pack(side="left", padx=8)
         _secondary_button(buttons, "Новый диалог", self.new_dialog, width=130, height=32).pack(side="left", padx=(0, 8))
         _secondary_button(buttons, "Тест анкеты", self.test_form, width=130, height=32).pack(side="left")
+        _secondary_button(buttons, "Тест письма", self.test_letter, width=130, height=32).pack(side="left", padx=8)
 
         bottom = ctk.CTkFrame(self, fg_color="transparent")
         bottom.pack(side="bottom", fill="x", pady=(10, 0))
@@ -546,6 +599,14 @@ class AiTestPage(Page):
             self.view.append(f"  {n}. {q.text}" + (f"  [{' | '.join(q.options)}]" if q.options else ""), "info")
         self._run("form", fill_sample_form)
 
+    def test_letter(self) -> None:
+        """Какое письмо ИИ напишет к примеру вакансии (режим «Генерировать нейросетью»)."""
+        title, company, description = SAMPLE_VACANCY
+        self.view.append("", "info")
+        self.view.append(f"Пример вакансии: «{title}» — {company} (ничего не отправляется):", "info")
+        self.view.append(description, "debug")
+        self._run("letter", write_sample_letter)
+
     def new_dialog(self) -> None:
         if self.pg is not None:
             self.pg.reset()
@@ -568,6 +629,10 @@ class AiTestPage(Page):
             self.view.append(f"  ошибка: {payload}", "error")
         elif action == "prompt":
             PromptWindow(self, payload)
+        elif action == "letter":
+            text, seconds = payload
+            self.view.append(f"  Письмо ИИ ({seconds:.1f} с, {len(text)} симв.):", "ok")
+            self.view.append(text, "ok")
         elif action == "form":
             fill, seconds = payload
             if not fill.can_answer:
@@ -641,10 +706,12 @@ SETTINGS = [
     ]),
     ("Сопроводительное письмо", [
         ("letter", "mode", "Как писать письмо", "choice",
-         "«Генерировать» требует подписку hh. Без подписки — «Готовый текст» или «Без письма»"),
+         "Кнопка hh требует подписку. Без подписки — «нейросетью» (настройки нейросети — в «ИИ-ответы в чатах»), "
+         "«Готовый текст» или «Без письма». В режиме «кнопкой hh» без кнопки письмо пишет нейросеть, если ИИ включён"),
         ("letter", "template_text", "Готовый текст письма", "text",
          "Для режима «Готовый текст». {vacancy} и {company} заменятся на название вакансии и компанию"),
         ("letter", "generate_timeout", "Ждать генерацию письма, сек", "float", ""),
+        ("letter", "ai_max_chars", "Длина письма нейросети, символов", "int", "Обычно 600–1200"),
         ("letter", "fallback_text", "Запасной текст, если генерация не сработала", "text",
          "Для режима «Генерировать». Пусто — такая вакансия пропускается"),
     ]),
@@ -671,6 +738,20 @@ SETTINGS = [
         ("ai", "only_robot", "Отвечать только «Роботу-рекрутеру» (живым людям отвечаете вы)", "bool", ""),
         ("ai", "max_answer_chars", "Максимальная длина ответа, символов", "int", ""),
     ]),
+    ("Уведомления по итогам", [
+        ("notify", "desktop", "Показывать уведомление на компьютере, когда запуск закончился", "bool",
+         "Отправлено, пропущено, ошибки. Приложение спросит разрешение после первого запуска"),
+        ("notify", "telegram", "Присылать итоги в Telegram", "bool",
+         "Удобно, если программа работает на сервере. Нужен свой бот: @BotFather → /newbot"),
+        ("notify", "telegram_token", "Токен бота", "secret", ""),
+        ("notify", "telegram_chat_id", "Ваш chat id", "str",
+         "Напишите боту что-нибудь и откройте api.telegram.org/bot<токен>/getUpdates — там будет chat.id"),
+    ]),
+    ("Логи и место на диске", [
+        ("logs", "snapshots", "Сохранять скриншот и HTML страницы при ошибках", "bool",
+         "По ним можно разобраться, если hh поменял вёрстку. Один снимок — 1–3 МБ (папка logs/snapshots). "
+         "Удалить старые — «Журналы» → «Удалить снимки»"),
+    ]),
     ("Браузер и сеть", [
         ("browser", "channel", "Браузер", "choice", ""),
         ("geo", "proxy", "Российский прокси (если вы не в РФ или с VPN)", "str",
@@ -693,7 +774,8 @@ CHOICES = {
     ("search", "mode"): {"По ссылке (подходящие к резюме)": "resume", "По запросу (общий поиск hh)": "query"},
     ("search", "area"): {label: code for code, label in AREAS.items()},
     ("browser", "channel"): {"Google Chrome": "chrome", "Microsoft Edge": "msedge"},
-    ("letter", "mode"): {"Генерировать кнопкой hh (подписка)": "generate", "Готовый текст": "template",
+    ("letter", "mode"): {"Генерировать кнопкой hh (подписка)": "generate",
+                         "Генерировать нейросетью (без подписки)": "ai", "Готовый текст": "template",
                          "Без письма": "none"},
 }
 
@@ -722,6 +804,12 @@ class SettingsPage(Page):
                                        "platform.deepseek.com → API keys; Ollama — ключ не нужен",
                              text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w", justify="left",
                              wraplength=480).pack(side="left", padx=12)
+            if section_title == "Уведомления по итогам":
+                row = ctk.CTkFrame(card, fg_color="transparent")
+                row.pack(fill="x", padx=16, pady=(8, 0))
+                self.notify_btn = _secondary_button(row, "Отправить тестовое уведомление", self.test_notify,
+                                                    width=260, height=32)
+                self.notify_btn.pack(side="left")
             ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
 
         danger = Card(scroll)
@@ -860,6 +948,20 @@ class SettingsPage(Page):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def test_notify(self) -> None:
+        """Тестовое уведомление с текущими (даже несохранёнными) настройками — в фоне."""
+        cfg = self.collect()
+        if cfg is None:
+            return
+        if not (cfg.notify.desktop or cfg.notify.telegram):
+            messagebox.showinfo(APP_NAME, "Сначала включите уведомление на компьютере или в Telegram.")
+            return
+        from . import notify
+
+        threading.Thread(target=lambda: notify.send(cfg.notify, f"{APP_NAME} — проверка",
+                                                    "Так будут выглядеть итоги запуска."), daemon=True).start()
+        self.app.toast("Тестовое уведомление отправлено")
+
     def _ai_tested(self, ok: bool, text: str) -> None:
         self.ai_test_btn.configure(state="normal", text="Проверить подключение к ИИ")
         (messagebox.showinfo if ok else messagebox.showerror)(APP_NAME, text)
@@ -886,6 +988,17 @@ class JournalsPage(Page):
         _secondary_button(toolbar, "Снимки ошибок", lambda: open_path(app.root_dir / "logs" / "snapshots"),
                           width=140, height=34).pack(side="left")
         _secondary_button(toolbar, "Обновить", self.refresh, width=110, height=34).pack(side="right")
+        actions = ctk.CTkFrame(self, fg_color="transparent")
+        actions.pack(fill="x", pady=(0, 10))
+        _secondary_button(actions, "Копировать", self.copy, width=120, height=30).pack(side="left")
+        for text, command in (("Удалить этот лог", self.delete_current), ("Удалить все логи", self.delete_all),
+                              ("Удалить снимки", self.delete_snapshots)):
+            ctk.CTkButton(actions, text=text, command=command, height=30, corner_radius=10, fg_color="transparent",
+                          border_width=1, border_color=RED, text_color=RED, hover_color=ACCENT_SOFT).pack(
+                side="left", padx=(8, 0))
+        self.usage = ctk.CTkLabel(actions, text="", text_color=MUTED)
+        self.usage.pack(side="right")
+        self.current: Path | None = None
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True)
@@ -903,7 +1016,9 @@ class JournalsPage(Page):
             button.destroy()
         self.buttons.clear()
         logs = sorted((self.app.root_dir / "logs").glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        self._show_usage()
         if not logs:
+            self.current = None
             self.view.set_lines(["Запусков ещё не было."])
             return
         for path in logs[:200]:
@@ -916,11 +1031,67 @@ class JournalsPage(Page):
         self.show(logs[0])
 
     def show(self, path: Path) -> None:
+        self.current = path
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-5000:]
         except OSError as e:
             lines = [f"Не удалось прочитать {path}: {e}"]
         self.view.set_lines(lines)
+
+    # ---------- копирование и удаление ----------
+
+    def copy(self) -> None:
+        self.view.copy_selection()
+        self.app.toast("Скопировано в буфер обмена")
+
+    def _busy_log(self) -> Path | None:
+        """Лог, в который сейчас пишет идущий запуск: его не удаляем."""
+        worker = self.app.worker
+        return self.app.last_log_path if worker and worker.is_alive() else None
+
+    def _show_usage(self) -> None:
+        logs = self.app.root_dir / "logs"
+        size = lambda paths: sum(f.stat().st_size for f in paths if f.is_file()) / 1024 / 1024  # noqa: E731
+        self.usage.configure(text=f"логи: {size(logs.glob('*.log')):.1f} МБ   •   снимки: "
+                                  f"{size((logs / 'snapshots').glob('*')):.1f} МБ")
+
+    def delete_current(self) -> None:
+        path = self.current
+        if path is None or not path.exists():
+            return
+        if path == self._busy_log():
+            messagebox.showinfo(APP_NAME, "В этот лог сейчас пишет идущий запуск — удалить можно после него.")
+            return
+        if messagebox.askyesno(APP_NAME, f"Удалить лог {path.name}?"):
+            self._unlink([path])
+
+    def delete_all(self) -> None:
+        busy = self._busy_log()
+        logs = [p for p in (self.app.root_dir / "logs").glob("*.log") if p != busy]
+        if not logs:
+            messagebox.showinfo(APP_NAME, "Удалять нечего.")
+            return
+        if messagebox.askyesno(APP_NAME, f"Удалить все логи ({len(logs)} шт.)?\n\nТаблица откликов (Excel) "
+                                         "и статистика останутся — они хранятся отдельно."):
+            self._unlink(logs)
+
+    def delete_snapshots(self) -> None:
+        files = [p for p in (self.app.root_dir / "logs" / "snapshots").glob("*") if p.is_file()]
+        if not files:
+            messagebox.showinfo(APP_NAME, "Снимков нет.")
+            return
+        if messagebox.askyesno(APP_NAME, f"Удалить снимки страниц ({len(files)} файлов)?"):
+            self._unlink(files)
+
+    def _unlink(self, paths: list[Path]) -> None:
+        failed = 0
+        for path in paths:
+            try:
+                path.unlink()
+            except OSError:
+                failed += 1
+        self.refresh()
+        self.app.toast(f"Удалено: {len(paths) - failed}" + (f", не удалось: {failed}" if failed else ""))
 
 
 # ─────────────────────────────── приложение ───────────────────────────────
@@ -939,12 +1110,18 @@ class App(ctk.CTk):
         self.title(f"{APP_NAME} — автоотклики hh.ru")
         self.geometry("1180x800")
         self.minsize(1000, 680)
-        icon = bundled("packaging/icon.ico")
-        if icon.exists():
-            try:
-                self.iconbitmap(str(icon))
-            except Exception:
-                pass
+        try:  # .ico — для Windows (панель задач), .png — для macOS и Linux
+            if sys.platform == "win32" and bundled("packaging/icon.ico").exists():
+                self.iconbitmap(str(bundled("packaging/icon.ico")))
+                # Tk ставит окну иконку 32 px, и на экране с масштабом 125–150% панель задач её растягивает —
+                # выходит мыло. Ставим сами нужного размера; повторно — когда окно точно появится
+                self.after(50, self._sharp_windows_icon)
+                self.after(800, self._sharp_windows_icon)
+            elif bundled("packaging/icon.png").exists():
+                self._icon = tkinter.PhotoImage(file=str(bundled("packaging/icon.png")))
+                self.iconphoto(True, self._icon)
+        except Exception:
+            pass
 
         self.events: queue.Queue = queue.Queue()
         self.log_handler = QueueLogHandler(self.events)
@@ -1008,8 +1185,13 @@ class App(ctk.CTk):
         mode = ctk.CTkOptionMenu(bar, values=list(APPEARANCE), command=self._set_appearance)
         mode.set(current)
         mode.pack(fill="x", padx=22, pady=(4, 10))
-        ctk.CTkLabel(bar, text=f"версия {APP_VERSION}", text_color=MUTED, font=ctk.CTkFont(size=11)).pack(
-            anchor="w", padx=22, pady=(0, 16))
+        about = ctk.CTkFrame(bar, fg_color="transparent")
+        about.pack(fill="x", padx=22, pady=(0, 16))
+        ctk.CTkLabel(about, text=f"версия {APP_VERSION}", text_color=MUTED, font=ctk.CTkFont(size=11)).pack(side="left")
+        github = ctk.CTkLabel(about, text="GitHub ↗", text_color=ACCENT, cursor="hand2",
+                              font=ctk.CTkFont(size=11, underline=True))
+        github.pack(side="left", padx=(10, 0))
+        github.bind("<Button-1>", lambda _e: webbrowser.open(GITHUB_URL))
 
     def _build_main(self) -> None:
         main = ctk.CTkFrame(self, fg_color="transparent")
@@ -1060,6 +1242,28 @@ class App(ctk.CTk):
         self.pages["responses"].refresh_config(self.cfg)
         self.pages["chats"].refresh_config(self.cfg)
         self.pages["ai"].invalidate()
+
+    def _sharp_windows_icon(self) -> None:
+        """Иконки окна (заголовок и панель задач) из .ico ровно под текущий масштаб экрана: 32 px при 100%,
+        40 при 125%, 48 при 150%… — все эти размеры есть в icon.ico, Windows ничего не растягивает."""
+        try:
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            user32.LoadImageW.restype = wintypes.HANDLE
+            user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int,
+                                          ctypes.c_int, wintypes.UINT]
+            user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+            hwnd = int(self.wm_frame(), 16)  # настоящее окно Windows вокруг Tk-окна
+            dpi = user32.GetDpiForWindow(hwnd) or 96
+            path = str(bundled("packaging/icon.ico"))
+            for which, base in ((1, 32), (0, 16)):  # ICON_BIG — панель задач и Alt+Tab, ICON_SMALL — заголовок
+                size = round(base * dpi / 96)
+                icon = user32.LoadImageW(None, path, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+                if icon:
+                    user32.SendMessageW(hwnd, 0x80, which, icon)  # WM_SETICON
+        except Exception:
+            pass
 
     def _load_prefs(self) -> dict:
         try:
@@ -1208,6 +1412,31 @@ class App(ctk.CTk):
         self.pages["responses"].current.configure(text=f"Последний запуск: {summary}")
         if self.closing:
             self.destroy()
+            return
+        if kind in ("responses", "chats") and not self.prefs.get("notify_asked"):
+            title = "Отклики" if kind == "responses" else "Чаты"
+            self.after(400, lambda: self._ask_notify(f"{title}: {summary}"))
+
+    def _ask_notify(self, summary: str) -> None:
+        """Один раз спрашиваем, можно ли показывать уведомление по итогам. Без согласия ничего не шлём."""
+        self.save_prefs(notify_asked=True)
+        if self.cfg.notify.desktop or self.cfg.notify.telegram:
+            return
+        if not messagebox.askyesno(APP_NAME, "Показывать уведомление, когда запуск закончился?\n\n"
+                                             "Например: «Отправлено 14, пропущено 161, ошибок 0». "
+                                             "Изменить можно в «Настройки» → «Уведомления по итогам»."):
+            return
+        try:
+            cfg = self.read_config_file(check_search_url=False)
+            cfg.notify.desktop = True
+            save_config(cfg, self.config_path)
+        except ConfigError as e:
+            messagebox.showerror(APP_NAME, f"Не сохранено: {e}")
+            return
+        self.reload_config()
+        from . import notify
+
+        threading.Thread(target=lambda: notify.desktop(APP_NAME, summary), daemon=True).start()
 
     def _poll(self) -> None:
         """Раз в 120 мс забирает записи лога и события из рабочего потока."""
@@ -1258,11 +1487,30 @@ def force_exit() -> None:
     браузер с драйвером Playwright (node.exe → chrome) и Ollama, если её запускали мы."""
     try:
         shutdown_ollama()
-        for pid in _child_pids({"node.exe", "ollama.exe"}):
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if sys.platform == "win32":
+            for pid in _child_pids({"node.exe", "ollama.exe"}):
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:  # macOS / Linux: драйвер node и его браузер — всё дерево наших дочерних процессов
+            _kill_tree_posix(os.getpid(), include_self=False)
     finally:
         os._exit(0)
+
+
+def _kill_tree_posix(pid: int, include_self: bool = True) -> None:
+    import signal
+
+    try:
+        children = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+    except OSError:
+        children = []
+    for child in children:
+        _kill_tree_posix(int(child))
+    if include_self:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 def _child_pids(names: set[str]) -> list[int]:
@@ -1307,16 +1555,16 @@ def self_test() -> int:
     code = 1
     try:
         with sync_playwright() as pw:
-            for channel in ("chrome", "msedge"):
+            for channel in ("chrome", "msedge", ""):  # "" — встроенный Chromium Playwright (Linux, Docker)
                 try:
-                    browser = pw.chromium.launch(channel=channel, headless=True)
+                    browser = pw.chromium.launch(channel=channel or None, headless=True)
                     page = browser.new_page()
                     page.set_content("<title>ok</title>")
-                    lines.append(f"{channel}: OK (версия {browser.version}, страница: {page.title()})")
+                    lines.append(f"{channel or 'chromium'}: OK (версия {browser.version}, страница: {page.title()})")
                     browser.close()
                     code = 0
                 except Exception as e:
-                    lines.append(f"{channel}: нет ({(str(e).splitlines() or [''])[0]})")
+                    lines.append(f"{channel or 'chromium'}: нет ({(str(e).splitlines() or [''])[0]})")
     except Exception:
         lines.append("драйвер Playwright не запустился:\n" + traceback.format_exc())
     try:  # Excel-отчёт (openpyxl внутри сборки)

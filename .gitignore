@@ -11,3 +11,7 @@ data/
 # сборка приложения
 build/
 dist/
+
+# данные Docker-контейнера и настройки окна
+hh-data/
+app_prefs.json

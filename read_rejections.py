@@ -17,8 +17,9 @@ from hh_auto.app import run_chats
 from hh_auto.chats import ChatStats
 from hh_auto.config import ConfigError, load_config
 from hh_auto.logger import log, setup_logging
+from hh_auto.paths import app_root
 
-ROOT = Path(__file__).resolve().parent
+ROOT = app_root()  # папка проекта или HH_AUTO_HOME
 
 
 def parse_args() -> argparse.Namespace:

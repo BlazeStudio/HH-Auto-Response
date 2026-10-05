@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import Locator, Page
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from . import control
 from . import selectors as S
@@ -30,7 +31,7 @@ from .browser import FatalError
 from .ai import SENSITIVE, AiClient, AiError, FormAnswer, FormQuestion
 from .config import Config
 from .logger import log
-from .search import Vacancy
+from .search import Vacancy, fetch_vacancy_text, wait_all_cards
 
 LIMIT_TEXT = re.compile(r"не более \d+ откликов|лимит откликов|исчерпали лимит", re.I)
 SEND_BUTTON_TEXT = re.compile(r"^\s*(Отправить|Откликнуться)\s*$", re.I)
@@ -100,7 +101,8 @@ class Responder:
         self.cfg = cfg
         self.snapshots_dir = snapshots_dir
         self.resume_title = resume_title
-        self.ai = ai  # если задан — анкеты работодателей заполняет нейросеть
+        self.ai = ai  # нейросеть: письма ([letter] mode = ai) и, если [ai] enabled, анкеты работодателей
+        self.form_ai = ai if cfg.ai.enabled else None
         self.resume_text = resume_text
         self._search_url = ""
 
@@ -134,6 +136,12 @@ class Responder:
     def _apply(self, vac: Vacancy) -> Result:
         self._close_dialogs()  # хвосты от предыдущей вакансии
         card = self._card(vac.id)
+        if card.count() == 0:  # выдачу только что открыли заново — hh догружает карточки не сразу
+            try:
+                self.page.locator(S.VACANCY_CARD).first.wait_for(timeout=15_000)
+            except PlaywrightTimeout:
+                pass
+            wait_all_cards(self.page)
         if card.count() == 0:
             self._snapshot(vac.id, "no-card")
             return Result(Status.FAILED, "карточка вакансии не найдена на странице")
@@ -282,7 +290,7 @@ class Responder:
         if not self._resume_matches(self.page):
             return self._skip_questions("на странице вопросов выбрано другое резюме", remember=False)
 
-        if self.ai is not None:
+        if self.form_ai is not None:
             filled = self._fill_form_with_ai(vac, questions)
             if isinstance(filled, Result):
                 return filled
@@ -575,10 +583,13 @@ class Responder:
     # --- сопроводительное письмо ---
 
     def _write_letter(self, scope: Locator | Page, textarea: Locator, vac: Vacancy) -> bool:
-        """Заполняет поле письма: генерацией hh (mode = generate) или готовым текстом (mode = template)."""
+        """Заполняет поле письма: генерацией hh (generate), нейросетью (ai) или готовым текстом (template)."""
         if self.cfg.letter.mode == "template":
             return self._fill_letter(textarea, self.cfg.letter.template_text, vac, "готовое письмо из настроек",
                                      "[letter] template_text")
+        if self.cfg.letter.mode == "ai":
+            return self._ai_letter(textarea, vac) or self._fill_letter(
+                textarea, self.cfg.letter.fallback_text, vac, "запасной текст письма", "[letter] fallback_text")
         before = textarea.input_value().strip()
         if before:
             log.debug(f"  в поле письма уже есть текст ({len(before)} симв.)")
@@ -596,8 +607,33 @@ class Responder:
         else:
             log.warning("  ! кнопки «Сгенерировать» нет (проверьте подписку)")
 
+        if self.ai is not None and self._ai_letter(textarea, vac):  # без подписки письмо пишет нейросеть
+            return True
         return self._fill_letter(textarea, self.cfg.letter.fallback_text, vac, "запасной текст письма",
                                  "[letter] fallback_text")
+
+    def _ai_letter(self, textarea: Locator, vac: Vacancy) -> bool:
+        """Письмо нейросетью по резюме, контексту и описанию вакансии."""
+        if self.ai is None:
+            log.warning("  ! нейросеть для писем не настроена («Настройки» → «ИИ-ответы в чатах»)")
+            return False
+        description = fetch_vacancy_text(self.page, vac) or vac.snippet
+        log.info(f"  … ИИ пишет письмо (описание вакансии: {len(description)} симв.)")
+        started = time.monotonic()
+        try:
+            text = self.ai.write_letter(self.resume_text, self.cfg.ai.context, vac.title, vac.company, description,
+                                        self.cfg.letter.ai_max_chars)
+        except AiError as e:
+            log.warning(f"  ! нейросеть не написала письмо: {e}")
+            return False
+        if len(text) < self.cfg.letter.min_length:
+            log.warning(f"  ! письмо от нейросети слишком короткое ({len(text)} симв.)")
+            return False
+        self._pause()
+        textarea.fill(text)
+        log.success(f"  ✓ письмо от ИИ готово за {time.monotonic() - started:.1f} с ({len(text)} симв.): «{_preview(text)}»")
+        log.debug(f"  полный текст письма:\n{text}")
+        return True
 
     def _fill_letter(self, textarea: Locator, template: str, vac: Vacancy, what: str, setting: str) -> bool:
         if not template.strip():
@@ -763,6 +799,9 @@ class Responder:
 
     def _snapshot(self, vacancy_id: str, tag: str) -> None:
         """Скриншот + HTML страницы — чтобы по ним поправить селекторы, если hh поменял вёрстку."""
+        if not self.cfg.logs.snapshots:
+            log.debug(f"  снимок страницы ({tag}) не сохраняю: [logs] snapshots = false")
+            return
         base = self.snapshots_dir / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{vacancy_id}_{tag}"
         try:
             self.snapshots_dir.mkdir(parents=True, exist_ok=True)

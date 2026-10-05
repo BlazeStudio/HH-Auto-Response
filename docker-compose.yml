@@ -1,0 +1,23 @@
+# HH-Auto-Response на сервере. Подробно — README → «Docker на сервере».
+#   docker compose build
+#   docker compose run --rm --service-ports hh login     # первый вход (VNC через SSH-туннель)
+#   docker compose up -d                                  # дальше работает сам, по кругу
+services:
+  hh:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: hh-auto-response:1.0.3-beta
+    restart: unless-stopped
+    command: loop
+    environment:
+      INTERVAL_HOURS: "6"      # как часто запускать отклики и чаты
+      RUN_CHATS: "1"           # 0 — только отклики
+      # VNC_PASSWORD: "смените-меня"   # пароль на VNC (порт и так открыт только для SSH-туннеля)
+      # HH_AI_API_KEY: ""             # ключ нейросети, если не хотите хранить его в config.toml
+      # HH_TELEGRAM_TOKEN: ""         # токен бота для уведомлений в Telegram
+    volumes:
+      - ./hh-data:/data        # config.toml, логи, таблица Excel, профиль браузера со входом
+    ports:
+      - "127.0.0.1:5900:5900"  # VNC — только локально на сервере, снаружи закрыт
+    shm_size: "1gb"            # Chromium падает с маленьким /dev/shm

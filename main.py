@@ -3,6 +3,7 @@
     python main.py                 обычный запуск
     python main.py --dry-run       вход + проверка резюме + список вакансий, без откликов
     python main.py --limit 1       один отклик — для проверки, что всё работает
+    python main.py --login         только войти в hh и сохранить сессию (первый запуск на сервере)
 """
 
 from __future__ import annotations
@@ -11,12 +12,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from hh_auto.app import run_responses
+from hh_auto.app import run_login, run_responses
 from hh_auto.config import ConfigError, load_config, validate_search_source
 from hh_auto.logger import log, setup_logging
+from hh_auto.paths import app_root
 from hh_auto.runner import RunOptions, Stats
 
-ROOT = Path(__file__).resolve().parent
+ROOT = app_root()  # папка проекта или HH_AUTO_HOME: config.toml, логи, профиль браузера
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="пройти выдачу и показать вакансии, не откликаясь")
     p.add_argument("--limit", type=int, help="максимум откликов за запуск (вместо [limits] max_responses)")
     p.add_argument("--start-page", type=int, default=1, help="с какой страницы выдачи начать (с 1)")
+    p.add_argument("--login", action="store_true", help="только войти в hh (сессия сохранится) и выйти")
     p.add_argument("--retry-skipped", action="store_true", help="снова пробовать вакансии, пропущенные ранее")
     p.add_argument("-v", "--verbose", action="store_true", help="подробный лог (DEBUG) и в консоли")
     return p.parse_args()
@@ -42,6 +45,8 @@ def main() -> int:
 
     try:
         cfg = load_config(args.config, check_search_url=False)
+        if args.login:
+            return run_login(cfg, ROOT, log_path)
         if args.url:
             cfg.search_url, cfg.search.mode = args.url, "resume"
         if args.query:

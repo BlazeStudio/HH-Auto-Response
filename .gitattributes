@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# скрипты для Linux/macOS и Docker — всегда с LF, иначе bash не запустит их после checkout на Windows
+*.sh text eol=lf

@@ -1,0 +1,13 @@
+.git
+.venv-build
+__pycache__
+**/__pycache__
+build
+dist
+docs
+browser-profile
+config.toml
+app_prefs.json
+data
+logs
+hh-data

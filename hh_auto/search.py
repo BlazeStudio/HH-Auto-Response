@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from playwright.sync_api import Page
@@ -111,6 +113,52 @@ def results_page_url(search_url: str, page_num: int) -> str:
     return urlunparse(u._replace(query=urlencode(query)))
 
 
+class _DescriptionParser(HTMLParser):
+    """Текст блоков страницы вакансии с нужным data-qa (описание, ключевые навыки)."""
+
+    VOID = {"br", "img", "hr", "input", "meta", "link", "wbr", "source"}
+    BREAKS = {"p", "li", "br", "div", "ul", "ol", "h1", "h2", "h3", "h4", "tr"}
+
+    def __init__(self, wanted: tuple[str, ...]):
+        super().__init__()
+        self.wanted, self.depth, self.parts = wanted, 0, []
+
+    def handle_starttag(self, tag, attrs):
+        if self.depth:
+            if tag in self.BREAKS:
+                self.parts.append("\n")
+            if tag not in self.VOID:
+                self.depth += 1
+        elif any(v and v.startswith(self.wanted) for k, v in attrs if k == "data-qa") and tag not in self.VOID:
+            self.depth = 1
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if self.depth and tag not in self.VOID:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self.depth:
+            self.parts.append(data)
+
+
+def fetch_vacancy_text(page: Page, vac: Vacancy, limit: int = 4000) -> str:
+    """Описание вакансии и ключевые навыки — для письма нейросетью. Запрос идёт фоном через браузер
+    (с вашей сессией), без новых вкладок. Не получилось — пустая строка (письмо пишется по карточке)."""
+    try:
+        response = page.context.request.get(vac.url, timeout=20_000)
+        if not response.ok:
+            return ""
+        parser = _DescriptionParser(("vacancy-description", "skills-element", "bloko-tag__text"))
+        parser.feed(response.text())
+    except Exception as e:  # сеть, капча, вёрстка — письмо всё равно напишем по карточке
+        log.debug(f"  описание вакансии не загрузилось: {e}")
+        return ""
+    text = re.sub(r"[ \t ]+", " ", "".join(parser.parts))
+    text = re.sub(r"\s*\n\s*", "\n", text).strip()
+    return text[:limit]
+
+
 def open_results_page(page: Page, url: str) -> list[Vacancy]:
     log.info(f"  открываю выдачу: {url}")
     page.goto(url, wait_until="domcontentloaded")
@@ -122,6 +170,7 @@ def open_results_page(page: Page, url: str) -> list[Vacancy]:
     except PlaywrightTimeout:
         log.warning("  ! карточки вакансий не появились за 20 с")
         return []
+    wait_all_cards(page)
 
     selectors = {
         "card": S.VACANCY_CARD,
@@ -136,6 +185,20 @@ def open_results_page(page: Page, url: str) -> list[Vacancy]:
     for v in vacancies:
         log.debug(f"    • {v.id} «{v.title}» — {v.company} [кнопка: {v.button_text or 'нет'}{', удалённо' if v.remote else ''}]")
     return vacancies
+
+
+def wait_all_cards(page: Page, timeout: float = 12, settle: float = 1.5) -> None:
+    """hh сначала рисует 20 карточек, а остальные (до 50 — «50 вакансий» в выдаче) догружает через пару секунд.
+    Без ожидания программа брала только первые 20 и теряла остальные 30 на каждой странице."""
+    cards = page.locator(S.VACANCY_CARD)
+    count, stable_since, deadline = cards.count(), time.monotonic(), time.monotonic() + timeout
+    while time.monotonic() < deadline and time.monotonic() - stable_since < settle:
+        page.mouse.wheel(0, 4000)  # на случай, если догрузка завязана на прокрутку
+        page.wait_for_timeout(400)
+        now = cards.count()
+        if now != count:
+            count, stable_since = now, time.monotonic()
+    page.evaluate("window.scrollTo(0, 0)")
 
 
 _PAGER_JS = """
