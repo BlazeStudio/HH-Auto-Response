@@ -28,27 +28,30 @@ SYSTEM_PROMPT = """Ты помогаешь соискателю на hh.ru от�
 Переписка взята со страницы как текст: в ней могут встречаться время, имена отправителей и подписи
 кнопок интерфейса — не считай их сообщениями.
 
-Определи, что нужно сделать с ПОСЛЕДНИМ сообщением работодателя, и верни строго JSON без пояснений:
+Прочитай ВСЕ сообщения работодателя после последнего ответа соискателя — их может быть несколько
+(приветствие и вопрос, несколько вопросов подряд). Определи, что с ними сделать, и верни строго JSON без пояснений:
 {"kind": "...", "question": "...", "reply": "..."}
 
 kind:
-- "question" — работодатель (обычно «Робот-рекрутер») задал вопрос анкеты, на который можно ответить по резюме
-  и контексту. Сюда же относятся «Начнём?» и вопросы-подтверждения робота («Используем эти ответы?»,
-  «Всё верно?», «Подтверждаете?») — ответь коротким согласием («Да»).
+- "question" — работодатель задал вопрос: бот («Робот-рекрутер», «ИИ-помощник», ассистент на базе AI) или
+  живой рекрутер — неважно. Сюда же «Начнём?», «Готовы обсудить детали?», «Актуален ли поиск?» и подтверждения
+  («Используем эти ответы?», «Всё верно?») — ответь коротко по сути («Да, готов»). Если вопросов несколько —
+  ответь на все в одном сообщении, по порядку.
 - "info" — ответ не нужен: благодарность за отклик, уведомление, «мы рассмотрим», отказ, завершение анкеты.
   Если в последнем сообщении есть вопрос к соискателю или просьба что-то указать, рассказать, прислать —
   это НИКОГДА не "info".
-- "human" — нужен ответ самого человека: приглашение на собеседование, предложение созвониться, тестовое
-  задание, просьба прислать документы, контакты или персональные данные, вопрос о деньгах/оплате,
-  ссылка на внешний сайт. Отсутствие нужного опыта в резюме — НЕ причина для "human": это "question",
-  на который отвечаешь честно (см. правила ниже).
+- "human" — ТОЛЬКО если предлагают встречу, собеседование, звонок или видеозвонок (договориться о времени —
+  дело самого человека), просят документы, контакты, персональные данные или деньги. Всё остальное —
+  "question". Отсутствие нужного опыта — тоже "question": отвечаешь честно (см. правила ниже).
 - "wait" — последнее сообщение в переписке от соискателя: он уже ответил и ждёт работодателя.
 
-question — текст вопроса, на который отвечаешь (для kind = "question"), иначе "".
-reply — ответ для kind = "question", иначе "".
+question — ДОСЛОВНО вопрос из НОВЫХ сообщений, на который отвечаешь (для kind = "question"), иначе "".
+  Вопросы из старой части переписки не бери: на них уже ответили.
+reply — ответ именно на этот вопрос, по существу (для kind = "question"), иначе "". На открытый вопрос
+  («какой», «в каком контексте», «расскажите») отвечай фактами, а не «Да, готов».
 
 Правила ответа:
-- от первого лица, по-русски (или на языке вопроса), коротко: 1–2 предложения, не длиннее {max_chars} символов;
+- от первого лица, по-русски (или на языке вопроса), коротко: 1–2 предложения на вопрос, не длиннее {max_chars} символов;
 - только факты из резюме и контекста; не выдумывай опыт, цифры, компании, навыки и даты;
 - если точного ответа в резюме и контексте нет (например, о зарплате или графике), это всё равно "question":
   ответь честно и нейтрально (например: «Готов обсудить на собеседовании»);
@@ -219,6 +222,7 @@ class Decision:
     kind: str
     question: str = ""
     reply: str = ""
+    button: str = ""  # нажать кнопку быстрого ответа вместо текста
 
 
 # ─────────── страховки поверх нейросети (общие для боевого режима и песочницы) ───────────
@@ -263,6 +267,56 @@ def is_done_message(transcript: str) -> bool:
 _SERVICE_LINE = re.compile(r"\d{1,2}:\d{2}|вы|прочитано|доставлено|отправлено|сегодня|вчера", re.I)
 
 
+_ABOUT_RESUME = re.compile(r"в (?:моём |моем )?резюме|резюме не|не указывал|не указан\w* в|по резюме", re.I)
+
+
+def new_messages(transcript: str, sent: list[str], limit: int = 6) -> list[str]:
+    """Неотвеченные сообщения работодателя (без времени и служебных строк).
+
+    После нашего ответа — всё, что пришло позже. Если мы в этом чате ещё не отвечали, отправителя по тексту
+    не различить (переписка на hh — просто текст), поэтому берём только хвост из вопросов подряд в самом конце:
+    вопрос, после которого уже есть чей-то ответ, сюда не попадёт."""
+    lines = [line.strip() for line in transcript.splitlines()
+             if line.strip() and not _SERVICE_LINE.fullmatch(line.strip())]
+    if sent:
+        mine = norm(sent[-1])
+        for i in range(len(lines) - 1, -1, -1):
+            if mine and (norm(lines[i]) == mine or mine in norm(lines[i])):
+                return lines[i + 1:][-limit:]
+    run: list[str] = []
+    for line in reversed(lines):
+        if not line.rstrip().endswith("?"):
+            break
+        run.insert(0, line)
+    return run[-limit:] or lines[-1:]
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-zа-яё0-9]{3,}", text.lower())}
+
+
+def _in_messages(question: str, messages: list[str]) -> bool:
+    """Вопрос модели взят из этих сообщений (дословно или почти: модели слегка перефразируют)."""
+    if not question:
+        return False
+    q = norm(question)
+    joined = norm(" ".join(messages))
+    if q and (q in joined or any(norm(m) in q for m in messages if len(norm(m)) > 10)):
+        return True
+    words = _words(question)
+    return bool(words) and len(words & _words(" ".join(messages))) / len(words) >= 0.6
+
+
+# Открытый вопрос: «какой», «в каком контексте», «расскажите» — на него «Да, готов» не ответ
+_OPEN_QUESTION = re.compile(r"\b(?:как(?:ой|ая|ое|ие|ом|их|им)|в каком|расскаж|опиш|уточни|сколько|почему|зачем|"
+                            r"что (?:вы|именно)|где|когда|с чем|чем)\b", re.I)
+_GENERIC_REPLY = re.compile(r"^(?:да|нет|ок|хорошо|готов|да,? готов|конечно|согласен)[.!]?$", re.I)
+
+
+def _generic_reply_to_open_question(question: str, reply: str) -> bool:
+    return bool(_OPEN_QUESTION.search(question)) and bool(_GENERIC_REPLY.match(reply.strip()))
+
+
 def last_message(transcript: str) -> str:
     """Последнее сообщение переписки: последняя содержательная строка (без времени и служебных подписей)."""
     for line in reversed(transcript.splitlines()):
@@ -270,6 +324,11 @@ def last_message(transcript: str) -> str:
         if line and not _SERVICE_LINE.fullmatch(line):
             return line
     return ""
+
+
+# Встречи и звонки — время согласует сам человек, что бы ни решила модель
+MEETING = re.compile(r"собеседовани|интервью|созвон|звон(?:ок|ка|ке|ить)|позвон|видеозвон|видеосвяз|встреч|"
+                     r"zoom|телемост|google meet|удобн\w* (?:время|дат|день)|слот", re.I)
 
 
 def review(decision: Decision, transcript: str, sent: list[str]) -> str:
@@ -290,6 +349,10 @@ def review(decision: Decision, transcript: str, sent: list[str]) -> str:
     if sensitive and decision.kind != "human":
         decision.kind = "human"
         return f"в сообщении «{sensitive.group(0)}» — такие вопросы решаете вы"
+    meeting = MEETING.search(tail) or (MEETING.search(decision.question) if decision.question else None)
+    if meeting and decision.kind != "human":
+        decision.kind = "human"
+        return f"предлагают {meeting.group(0)} — время согласуете вы"
     if decision.kind in ("info", "wait") and tail.rstrip().endswith("?"):
         decision.kind = "human"
         return "в последнем сообщении есть вопрос, а ИИ не стал отвечать — оставляю вам"
@@ -302,6 +365,7 @@ def review(decision: Decision, transcript: str, sent: list[str]) -> str:
 class AiClient:
     def __init__(self, cfg: Ai):
         self.cfg = cfg
+        self.notes: list[str] = []  # что поправили страховки в последнем decide — для журнала
         preset_url, preset_model = AI_PROVIDERS.get(cfg.provider, ("", ""))[:2]
         self.base_url = (cfg.base_url or preset_url).rstrip("/")
         self.model = cfg.model or preset_model
@@ -354,15 +418,28 @@ class AiClient:
         prompt = "Ответь одним словом: работает" + (" /no_think" if "qwen3" in self.model.lower() else "")
         return self.complete([{"role": "user", "content": prompt}], max_tokens=20).strip()
 
-    def build_messages(self, resume: str, context: str, transcript: str) -> list[dict]:
-        """Ровно то, что уходит нейросети: инструкция + резюме + контекст + переписка."""
+    def build_messages(self, resume: str, context: str, transcript: str, sent: list[str] | None = None,
+                       focus: str = "", buttons: list[str] | None = None) -> list[dict]:
+        """Ровно то, что уходит нейросети: инструкция + резюме + контекст + переписка + новые сообщения.
+        focus — один конкретный вопрос (когда работодатель задал несколько подряд)."""
         system = SYSTEM_PROMPT.replace("{max_chars}", str(self.cfg.max_answer_chars))
+        fresh = new_messages(transcript, sent or [])
         parts = [
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
             f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
             f"ПЕРЕПИСКА (последние сообщения внизу):\n{transcript}",
-            f"ПОСЛЕДНЕЕ СООБЩЕНИЕ В ПЕРЕПИСКЕ (реши, что с ним делать):\n{last_message(transcript)}",
+            "НОВЫЕ СООБЩЕНИЯ РАБОТОДАТЕЛЯ (реши, что с ними делать):\n" + "\n".join(fresh or [last_message(transcript)]),
         ]
+        if buttons:
+            parts.append(
+                "КНОПКИ ОТВЕТА В ЧАТЕ:\n" + "\n".join(f"- {b}" for b in buttons) + "\n"
+                'Если одна кнопка прямо отвечает на новый вопрос (варианты «Да»/«Нет», «Интересно», выбор из списка, '
+                'ответ на приглашение hh — тогда кнопка с интересом/согласием), добавь в JSON поле "button" с ТОЧНЫМ '
+                'текстом кнопки, а kind = "question". Кнопки-подсказки с готовыми фразами соискателя '
+                '(«Здравствуйте!», «Какая схема оплаты?», «У меня есть профильный опыт») не выбирай. '
+                'Ни одна не подходит — поле "button" не добавляй.')
+        if focus:
+            parts.append(f"СЕЙЧАС ОТВЕТЬ ТОЛЬКО НА ЭТОТ ВОПРОС:\n{focus}")
         # Отправленные ответы уже есть в переписке. Отдельным списком их не даём: модели (проверено на qwen3)
         # принимают такой список за «анкета пройдена» и перестают отвечать. От повторов защищает chats.py.
         user = "\n\n".join(parts)
@@ -370,14 +447,17 @@ class AiClient:
             user += "\n\n/no_think"  # у qwen3 рассуждения отключаются этой командой — ответ в разы быстрее
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
-    def decide(self, resume: str, context: str, transcript: str, sent: list[str]) -> Decision:
+    def decide(self, resume: str, context: str, transcript: str, sent: list[str],
+               buttons: list[str] | None = None) -> Decision:
         if is_done_message(transcript):  # завершение анкеты узнаём сами — без нейросети
             self.last_raw = ""
             return Decision("info")
-        messages = self.build_messages(resume, context, transcript)
+        buttons = buttons or []
+        self.notes = []
+        messages = self.build_messages(resume, context, transcript, sent, buttons=buttons)
         self.last_raw = self.complete(messages, json_mode=True)
         try:
-            return self._parse(self.last_raw)
+            decision = self._parse(self.last_raw)
         except AiError:
             # Модель ответила текстом вместо JSON — переспрашиваем один раз
             retry = messages + [
@@ -386,7 +466,135 @@ class AiClient:
                                             "без пояснений и форматирования."},
             ]
             self.last_raw = self.complete(retry, json_mode=True)
-            return self._parse(self.last_raw)
+            decision = self._parse(self.last_raw)
+        decision = self._fix_reply(decision, messages, resume, context)
+        fresh = new_messages(transcript, sent)
+        questions = [m for m in fresh if m.rstrip().endswith("?")]
+        if decision.button:  # нажать можно только кнопку, которая правда есть в чате
+            match = next((b for b in buttons if norm(b) == norm(decision.button)), None)
+            decision.button = match or ""
+            if match:
+                return decision
+            if decision.kind == "question" and not decision.reply:
+                decision.kind = "human"
+                return decision
+        stale = decision.kind == "question" and not _in_messages(decision.question, fresh)
+        if stale:
+            self.notes.append(f"ИИ взял вопрос из старой части переписки («{decision.question[:60]}»)")
+            if not questions:  # новых вопросов нет — отвечать не на что (например, «Ответьте на приглашение»)
+                decision.kind, decision.reply = "info", ""
+                return decision
+        if decision.kind == "question" and (len(questions) > 1 or stale):
+            # Несколько вопросов подряд или модель взяла старый вопрос — спрашиваем по каждому новому отдельно
+            decision.reply = ""
+            replies = []
+            for question in questions:
+                focused = self.build_messages(resume, context, transcript, sent, focus=question, buttons=buttons)
+                try:
+                    self.last_raw = self.complete(focused, json_mode=True)
+                    part = self._fix_reply(self._parse(self.last_raw), focused, resume, context)
+                except AiError:
+                    continue
+                if part.kind == "question" and part.reply and norm(part.reply) not in map(norm, replies):
+                    replies.append(part.reply)
+            if replies:
+                decision.question, decision.reply = " / ".join(questions), " ".join(replies)
+            else:
+                decision.kind = "human"
+                return decision
+        if decision.kind == "question" and decision.reply and not decision.button:
+            decision = self._check_on_topic(decision, resume, context, transcript, sent, buttons)
+        return decision
+
+    def _check_on_topic(self, decision: Decision, resume: str, context: str, transcript: str, sent: list[str],
+                        buttons: list[str]) -> Decision:
+        """Отвечает ли ответ по существу на вопрос. Нет — переспрашиваем с фокусом на вопрос, снова мимо — человеку."""
+        for attempt in range(2):
+            ok = not _generic_reply_to_open_question(decision.question, decision.reply) and self._on_topic(
+                decision.question, decision.reply)
+            if ok:
+                return decision
+            self.notes.append(f"ответ не по сути вопроса: «{decision.reply[:60]}»")
+            if attempt:
+                break
+            focused = self.build_messages(resume, context, transcript, sent, focus=decision.question, buttons=buttons)
+            focused[-1]["content"] += ("\n\nПрошлый ответ не отвечал на вопрос по существу. Ответь именно на него, "
+                                       "конкретно, по резюме.")
+            try:
+                self.last_raw = self.complete(focused, json_mode=True)
+                retry = self._fix_reply(self._parse(self.last_raw), focused, resume, context)
+            except AiError:
+                break
+            if retry.kind != "question" or not retry.reply:
+                break
+            decision.reply = retry.reply
+        decision.kind = "human"
+        return decision
+
+    def _on_topic(self, question: str, reply: str) -> bool:
+        """Короткая проверка второй нейросетью-«редактором». При сбое считаем, что ответ годится."""
+        prompt = (f"Вопрос работодателя: «{question}»\nОтвет соискателя: «{reply}»\n\n"
+                  "Отвечает ли ответ по существу именно на этот вопрос (а не на другой и не общей фразой)? "
+                  'Верни строго JSON {"ok": true} или {"ok": false}.')
+        if "qwen3" in self.model.lower():
+            prompt += " /no_think"
+        try:
+            raw = self.complete([{"role": "user", "content": prompt}], max_tokens=30, json_mode=True)
+            found = re.search(r'"ok"\s*:\s*(true|false)', raw, re.I)
+            return not found or found.group(1).lower() == "true"
+        except AiError:
+            return True
+
+    def _fix_reply(self, decision: Decision, messages: list[dict], resume: str, context: str) -> Decision:
+        """Страховка ответа в чате: без «в резюме не указано» и без опыта с технологиями, которых нет в резюме.
+        Сначала просим модель переписать, не вышло — правим сами."""
+        if decision.kind != "question" or not decision.reply:
+            return decision
+        # Срок выхода и зарплата — только из вашего контекста, как в анкетах при отклике
+        if _START_Q.search(decision.question) and not _TIMING_CTX.search(context):
+            decision.reply = "Готов обсудить на собеседовании."
+            return decision
+        if _SALARY_Q.search(decision.question):
+            phrase = salary_phrase(context)
+            if not phrase:
+                decision.reply = "Готов обсудить на собеседовании."
+            elif re.sub(r"\D", "", phrase) not in re.sub(r"\D", "", decision.reply):
+                decision.reply = f"Ожидаю {phrase}."
+            return decision
+        techs = unbacked_tech(FormQuestion(0, decision.question, "text"), resume, context)
+        known = f"{resume}\n{context}\n{decision.question}"
+        invented = letter_invented_tech(decision.reply, known)  # «работал с AWS», а в резюме AWS нет
+        problem = ""
+        if _ABOUT_RESUME.search(decision.reply):
+            problem = "не упоминай резюме — говори от первого лица («опыта с X не было, но …»)"
+        elif claims_experience(decision.reply, techs):
+            problem = (f"в резюме НЕТ {', '.join(techs)} — не приписывай этот опыт: подай смежный "
+                       "или честно скажи, что его не было")
+        elif invented:
+            problem = f"в резюме НЕТ {', '.join(invented)} — убери их, пиши только про опыт из резюме"
+        if not problem:
+            return decision
+        retry = messages + [{"role": "assistant", "content": self.last_raw[:2000]},
+                            {"role": "user", "content": f"Перепиши reply: {problem}. Верни тот же JSON."}]
+        try:
+            self.last_raw = self.complete(retry, json_mode=True)
+            fixed = self._parse(self.last_raw)
+            if (fixed.kind == "question" and fixed.reply and not _ABOUT_RESUME.search(fixed.reply)
+                    and not claims_experience(fixed.reply, techs) and not letter_invented_tech(fixed.reply, known)):
+                return fixed
+        except AiError:
+            pass
+        # модель упёрлась: выдуманный опыт заменяем честным ответом, фразы про резюме убираем
+        if techs and claims_experience(decision.reply, techs):
+            # убираем только предложения с выдуманным опытом — ответ про то, что есть в резюме, остаётся
+            kept = [x for x in re.split(r"(?<=[.!?])\s+", decision.reply) if not claims_experience(x, techs)]
+            decision.reply = " ".join(kept + [f"С {', '.join(techs)} напрямую не работал, но готов быстро освоить."])
+        elif invented:
+            decision.reply = drop_sentences_with(decision.reply, invented) or "Такого опыта не было, но готов освоить."
+        else:
+            kept = [x for x in re.split(r"(?<=[.!?])\s+", decision.reply) if not _ABOUT_RESUME.search(x)]
+            decision.reply = " ".join(kept) or "Такого опыта не было, но готов быстро освоить."
+        return decision
 
     def fill_form(self, resume: str, context: str, vacancy: str, questions: list[FormQuestion]) -> FormFill:
         """Анкета при отклике: каждый вопрос — отдельным запросом (так 8B-моделям заметно проще)."""
@@ -565,12 +773,15 @@ class AiClient:
         except json.JSONDecodeError as e:
             raise AiError(f"ИИ вернул испорченный JSON: {raw[:200]}") from e
         kind = str(data.get("kind", "")).strip().lower()
+        if kind == "button" or (not kind and data.get("button")):  # модели путают: «ответ кнопкой» — это вопрос
+            kind = "question"
         if kind not in KINDS:
             raise AiError(f"ИИ вернул неизвестный тип «{kind}»")
         reply = _clean_reply(str(data.get("reply", "")), self.cfg.max_answer_chars)
-        if kind == "question" and not reply:
+        button = str(data.get("button") or "").strip()
+        if kind == "question" and not reply and not button:
             kind = "human"  # вопрос есть, а ответа нет — пусть отвечает человек
-        return Decision(kind=kind, question=str(data.get("question", "")).strip(), reply=reply)
+        return Decision(kind=kind, question=str(data.get("question", "")).strip(), reply=reply, button=button)
 
 
 _KEY_FACT = re.compile(r"^(?:Опыт работы|Формат работы|Тип занятости|Уровень дохода|Командировки|Переезд|"
@@ -585,6 +796,8 @@ def key_facts(resume: str) -> str:
 _SALARY_Q = re.compile(r"зарплат|заработн|доход|оклад|вознагражд|ожидани[яй] по (?:оплате|зп)|сколько.*получать", re.I)
 _TIMING_Q = re.compile(r"приступить|выйти на работу|выход на работу|когда (?:готов|сможете|можете)|срок.*выход|"
                        r"переезд|релокац|график|командировк", re.I)
+# Вопрос о сроке выхода (без переезда и графика — там бывают факты из резюме)
+_START_Q = re.compile(r"приступить|выйти на работу|выход на работу|срок\w* выхода|когда (?:готов|сможете|можете)", re.I)
 # Есть ли в контексте соискателя данные на эту тему
 _SALARY_CTX = re.compile(r"зарплат|заработн|доход|оклад|на руки|\d\s*(?:к\b|тыс|₽|руб)", re.I)
 _TIMING_CTX = re.compile(r"выйти|выход|приступ|недел|месяц|сразу|немедленно|переезд|релокац|график|командиров", re.I)

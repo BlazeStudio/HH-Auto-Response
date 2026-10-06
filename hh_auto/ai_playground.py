@@ -90,7 +90,7 @@ class Playground:
 
     def preview(self) -> str:
         """Ровно то, что уйдёт нейросети при следующем вопросе."""
-        messages = self.client.build_messages(self.resume, self.cfg.ai.context, self.transcript)
+        messages = self.client.build_messages(self.resume, self.cfg.ai.context, self.transcript, self.sent)
         titles = {"system": "ИНСТРУКЦИЯ ДЛЯ НЕЙРОСЕТИ (system)", "user": "ЗАПРОС: РЕЗЮМЕ + КОНТЕКСТ + ПЕРЕПИСКА (user)"}
         blocks = [f"══════ {titles.get(m['role'], m['role'])} ══════\n{m['content']}" for m in messages]
         return "\n\n".join(blocks)

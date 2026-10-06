@@ -20,8 +20,31 @@ from .logger import log
 
 APP_NAME = "HH-Auto-Response"
 
-# Тост Windows 10/11 от имени PowerShell: своего AppUserModelID в меню «Пуск» у портативного приложения нет,
-# а чужие ID Windows молча игнорирует. Текст передаём через переменные окружения — без экранирования.
+# Тост Windows 10/11 от имени приложения: ID регистрируется в HKCU (имя и иконка, как у обычных программ),
+# если не вышло — от имени PowerShell. Текст передаём через переменные окружения — без экранирования.
+APP_ID = "HH-Auto-Response"  # тот же ID, что у окна приложения (панель задач)
+POWERSHELL_ID = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
+
+
+def _register_app_id() -> bool:
+    """Чтобы уведомление было подписано «HH-Auto-Response» с нашей иконкой, а не «Windows PowerShell»."""
+    try:
+        import winreg
+
+        from .paths import bundled
+
+        icon = bundled("packaging/icon.png")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\AppUserModelId\{APP_ID}") as key:
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
+            if icon.exists():
+                winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, str(icon.resolve()))
+            winreg.SetValueEx(key, "IconBackgroundColor", 0, winreg.REG_SZ, "FF2563EB")
+        return True
+    except OSError as e:
+        log.debug(f"  не удалось зарегистрировать приложение для уведомлений: {e}")
+        return False
+
+
 _WIN_TOAST = r"""
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null
@@ -30,7 +53,7 @@ $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text/><text/></bi
 $t = $xml.GetElementsByTagName('text')
 $t.Item(0).AppendChild($xml.CreateTextNode($env:HH_NOTIFY_TITLE)) > $null
 $t.Item(1).AppendChild($xml.CreateTextNode($env:HH_NOTIFY_TEXT)) > $null
-$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+$app = $env:HH_NOTIFY_APPID
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show(
     [Windows.UI.Notifications.ToastNotification]::new($xml))
 """
@@ -40,7 +63,8 @@ def desktop(title: str, text: str) -> bool:
     """Системное уведомление. True — показано (или передано системе)."""
     try:
         if sys.platform == "win32":
-            env = dict(os.environ, HH_NOTIFY_TITLE=title, HH_NOTIFY_TEXT=text)
+            app_id = APP_ID if _register_app_id() else POWERSHELL_ID
+            env = dict(os.environ, HH_NOTIFY_TITLE=title, HH_NOTIFY_TEXT=text, HH_NOTIFY_APPID=app_id)
             done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _WIN_TOAST], env=env,
                                   capture_output=True, timeout=20,
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

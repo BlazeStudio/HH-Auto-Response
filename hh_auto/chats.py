@@ -93,6 +93,39 @@ _TRANSCRIPT_JS = """
 """
 
 
+# Кнопки быстрого ответа в открытом чате («Да» / «Нет», «Интересно», ответ на приглашение hh…).
+# Берём видимые кнопки с текстом в области переписки, кроме шапки чата.
+_BUTTONS_JS = """
+([inputSelector, cellSelector, sendSelector]) => {
+  const input = Array.from(document.querySelectorAll(inputSelector)).find((el) => el.offsetParent !== null);
+  if (!input) return [];
+  let el = input, best = input;
+  while (el.parentElement && el.parentElement !== document.body) {
+    el = el.parentElement;
+    if (el.querySelector(cellSelector)) break;
+    best = el;
+  }
+  // строка ввода: ближайший к полю блок с кнопками — «Отправить», «Прикрепить» — это не ответы
+  let row = input;
+  while (row.parentElement && !row.parentElement.querySelector('button')) row = row.parentElement;
+  row = row.parentElement || row;
+  const tools = /^(отправить|прикрепить|send|attach|загрузить|файл|фото|эмодзи|emoji)$/i;
+  const top = best.getBoundingClientRect().top;
+  const seen = new Set(), out = [];
+  for (const b of best.querySelectorAll('button, [role="button"]')) {
+    if (!b.offsetParent || b.contains(input) || row.contains(b)) continue;
+    if (b.matches(sendSelector) || tools.test((b.innerText || '').trim())) continue;
+    const text = (b.innerText || '').trim();
+    if (!text || text.length > 80 || text.includes(String.fromCharCode(10)) || seen.has(text)) continue;
+    if (b.getBoundingClientRect().top < top + 90) continue;  // шапка чата: вакансия, меню
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
+}
+"""
+
+
 @dataclass
 class ChatStats:
     opened: int = 0  # прочитано отказов
@@ -223,25 +256,57 @@ def _enable_only_unread(page: Page) -> bool:
         return True
 
     log.info("  → включаю фильтр «Только непрочитанные»")
-    # Сам чекбокс hh прячет под своей отрисовкой — жмём подпись, а если не сработало, сам чекбокс
-    attempts = (
-        lambda: page.get_by_text("Только непрочитанные", exact=True).first.click(),
-        lambda: box.check(force=True),
-    )
-    for attempt in attempts:
+    # Щелчок сразу после загрузки hh иногда «глотает»: страница ещё не ожила. Ждём, пока список дорисуется.
+    _wait_list_settled(page)
+    # Переключатель у hh — две вложенные label, у каждой свой input. Щёлкаем только по подписи: прямой
+    # щелчок по скрытому input мог переключить соседний и вернуть галочку обратно.
+    label = page.get_by_text("Только непрочитанные", exact=True).first
+    for attempt in range(3):
+        if _filter_checked(page):
+            break
         try:
-            attempt()
+            label.click()
         except PlaywrightError as e:
-            log.debug(f"  не получилось: {(str(e).splitlines() or [''])[0]}")
-        for _ in range(10):
-            if _filter_checked(page):
-                control.sleep(1.0)  # список перезагружается
-                if _filter_checked(page):  # и после перезагрузки галочка всё ещё стоит
-                    log.success("  ✓ фильтр включён — в списке только непрочитанные чаты")
-                    return True
+            log.debug(f"  щелчок не прошёл: {(str(e).splitlines() or [''])[0]}")
+        for _ in range(20):  # до 6 с: на медленном hh список перезагружается долго
             control.sleep(0.3)
-    log.warning("  ! не удалось включить фильтр — отличаю непрочитанные по счётчику сообщений")
+            if _filter_checked(page):
+                break
+        if not _filter_checked(page):
+            log.debug(f"  попытка {attempt + 1}: галочка не встала, состояние: {_filter_state(page)}")
+            control.sleep(2)
+    if _filter_checked(page):
+        control.sleep(1.0)  # список перезагружается
+        if _filter_checked(page):  # и после перезагрузки галочка всё ещё стоит
+            log.success("  ✓ фильтр включён — в списке только непрочитанные чаты")
+            return True
+    log.warning(f"  ! не удалось включить фильтр ({_filter_state(page)}) — отличаю непрочитанные по счётчику")
     return False
+
+
+def _wait_list_settled(page: Page, timeout: float = 15) -> None:
+    """Ждём, пока список чатов перестанет меняться (страница hh догрузилась и ожила)."""
+    cells = page.locator(S.CHAT_CELL)
+    last, stable_since, deadline = -1, time.monotonic(), time.monotonic() + timeout
+    while time.monotonic() < deadline and time.monotonic() - stable_since < 1.5:
+        control.sleep(0.3)
+        now = cells.count()
+        if now != last:
+            last, stable_since = now, time.monotonic()
+
+
+def _filter_state(page: Page) -> str:
+    """Для журнала: что на самом деле с обоими input переключателя."""
+    try:
+        return page.evaluate("""() => {
+          const inner = document.querySelector('[data-qa="chatik-checkbox-only-unread"]');
+          if (!inner) return 'переключателя нет';
+          const outer = inner.closest('label[data-interactive]')?.querySelector(':scope > input[type=checkbox]');
+          return `input hh: ${inner.checked ? 'вкл' : 'выкл'}, класс: ${/unchecked/i.test(inner.className) ? 'unchecked' : 'checked'}`
+               + `, внешний input: ${outer ? (outer.checked ? 'вкл' : 'выкл') : 'нет'}`;
+        }""")
+    except PlaywrightError:
+        return "не прочитать"
 
 
 def _filter_checked(page: Page) -> bool:
@@ -317,7 +382,12 @@ def _handle_with_ai(page, chat: _Chat, cfg: Config, ai: AiClient, resume: str, s
                 log.info("  последнее сообщение — ваше, ждём работодателя")
                 break
             log.info("  … спрашиваю ИИ, что ответить")
-            decision = ai.decide(resume, cfg.ai.context, transcript[-6000:], sent)
+            buttons = _buttons(page)
+            if buttons:
+                log.debug(f"  кнопки в чате: {buttons}")
+            decision = ai.decide(resume, cfg.ai.context, transcript[-6000:], sent, buttons)
+            for fix in ai.notes:
+                log.warning(f"  ! проверка: {fix}")
             # Страховки: документы, деньги, контакты, ссылки и повторы — что бы ни сказала модель
             note = review(decision, transcript, sent)
             if note:
@@ -340,21 +410,26 @@ def _handle_with_ai(page, chat: _Chat, cfg: Config, ai: AiClient, resume: str, s
                 break
 
             log.info(f"  вопрос: «{decision.question[:200]}»")
-            log.success(f"  ↳ ответ ИИ: «{decision.reply}»")
+            if decision.button:
+                log.success(f"  ↳ ИИ выбрал кнопку: «{decision.button}»")
+            else:
+                log.success(f"  ↳ ответ ИИ: «{decision.reply}»")
+            answer = f"[кнопка] {decision.button}" if decision.button else decision.reply
             if dry_run:
                 log.info("  [dry-run] ответ не отправлен")
-                _log_answer(answers_log, chat, decision.question, decision.reply, sent=False)
+                _log_answer(answers_log, chat, decision.question, answer, sent=False)
                 break
-            if not _send(page, decision.reply):
+            delivered = _press(page, decision.button) if decision.button else _send(page, decision.reply)
+            if not delivered:
                 log.error("  ✗ не удалось отправить ответ — оставляю чат вам")
                 stats.failed += 1
                 stats.other_unread.append(needs_you)
                 break
-            sent.append(decision.reply)
+            sent.append(decision.button or decision.reply)
             stats.answered += 1
             if len(sent) == 1:
                 stats.questionnaires += 1
-            _log_answer(answers_log, chat, decision.question, decision.reply, sent=True)
+            _log_answer(answers_log, chat, decision.question, answer, sent=True)
             transcript = _wait_next_message(page, cfg.ai.reply_wait)
             if transcript is None:
                 log.info(f"  робот не прислал новый вопрос за {cfg.ai.reply_wait:.0f} с — перехожу дальше")
@@ -400,6 +475,33 @@ def _wait_next_message(page: Page, timeout: float) -> str | None:
             control.sleep(1.5)  # робот иногда шлёт несколько сообщений подряд
             return _transcript(page) or text
     return None
+
+
+def _buttons(page: Page) -> list[str]:
+    try:
+        return page.evaluate(_BUTTONS_JS, [S.CHAT_INPUT, S.CHAT_CELL, S.CHAT_SEND]) or []
+    except PlaywrightError:
+        return []
+
+
+def _press(page: Page, text: str) -> bool:
+    """Нажать кнопку быстрого ответа с ровно таким текстом и дождаться, что переписка изменилась."""
+    before = _transcript(page) or ""
+    button = page.locator('button, [role="button"]').filter(
+        has_text=re.compile(rf"^\s*{re.escape(text)}\s*$")).filter(visible=True)
+    if not button.count():
+        log.warning(f"  ! кнопки «{text}» уже нет на странице")
+        return False
+    control.sleep(random.uniform(0.4, 0.9))
+    log.info(f"  → нажимаю кнопку «{text}»")
+    button.last.click()
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        control.sleep(0.4)
+        if (_transcript(page) or "") != before:
+            log.success("  ✓ ответ кнопкой отправлен")
+            return True
+    return False
 
 
 def _send(page: Page, text: str) -> bool:
