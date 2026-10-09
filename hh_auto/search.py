@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
+from . import hh_filters
 from . import selectors as S
 from .auth import hh_role, is_auth_url
 from .browser import FatalError, wait_captcha
@@ -64,7 +65,7 @@ def build_search_url(cfg) -> str:
         url = f"{SEARCH_PAGE}?{urlencode(query)}"
     else:
         url = cfg.search_url
-    return apply_hh_filters(url, cfg.filters.experience, cfg.filters.work_format)
+    return hh_filters.apply(url, cfg.hh_filters)
 
 
 def describe_search(cfg) -> str:
@@ -77,31 +78,14 @@ def describe_search(cfg) -> str:
     return f"ссылка: {cfg.search_url}"
 
 
-def apply_hh_filters(search_url: str, experience: list[str], work_format: list[str]) -> str:
-    """Подставляет в ссылку поиска фильтры hh «Опыт работы» и «Формат работы».
-
-    Пустой список — параметр не трогаем (остаётся как в исходной ссылке).
-    """
-    u = urlparse(search_url)
-    query = parse_qsl(u.query, keep_blank_values=True)
-    for key, values in (("experience", experience), ("work_format", work_format)):
-        if values:
-            query = [(k, v) for k, v in query if k != key] + [(key, v) for v in values]
-    if any(len(v) > 1 for v in (experience, work_format)) and not any(k == "ored_clusters" for k, _ in query):
-        query.append(("ored_clusters", "true"))  # несколько значений одного фильтра — через «ИЛИ»
-    return urlunparse(u._replace(query=urlencode(query)))
+def apply_hh_filters(search_url: str, filters: hh_filters.HhFilters) -> str:
+    """Подставляет в ссылку поиска фильтры самого hh ([hh_filters]). Незаданные не трогаем."""
+    return hh_filters.apply(search_url, filters)
 
 
 def describe_hh_filters(search_url: str) -> str:
-    """Человекочитаемое описание фильтров опыта и формата в ссылке — для лога."""
-    from .config import EXPERIENCE, WORK_FORMAT
-
-    query = parse_qsl(urlparse(search_url).query)
-    parts = []
-    for key, title, names in (("experience", "опыт", EXPERIENCE), ("work_format", "формат", WORK_FORMAT)):
-        values = [names.get(v, v) for k, v in query if k == key]
-        parts.append(f"{title}: {', '.join(values) if values else 'любой'}")
-    return "; ".join(parts)
+    """Человекочитаемое описание фильтров hh в ссылке — для лога."""
+    return hh_filters.describe(search_url)
 
 
 def results_page_url(search_url: str, page_num: int) -> str:

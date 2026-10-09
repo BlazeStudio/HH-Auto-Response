@@ -49,5 +49,5 @@ if MAC:
         icon=str(icon),
         bundle_identifier="io.github.blazestudio.hh-auto-response",
         info_plist={"NSHighResolutionCapable": True, "LSMinimumSystemVersion": "11.0",
-                    "CFBundleShortVersionString": "1.0.3"},
+                    "CFBundleShortVersionString": "1.0.4"},
     )

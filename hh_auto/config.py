@@ -9,6 +9,9 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import hh_filters
+from .hh_filters import HhFilters
+
 
 class ConfigError(Exception):
     pass
@@ -41,30 +44,15 @@ class Search:
     title_only: bool = False  # искать запрос только в названии вакансии
 
 
-# Встроенные фильтры поиска hh: значение параметра ссылки → подпись
-EXPERIENCE = {
-    "noExperience": "Нет опыта",
-    "between1And3": "От 1 года до 3 лет",
-    "between3And6": "От 3 до 6 лет",
-    "moreThan6": "Более 6 лет",
-}
-WORK_FORMAT = {
-    "REMOTE": "Удалённо",
-    "HYBRID": "Гибрид",
-    "ON_SITE": "На месте работодателя",
-    "FIELD_WORK": "Разъездной",
-}
-
-
 @dataclass
 class Filters:
-    # Фильтры самого hh (подставляются в ссылку поиска). Пусто — как в search_url.
-    experience: list[str] = field(default_factory=list)  # noExperience, between1And3, between3And6, moreThan6
-    work_format: list[str] = field(default_factory=list)  # REMOTE, HYBRID, ON_SITE, FIELD_WORK
+    # Фильтры программы (проверяются по карточке вакансии, без клика). Фильтры самого hh — в [hh_filters].
     # слова в названии вакансии, при которых она пропускается без отклика (регистр не важен)
     exclude_title_words: list[str] = field(default_factory=lambda: ["преподаватель", "куратор"])
     # слова в названии компании, при которых вакансия пропускается (регистр не важен)
     exclude_company_words: list[str] = field(default_factory=list)
+    # откликаться ТОЛЬКО в компании, в названии которых есть хотя бы одно из слов (пусто — проверку пропускаем)
+    include_company_words: list[str] = field(default_factory=list)
     # откликаться ТОЛЬКО на вакансии, где есть хотя бы одно из слов (пусто — на все)
     include_words: list[str] = field(default_factory=list)
     include_in_snippet: bool = False  # искать include_words и в описании из карточки, не только в названии
@@ -220,6 +208,7 @@ class Config:
     ai: Ai = field(default_factory=Ai)
     browser: Browser = field(default_factory=Browser)
     geo: Geo = field(default_factory=Geo)
+    hh_filters: HhFilters = field(default_factory=HhFilters)
     logs: Logs = field(default_factory=Logs)
     notify: Notify = field(default_factory=Notify)
 
@@ -270,6 +259,17 @@ def _section(cls, data: dict, name: str):
     return cls(**data)
 
 
+def _legacy_filters(raw: dict) -> dict:
+    """До 1.0.4 опыт и формат работы лежали в [filters] — переносим их в [hh_filters], старый конфиг грузится как был."""
+    old = raw.get("filters", {})
+    new = raw.setdefault("hh_filters", {})
+    for key in ("experience", "work_format"):
+        if key in old:
+            value = old.pop(key)
+            new.setdefault(key, value)
+    return raw.pop("filters", {})
+
+
 def validate_search_url(search_url: str) -> None:
     u = urlparse(search_url)
     if u.hostname not in ("hh.ru", "www.hh.ru") or not u.path.startswith("/search/vacancy"):
@@ -303,7 +303,7 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         skip_on_resume_mismatch=raw.pop("skip_on_resume_mismatch", True),
         search=_section(Search, raw.pop("search", {}), "search"),
         limits=_section(Limits, raw.pop("limits", {}), "limits"),
-        filters=_section(Filters, raw.pop("filters", {}), "filters"),
+        filters=_section(Filters, _legacy_filters(raw), "filters"),
         letter=_section(Letter, raw.pop("letter", {}), "letter"),
         questions=_section(Questions, raw.pop("questions", {}), "questions"),
         relocation=_section(Relocation, raw.pop("relocation", {}), "relocation"),
@@ -311,6 +311,7 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         ai=_section(Ai, raw.pop("ai", {}), "ai"),
         browser=_section(Browser, raw.pop("browser", {}), "browser"),
         geo=_section(Geo, raw.pop("geo", {}), "geo"),
+        hh_filters=hh_filters.normalize(_section(HhFilters, raw.pop("hh_filters", {}), "hh_filters")),
         logs=_section(Logs, raw.pop("logs", {}), "logs"),
         notify=_section(Notify, raw.pop("notify", {}), "notify"),
     )
@@ -332,10 +333,9 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError("[search] area — номер региона hh (1 — Москва, 2 — Санкт-Петербург, 113 — вся Россия)")
     if cfg.search_url:
         validate_search_url(cfg.search_url)
-    for key, allowed in (("experience", EXPERIENCE), ("work_format", WORK_FORMAT)):
-        wrong = [v for v in getattr(cfg.filters, key) if v not in allowed]
-        if wrong:
-            raise ConfigError(f"[filters] {key}: неизвестные значения {wrong}, допустимо: {', '.join(allowed)}")
+    errors = hh_filters.validate(hh_filters.normalize(cfg.hh_filters))
+    if errors:
+        raise ConfigError("[hh_filters] " + errors[0])
     if cfg.letter.mode not in LETTER_MODES:
         raise ConfigError(f"[letter] mode: «{cfg.letter.mode}», допустимо: {', '.join(LETTER_MODES)}")
     if cfg.letter.mode == "template" and not cfg.letter.template_text.strip():

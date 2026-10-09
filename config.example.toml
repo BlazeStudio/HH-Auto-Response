@@ -31,18 +31,59 @@ action_delay_min = 0.6     # пауза между кликами внутри �
 action_delay_max = 1.6
 max_consecutive_errors = 5 # столько ошибок подряд → аварийная остановка
 
-[filters]
-# Фильтры самого hh — подставляются в ссылку поиска вместо тех, что в ней есть.
-# Пустой список — как в search_url. Можно несколько значений.
-# Опыт:   "noExperience" (нет опыта), "between1And3" (1–3 года), "between3And6" (3–6 лет), "moreThan6" (более 6)
-# Формат: "REMOTE" (удалённо), "HYBRID" (гибрид), "ON_SITE" (на месте работодателя), "FIELD_WORK" (разъездной)
+[hh_filters]
+# Фильтры самого hh — подставляются в ссылку поиска вместо тех, что в ней есть. Пусто / 0 / false — фильтр
+# не задан: на hh это «выбрано всё». Проще всего настроить фильтры на hh.ru, скопировать адрес страницы
+# и в приложении нажать «Настройки» → «Фильтры hh» → «Заполнить из ссылки hh».
+order_by = ""              # "" — по соответствию; "publication_time" по дате; "salary_desc" / "salary_asc"
+                           # по убыванию / возрастанию зарплаты; "distance" по удалённости от дома
+search_period = 0          # 0 — за всё время, 7 — за неделю, 3 — за три дня, 1 — за сутки
+# График: FIVE_ON_TWO_OFF (5/2), SIX_ON_ONE_OFF, FOUR_ON_THREE_OFF, FOUR_ON_TWO_OFF, FOUR_ON_FOUR_OFF,
+#   THREE_ON_THREE_OFF, THREE_ON_TWO_OFF, TWO_ON_TWO_OFF (2/2), TWO_ON_ONE_OFF, ONE_ON_THREE_OFF, ONE_ON_TWO_OFF,
+#   WEEKEND (по выходным), FLEXIBLE (свободный), OTHER (другое)
+work_schedule_by_days = []
+# Рабочие часы в день: HOURS_2 … HOURS_12, HOURS_24, FLEXIBLE (по договорённости), OTHER
+working_hours = []
+# Опыт: noExperience, between1And3, between3And6, moreThan6
 experience = []
+# Формат: REMOTE (удалённо), HYBRID (гибрид), ON_SITE (на месте работодателя), FIELD_WORK (разъездной)
 work_format = []
+salary = 0                 # уровень дохода от, ₽; 0 — не важно
+salary_mode = ""           # за что указан доход: MONTH, SHIFT (смена), HOUR, FLY_IN_FLY_OUT (вахта), SERVICE
+# Частота выплат: DAILY, WEEKLY, TWICE_PER_MONTH, MONTHLY, PER_PROJECT
+salary_frequency = []
+# Тип занятости: FULL (полная), PART (частичная), PROJECT (подработка), FLY_IN_FLY_OUT (вахта)
+employment_form = []
+accept_temporary = false   # оформление по ГПХ или по совместительству
+# Специализации — номера из справочника hh (в приложении выбираются по названию): 96 — программист,
+# 160 — DevOps-инженер, 104 — руководитель группы разработки, 165 — дата-сайентист …
+professional_role = []
+# Компании — номера из ссылки hh.ru/employer/<номер> (можно вставить саму ссылку)
+employer_id = []
+# Отрасль компании — номера hh: "7" — ИТ, системная интеграция, интернет; подотрасль — "7.540" и т.п.
+industry = []
+excluded_text = ""         # слова-исключения: hh не покажет вакансии с ними
+# Образование: not_required_or_not_specified (не требуется или не указано), special_secondary, higher
+education = []
+# Другие параметры: not_from_agency (без кадровых агентств), with_address, accept_labor_contract (трудовой договор),
+#   accredited_it (аккредитованные ИТ-компании), with_salary (указан доход), internship (стажировка),
+#   low_performance (меньше 10 откликов), night_shifts (вечерние/ночные смены), accept_kids (с 14 лет)
+label = []
+# Особенности здоровья: CHRONIC_DISEASES, MOBILITY, HEARING, VISION, MENTAL, UNSPECIFIED (категория не указана)
+inclusiveness_types = []
+# Где искать слова запроса (для [search] mode = "query"): name, company_name, description
+search_field = []
+
+[filters]
+# Фильтры программы: проверяются по карточке вакансии, вакансия пропускается без клика.
 # Слова в названии вакансии, при которых она пропускается без отклика (регистр не важен)
 exclude_title_words = ["преподаватель", "куратор"]
 # Слова в названии КОМПАНИИ, при которых вакансия пропускается (регистр не важен).
 # Например: ["сбер", "тинькофф"] — «Сбер», «СберТех», «Сбербанк» будут пропущены
 exclude_company_words = []
+# Откликаться ТОЛЬКО в компании, в названии которых есть хотя бы одно из слов (регистр не важен).
+# Пусто — проверка не делается. Например: ["яндекс", "тинькофф", "ozon"]
+include_company_words = []
 # Откликаться ТОЛЬКО на вакансии, где есть хотя бы одно из этих слов (регистр не важен).
 # Пусто — откликаться на все. Например: ["python", "backend", "django"]
 include_words = []
@@ -106,7 +147,8 @@ enabled = false
 provider = "openrouter"
 api_key = ""               # ключ провайдера (или переменная окружения HH_AI_API_KEY)
 model = ""                 # пусто — модель по умолчанию для провайдера
-base_url = ""              # пусто — адрес провайдера
+base_url = ""              # пусто — адрес провайдера. Ollama на другом компьютере: "http://192.168.1.50:11434"
+                           # или "http://localhost:11435" через SSH-туннель — см. docs/ollama.md
 # Что ещё знать о вас кроме резюме: зарплатные ожидания, формат, город, когда готовы выйти, и т.п.
 context = ""
 # false — отвечать всем (ботам и живым рекрутерам); true — только ботам hh из robot_markers.

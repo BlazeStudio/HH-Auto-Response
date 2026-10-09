@@ -27,7 +27,9 @@ import customtkinter as ctk
 from . import control
 from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_chats, run_responses
 from .chats import ChatStats
-from .config import (AI_PROVIDERS, AREAS, EXPERIENCE, WORK_FORMAT, Config, ConfigError, load_config, save_config,
+from . import hh_filters as hhf
+from .hh_dicts import INDUSTRIES, INDUSTRY_NAMES, PROFESSIONAL_ROLE_CATEGORIES, PROFESSIONAL_ROLES
+from .config import (AI_PROVIDERS, AREAS, Config, ConfigError, load_config, save_config,
                      validate_config, validate_search_source)
 from .ai import AiClient, AiError, shutdown_ollama
 from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, fill_sample_form, write_sample_letter
@@ -38,7 +40,7 @@ from .paths import app_root, bundled
 from .runner import RunOptions, Stats
 
 APP_NAME = "HH-Auto-Response"
-APP_VERSION = "1.0.3-beta"
+APP_VERSION = "1.0.4-beta"
 GITHUB_URL = "https://github.com/BlazeStudio/hh-auto-response"
 
 # --- палитра: (светлая тема, тёмная тема) ---
@@ -689,11 +691,28 @@ SETTINGS = [
         ("limits", "delay_min", "Пауза между вакансиями: от, сек", "float", ""),
         ("limits", "delay_max", "Пауза между вакансиями: до, сек", "float", ""),
     ]),
-    ("Фильтры hh: опыт и формат работы", [
-        ("filters", "experience", "Опыт работы", "multi",
-         "Ничего не отмечено — как в ссылке поиска. Отмеченное заменяет опыт в ссылке"),
-        ("filters", "work_format", "Формат работы", "multi",
-         "Ничего не отмечено — как в ссылке поиска. Отмеченное заменяет формат в ссылке"),
+    ("Фильтры hh", [
+        ("hh_filters", "order_by", "Сортировка", "choice", ""),
+        ("hh_filters", "search_period", "Период публикации", "choice", ""),
+        ("hh_filters", "work_schedule_by_days", "График работы", "multi", ""),
+        ("hh_filters", "working_hours", "Рабочие часы в день", "multi", ""),
+        ("hh_filters", "experience", "Опыт работы", "multi", ""),
+        ("hh_filters", "work_format", "Формат работы", "multi", ""),
+        ("hh_filters", "salary", "Уровень дохода от, ₽", "int", "0 — не важно"),
+        ("hh_filters", "salary_mode", "Доход указан", "choice", ""),
+        ("hh_filters", "salary_frequency", "Частота выплат", "multi", ""),
+        ("hh_filters", "employment_form", "Тип занятости", "multi", ""),
+        ("hh_filters", "accept_temporary", "Оформление по ГПХ или по совместительству", "bool", ""),
+        ("hh_filters", "professional_role", "Специализации", "picker", ""),
+        ("hh_filters", "employer_id", "Компании (фильтр hh)", "list",
+         "Номера компаний или ссылки вида hh.ru/employer/1740 через запятую"),
+        ("hh_filters", "industry", "Отрасль компании", "picker", ""),
+        ("hh_filters", "excluded_text", "Слова-исключения", "str",
+         "hh не покажет вакансии с этими словами. Пример: стажёр преподаватель"),
+        ("hh_filters", "education", "Образование", "multi", ""),
+        ("hh_filters", "label", "Другие параметры", "multi", ""),
+        ("hh_filters", "inclusiveness_types", "Особенности здоровья", "multi", ""),
+        ("hh_filters", "search_field", "Где искать слова запроса", "multi", "Для поиска «По запросу»"),
     ]),
     ("Фильтры по словам", [
         ("filters", "include_words", "Откликаться ТОЛЬКО на вакансии, где есть хотя бы одно слово", "list",
@@ -703,6 +722,8 @@ SETTINGS = [
          "Через запятую, регистр не важен. Например: преподаватель, куратор"),
         ("filters", "exclude_company_words", "Пропускать компании, в названии которых есть", "list",
          "Через запятую, регистр не важен. Например: сбер, тинькофф"),
+        ("filters", "include_company_words", "Откликаться ТОЛЬКО в компании, в названии которых есть", "list",
+         "Через запятую, регистр не важен. Пусто — в любые компании. Например: яндекс, тинькофф, ozon"),
     ]),
     ("Сопроводительное письмо", [
         ("letter", "mode", "Как писать письмо", "choice",
@@ -732,12 +753,16 @@ SETTINGS = [
         ("ai", "provider", "Нейросеть", "choice", ""),
         ("ai", "api_key", "API-ключ", "secret", ""),
         ("ai", "model", "Модель (необязательно)", "str", "Пусто — модель по умолчанию для выбранной нейросети"),
-        ("ai", "base_url", "Адрес API (только для «Другой сервис»)", "str", "Например: https://api.example.com/v1"),
+        ("ai", "base_url", "Адрес API (для «Другой сервис» или Ollama на другом компьютере)", "str",
+         "Ollama на другом компьютере: http://192.168.1.50:11434 (или http://localhost:11434 через SSH-туннель). "
+         "Пусто — Ollama на этом компьютере. Подробно — docs/ollama.md"),
         ("ai", "context", "Что ещё знать о вас, кроме резюме", "text",
          "Зарплатные ожидания, формат работы, город, когда готовы выйти, готовность к переезду и т.п."),
         ("ai", "only_robot", "Отвечать только ботам hh (Робот-рекрутер, ИИ-помощник), живым людям — вы", "bool",
          "Выключено — отвечает всем. Встречи, собеседования и звонки в любом случае остаются вам"),
         ("ai", "max_answer_chars", "Максимальная длина ответа, символов", "int", ""),
+        ("ai", "timeout", "Сколько ждать ответа нейросети, сек", "float",
+         "Обычно 60. Ollama на процессоре без видеокарты или на медленном сервере — 180 и больше"),
     ]),
     ("Уведомления по итогам", [
         ("notify", "desktop", "Показывать уведомление на компьютере, когда запуск закончился", "bool",
@@ -762,10 +787,19 @@ SETTINGS = [
     ]),
 ]
 # Варианты для полей с несколькими галочками: значение в config → подпись
-MULTI = {("filters", "experience"): EXPERIENCE, ("filters", "work_format"): WORK_FORMAT}
+MULTI = {("hh_filters", name): options for name, options in hhf.LIST_OPTIONS.items() if options is not None}
+# Большие справочники hh — выбор в отдельном окне с поиском: (группы, id → название)
+PICKERS = {
+    ("hh_filters", "professional_role"): (PROFESSIONAL_ROLE_CATEGORIES, PROFESSIONAL_ROLES),
+    ("hh_filters", "industry"): (
+        [(name, [(iid, f"{name} — вся отрасль")] + subs) for iid, name, subs in INDUSTRIES], INDUSTRY_NAMES),
+}
 
 # Варианты для полей-списков выбора: подпись → значение в config
 CHOICES = {
+    ("hh_filters", "order_by"): {label: value for value, label in hhf.ORDER_BY.items()},
+    ("hh_filters", "search_period"): {label: value for value, label in hhf.SEARCH_PERIOD.items()},
+    ("hh_filters", "salary_mode"): {label: value for value, label in hhf.SALARY_MODE.items()},
     ("ai", "provider"): {
         "OpenRouter — есть бесплатные модели": "openrouter",
         "DeepSeek API — платно, но копейки": "deepseek",
@@ -781,6 +815,118 @@ CHOICES = {
 }
 
 
+class PickerField(ctk.CTkFrame):
+    """Поле настроек для большого справочника hh: «Выбрать…» + краткая сводка выбранного."""
+
+    def __init__(self, master, title: str, groups, names: dict[str, str]):
+        super().__init__(master, fg_color="transparent")
+        self.title, self.groups, self.names = title, groups, names
+        self.values: list[str] = []
+        _secondary_button(self, "Выбрать…", self._open, width=120, height=30).pack(side="left")
+        self.summary = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w", justify="left", wraplength=620)
+        self.summary.pack(side="left", fill="x", expand=True, padx=10)
+
+    def set(self, values) -> None:
+        self.values = [str(v) for v in values or []]
+        if not self.values:
+            text = "Не выбрано — все (как на hh)"
+        else:
+            shown = ", ".join(self.names.get(v, v) for v in self.values[:3])
+            text = f"Выбрано {len(self.values)}: {shown}" + ("…" if len(self.values) > 3 else "")
+        self.summary.configure(text=text, text_color=TEXT if self.values else MUTED)
+
+    def get(self) -> list[str]:
+        return list(self.values)
+
+    def _open(self) -> None:
+        PickerDialog(self, self.title, self.groups, self.values, self.set)
+
+
+class PickerDialog(ctk.CTkToplevel):
+    """Выбор из справочника hh: поиск по названию, группы, «все в группе», счётчик выбранного."""
+
+    def __init__(self, master, title: str, groups, selected: list[str], on_done):
+        super().__init__(master)
+        self.title(title)
+        self.geometry("760x680")
+        self.transient(master.winfo_toplevel())
+        self.on_done = on_done
+        self.order: list[str] = []  # id в порядке справочника — так же сохраняем
+        self.vars: dict[str, ctk.BooleanVar] = {}
+        self.extra = [v for v in selected if all(v != i for _, items in groups for i, _ in items)]  # неизвестные id
+
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(14, 6))
+        self.search = ctk.CTkEntry(top, placeholder_text="Поиск по названию…", height=34)
+        self.search.pack(side="left", fill="x", expand=True)
+        self.search.bind("<KeyRelease>", lambda _e: self._schedule_filter())
+        self.counter = ctk.CTkLabel(top, text="", text_color=MUTED)
+        self.counter.pack(side="left", padx=12)
+
+        self.list = ctk.CTkScrollableFrame(self, fg_color=CARD_BG)
+        self.list.pack(fill="both", expand=True, padx=14)
+        self.rows: list[tuple[ctk.CTkFrame, list[tuple[ctk.CTkCheckBox, str]]]] = []
+        for group, items in groups:
+            header = ctk.CTkFrame(self.list, fg_color="transparent")
+            ctk.CTkLabel(header, text=group, font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+            ids = [item_id for item_id, _ in items]
+            ctk.CTkButton(header, text="все", width=46, height=22, fg_color="transparent", text_color=ACCENT,
+                          hover_color=ACCENT_SOFT, command=lambda ids=ids: self._mark(ids, True)).pack(side="left", padx=6)
+            ctk.CTkButton(header, text="снять", width=52, height=22, fg_color="transparent", text_color=MUTED,
+                          hover_color=ACCENT_SOFT, command=lambda ids=ids: self._mark(ids, False)).pack(side="left")
+            boxes = []
+            for item_id, name in items:
+                if item_id not in self.vars:
+                    self.vars[item_id] = ctk.BooleanVar(value=item_id in selected)
+                    self.order.append(item_id)
+                box = ctk.CTkCheckBox(self.list, text=name, variable=self.vars[item_id], command=self._count,
+                                      checkbox_width=18, checkbox_height=18)
+                boxes.append((box, name.lower()))
+            self.rows.append((header, boxes))
+
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill="x", padx=14, pady=12)
+        _primary_button(bottom, "Готово", self._done, width=130, height=36).pack(side="left")
+        _secondary_button(bottom, "Снять всё", lambda: self._mark(self.order, False), width=120,
+                          height=36).pack(side="left", padx=8)
+        _secondary_button(bottom, "Отмена", self.destroy, width=110, height=36).pack(side="right")
+        self._after = None
+        self._filter()
+        self._count()
+        self.after(150, self.grab_set)
+
+    def _schedule_filter(self) -> None:
+        if self._after:
+            self.after_cancel(self._after)
+        self._after = self.after(200, self._filter)
+
+    def _filter(self) -> None:
+        query = self.search.get().strip().lower()
+        for header, boxes in self.rows:
+            header.pack_forget()
+            for box, _ in boxes:
+                box.pack_forget()
+        for header, boxes in self.rows:
+            matched = [box for box, name in boxes if query in name]
+            if matched:
+                header.pack(fill="x", pady=(10, 2))
+                for box in matched:
+                    box.pack(anchor="w", padx=(14, 0), pady=1)
+
+    def _mark(self, ids, value: bool) -> None:
+        for item_id in ids:
+            self.vars[item_id].set(value)
+        self._count()
+
+    def _count(self) -> None:
+        chosen = sum(var.get() for var in self.vars.values())
+        self.counter.configure(text=f"выбрано {chosen}" if chosen else "ничего не выбрано — все")
+
+    def _done(self) -> None:
+        self.on_done([item_id for item_id in self.order if self.vars[item_id].get()] + self.extra)
+        self.destroy()
+
+
 class SettingsPage(Page):
     def __init__(self, master, app: "App"):
         super().__init__(master, "Настройки", f"Сохраняются в {app.config_path}")
@@ -794,6 +940,17 @@ class SettingsPage(Page):
             card.pack(fill="x", pady=(0, 12), padx=(0, 6))
             ctk.CTkLabel(card, text=section_title, font=ctk.CTkFont(size=15, weight="bold")).pack(
                 anchor="w", padx=16, pady=(12, 4))
+            if section_title == "Фильтры hh":
+                hint = ctk.CTkLabel(card, text="Пусто — фильтр не задан, на hh это «выбрано всё». Проще всего настроить "
+                                               "фильтры на hh.ru, скопировать адрес страницы и нажать «Заполнить из ссылки».",
+                                    text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=760)
+                hint.pack(anchor="w", padx=16, pady=(0, 0))
+                row = ctk.CTkFrame(card, fg_color="transparent")
+                row.pack(fill="x", padx=16, pady=(8, 8))
+                _secondary_button(row, "Заполнить из ссылки hh…", self.import_hh_filters, width=220,
+                                  height=32).pack(side="left")
+                _secondary_button(row, "Сбросить фильтры hh", self.reset_hh_filters, width=190,
+                                  height=32).pack(side="left", padx=8)
             for section, key, label, kind, hint in items:
                 self._add_field(card, section, key, label, kind, hint)
             if section_title == "ИИ-ответы в чатах":
@@ -845,10 +1002,16 @@ class SettingsPage(Page):
             elif kind == "multi":
                 box = ctk.CTkFrame(row, fg_color="transparent")
                 box.pack(anchor="w", pady=(2, 0))
+                options = MULTI[(section, key)]
                 widget = {value: ctk.CTkCheckBox(box, text=label, checkbox_width=20, checkbox_height=20)
-                          for value, label in MULTI[(section, key)].items()}
+                          for value, label in options.items()}
+                columns = 4 if max(len(label) for label in options.values()) <= 22 else 2
                 for i, checkbox in enumerate(widget.values()):
-                    checkbox.grid(row=0, column=i, padx=(0, 18), sticky="w")
+                    checkbox.grid(row=i // columns, column=i % columns, padx=(0, 18), pady=2, sticky="w")
+            elif kind == "picker":
+                groups, names = PICKERS[(section, key)]
+                widget = PickerField(row, label, groups, names)
+                widget.pack(fill="x", pady=(2, 0))
             elif kind == "choice":
                 widget = ctk.CTkOptionMenu(row, values=list(CHOICES[(section, key)]), width=300)
                 widget.pack(anchor="w")
@@ -869,24 +1032,30 @@ class SettingsPage(Page):
     def load(self) -> None:
         cfg = self.app.cfg
         for (section, key), (kind, widget) in self.widgets.items():
-            value = getattr(getattr(cfg, section) if section else cfg, key)
-            if kind == "bool":
-                widget.select() if value else widget.deselect()
-            elif kind == "text":
-                widget.delete("1.0", "end")
-                widget.insert("1.0", value)
-            elif kind == "multi":
-                for item, checkbox in widget.items():
-                    checkbox.select() if item in value else checkbox.deselect()
-            elif kind == "choice":
-                options = CHOICES[(section, key)]
-                if value not in options.values():  # например, регион, которого нет в списке
-                    options[f"{value}"] = value
-                    widget.configure(values=list(options))
-                widget.set(next((k for k, v in options.items() if v == value), next(iter(options))))
-            else:
-                widget.delete(0, "end")
-                widget.insert(0, ", ".join(value) if kind == "list" else str(value))
+            self._set_value(section, key, getattr(getattr(cfg, section) if section else cfg, key))
+
+    def _set_value(self, section: str, key: str, value) -> None:
+        kind, widget = self.widgets[(section, key)]
+        if kind == "picker":
+            widget.set(value)
+            return
+        if kind == "bool":
+            widget.select() if value else widget.deselect()
+        elif kind == "text":
+            widget.delete("1.0", "end")
+            widget.insert("1.0", value)
+        elif kind == "multi":
+            for item, checkbox in widget.items():
+                checkbox.select() if item in value else checkbox.deselect()
+        elif kind == "choice":
+            options = CHOICES[(section, key)]
+            if value not in options.values():  # например, регион, которого нет в списке
+                options[f"{value}"] = value
+                widget.configure(values=list(options))
+            widget.set(next((k for k, v in options.items() if v == value), next(iter(options))))
+        else:
+            widget.delete(0, "end")
+            widget.insert(0, ", ".join(value) if kind == "list" else str(value))
 
     def save(self) -> None:
         cfg = self.collect()
@@ -908,6 +1077,8 @@ class SettingsPage(Page):
                     value = widget.get("1.0", "end").strip()
                 elif kind == "multi":
                     value = [item for item, checkbox in widget.items() if checkbox.get()]
+                elif kind == "picker":
+                    value = widget.get()
                 elif kind == "choice":
                     value = CHOICES[(section, key)][widget.get()]
                 elif kind == "list":
@@ -948,6 +1119,30 @@ class SettingsPage(Page):
             self.app.events.put(("ai_test", *result))  # окно трогаем только из главного потока (_poll)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def import_hh_filters(self) -> None:
+        """Фильтры из ссылки hh: настроили на сайте, скопировали адрес — все поля заполнились."""
+        url = ctk.CTkInputDialog(title=APP_NAME, text="Вставьте адрес страницы поиска hh с выбранными фильтрами:").get_input()
+        if not url or not url.strip():
+            return
+        url = url.strip()
+        if "hh.ru/search/vacancy" not in url:
+            messagebox.showerror(APP_NAME, "Это не ссылка поиска вакансий hh (нужна вида https://hh.ru/search/vacancy?...)")
+            return
+        found = hhf.from_url(url)
+        for name in hhf.MANAGED:
+            self._set_value("hh_filters", name, getattr(found, name))
+        note = ""
+        if "resume=" in url:  # ссылка «подходящие к резюме» — её же без фильтров ставим ссылкой поиска
+            self._set_value("", "search_url", hhf.strip(url))
+            note = " Ссылка поиска тоже обновлена (без фильтров — они теперь в полях ниже)."
+        messagebox.showinfo(APP_NAME, f"Заполнено фильтров: {hhf.count(found)}.{note}\n\nПроверьте и нажмите «Сохранить».")
+
+    def reset_hh_filters(self) -> None:
+        empty = hhf.HhFilters()
+        for name in hhf.MANAGED:
+            self._set_value("hh_filters", name, getattr(empty, name))
+        self.app.toast("Фильтры hh сброшены — нажмите «Сохранить»")
 
     def test_notify(self) -> None:
         """Тестовое уведомление с текущими (даже несохранёнными) настройками — в фоне."""
