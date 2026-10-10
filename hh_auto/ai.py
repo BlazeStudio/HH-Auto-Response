@@ -195,37 +195,69 @@ def is_local_url(url: str) -> bool:
     return host in ("localhost", "::1", "0.0.0.0") or host.startswith("127.")
 
 
+# Что пишут в «Адрес API» вместо адреса Ollama: адрес из браузера или конкретного метода API
+_OLLAMA_SUFFIXES = ("/chat/completions", "/completions", "/models", "/api/chat", "/api/generate", "/api/tags",
+                    "/api/version", "/api")
+
+
 def ollama_url(base_url: str) -> str:
     """Адрес Ollama к виду OpenAI API: «http://192.168.1.50:11434» → «http://192.168.1.50:11434/v1»."""
     url = base_url.strip().rstrip("/")
     if url and "://" not in url:
         url = "http://" + url
+    for suffix in _OLLAMA_SUFFIXES:
+        if url.endswith(suffix):
+            url = url[: -len(suffix)].rstrip("/")
+            break
     if url and not url.endswith("/v1"):
         url += "/v1"
     return url
 
 
-def ensure_ollama(base_url: str, wait: float = 20) -> bool:
+def ollama_root(base_url: str) -> str:
+    """Адрес самой Ollama (без /v1) — по нему её родной API: /api/version, /api/tags."""
+    return base_url.rsplit("/v1", 1)[0]
+
+
+def _ollama_alive(root: str, timeout: float) -> bool:
+    try:
+        with urllib.request.urlopen(f"{root}/api/version", timeout=timeout):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _loopback_ipv4(base_url: str) -> str:
+    """localhost → 127.0.0.1. Ollama слушает только IPv4, а «localhost» сначала пробует IPv6 (::1): на Windows
+    отказ в соединении приходит через 2 с — и так перед каждым запросом к нейросети."""
+    parts = urllib.parse.urlsplit(base_url)
+    if (parts.hostname or "").lower() != "localhost":
+        return base_url
+    netloc = re.sub(r"(^|@)localhost(?=:|$)", r"\g<1>127.0.0.1", parts.netloc, flags=re.I)
+    return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
+
+
+def ensure_ollama(base_url: str, wait: float = 20) -> tuple[str, str]:
     """Ollama отвечает? На этом компьютере, если не запущена, — запускаем её в фоне (обычная установка
-    с ollama.com). На другом компьютере ничего не запускаем, только проверяем связь. True — отвечает."""
-    root = base_url.rsplit("/v1", 1)[0]
+    с ollama.com). На другом компьютере ничего не запускаем, только проверяем связь.
+
+    Возвращает (адрес, по которому Ollama ответила, или "", причина): причина — "remote" (другой компьютер),
+    "tunnel" (нестандартный порт на этом компьютере, обычно SSH-туннель), "missing" (Ollama не установлена),
+    "silent" (запустили, но не ответила)."""
     local = is_local_url(base_url)
-
-    def alive() -> bool:
-        try:
-            with urllib.request.urlopen(f"{root}/api/version", timeout=2 if local else 6):
-                return True
-        except (urllib.error.URLError, OSError):
-            return False
-
-    if alive():
-        return True
-    if not local or (urllib.parse.urlparse(base_url).port or 11434) != 11434:
-        return False  # другой компьютер или нестандартный порт (обычно SSH-туннель) — свою Ollama не запускаем
+    fast = _loopback_ipv4(base_url)
+    timeout = 2 if local else 6
+    for url in dict.fromkeys((fast, base_url)):  # сначала 127.0.0.1: без двухсекундной задержки IPv6
+        if _ollama_alive(ollama_root(url), timeout):
+            return url, ""
+    if not local:
+        return "", "remote"
+    if (urllib.parse.urlparse(base_url).port or 11434) != 11434:
+        return "", "tunnel"  # нестандартный порт — обычно SSH-туннель к другому компьютеру, свою Ollama не запускаем
     candidates = [shutil.which("ollama"), os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")]
     exe = next((c for c in candidates if c and os.path.exists(c)), None)
     if not exe:
-        return False
+        return "", "missing"
     global _ollama_proc
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     _ollama_proc = subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -233,9 +265,41 @@ def ensure_ollama(base_url: str, wait: float = 20) -> bool:
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         time.sleep(1)
-        if alive():
-            return True
-    return False
+        for url in dict.fromkeys((fast, base_url)):
+            if _ollama_alive(ollama_root(url), 2):
+                return url, ""
+    return "", "silent"
+
+
+def ollama_models(root: str, timeout: float = 5) -> list[str] | None:
+    """Модели, скачанные в Ollama (/api/tags). None — список получить не удалось."""
+    try:
+        with urllib.request.urlopen(f"{root}/api/tags", timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return [m["name"] for m in data.get("models", []) if m.get("name")]
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def match_ollama_model(model: str, installed: list[str]) -> str | None:
+    """Имя модели так, как оно записано в Ollama. Ollama ищет модель по точному имени, а одну и ту же модель
+    зовут по-разному: «qwen3» — это «qwen3:latest», «ollama run qwen3» скачивает «qwen3:latest» (это та же 8b),
+    в настройках — «qwen3:8b». Подбираем, только если подходящая модель одна; иначе None."""
+    def split(name: str) -> tuple[str, str]:
+        name = name.strip().lower()
+        if ":" not in name.rsplit("/", 1)[-1]:
+            name += ":latest"
+        base, tag = name.rsplit(":", 1)
+        return base, tag
+
+    want_base, want_tag = split(model)
+    for name in installed:
+        if split(name) == (want_base, want_tag):
+            return name
+    fits = [name for name in installed
+            if split(name)[0] == want_base
+            and (want_tag == "latest" or split(name)[1] == "latest" or split(name)[1].startswith(want_tag + "-"))]
+    return fits[0] if len(fits) == 1 else None
 
 
 @dataclass
@@ -392,27 +456,55 @@ class AiClient:
         if cfg.provider == "ollama":  # Ollama на другом компьютере: адрес можно ввести и без /v1
             self.base_url = ollama_url(self.base_url)
         self.local = is_local_url(self.base_url)
-        self.model = cfg.model or preset_model
+        self.model = (cfg.model or preset_model).strip()
+        self.model_note = ""  # модель в Ollama называется иначе, чем в настройках
         self.api_key = cfg.api_key or os.environ.get("HH_AI_API_KEY", "")
         if not self.base_url or not self.model:
             raise AiError("для ИИ не задан адрес API или модель ([ai] base_url / model)")
         if cfg.provider in ("deepseek", "openrouter") and not self.api_key:
             raise AiError(f"для {cfg.provider} нужен API-ключ ([ai] api_key)")
-        if cfg.provider == "ollama" and not ensure_ollama(self.base_url):
-            if self.local and (urllib.parse.urlparse(self.base_url).port or 11434) != 11434:
-                raise AiError(f"на {self.base_url.rsplit('/v1', 1)[0]} никто не отвечает — открыт ли SSH-туннель "
-                              "к компьютеру с Ollama? См. docs/ollama.md")
-            if not self.local:
-                raise AiError(f"Ollama на {self.base_url.rsplit('/v1', 1)[0]} не отвечает. Проверьте, что она запущена "
-                              "и слушает сеть (OLLAMA_HOST=0.0.0.0) или что открыт SSH-туннель — см. docs/ollama.md")
-            raise AiError("Ollama не запущена и не нашлась — установите её с ollama.com и скачайте модель: "
+        if cfg.provider == "ollama":
+            self._connect_ollama()
+
+    def _connect_ollama(self) -> None:
+        """Ollama отвечает и в ней есть нужная модель — иначе понятная ошибка, что именно не так."""
+        url, problem = ensure_ollama(self.base_url)
+        root = ollama_root(self.base_url)
+        if problem == "tunnel":
+            raise AiError(f"на {root} никто не отвечает — открыт ли SSH-туннель к компьютеру с Ollama? См. docs/ollama.md")
+        if problem == "remote":
+            raise AiError(f"Ollama на {root} не отвечает. Проверьте, что она запущена и слушает сеть "
+                          "(OLLAMA_HOST=0.0.0.0) или что открыт SSH-туннель — см. docs/ollama.md")
+        if problem == "missing":
+            raise AiError(f"Ollama не запущена и не нашлась — установите её с ollama.com и скачайте модель: "
                           f"ollama pull {self.model}")
-        if cfg.provider == "ollama" and self.local:
+        if problem:
+            raise AiError(f"Ollama запущена, но не отвечает на {root} — откройте приложение Ollama вручную и повторите")
+        self.base_url = url
+        installed = ollama_models(ollama_root(url))
+        if installed is not None:  # Ollama ищет модель по точному имени — сверяем со списком скачанных
+            found = match_ollama_model(self.model, installed)
+            if found is None:
+                raise AiError(self._model_missing(installed))
+            if found != self.model:
+                self.model_note = f"в настройках «{self.model}»"
+                self.model = found
+        if self.local:
             # при выходе выгрузим модель из видеопамяти — только на своём компьютере, чужим сервером он управляет сам
-            _ollama_models.add((self.base_url.rsplit("/v1", 1)[0], self.model))
+            _ollama_models.add((ollama_root(self.base_url), self.model))
+
+    def _model_missing(self, installed: list[str] | None) -> str:
+        where = "" if self.local else f" на компьютере с Ollama ({urllib.parse.urlparse(self.base_url).hostname})"
+        text = f"в Ollama ({ollama_root(self.base_url)}) нет модели «{self.model}»"
+        if installed:
+            text += f". Скачаны: {', '.join(installed)} — впишите нужную в «Модель» как есть или выполните{where}"
+        else:
+            text += f" — ни одной модели не скачано. Выполните{where}"
+        return f"{text}: ollama pull {self.model}"
 
     def describe(self) -> str:
-        return f"{self.cfg.provider}: {self.model} ({self.base_url})"
+        model = f"{self.model}, {self.model_note}" if self.model_note else self.model
+        return f"{self.cfg.provider}: {model} ({self.base_url})"
 
     def complete(self, messages: list[dict], max_tokens: int = 800, json_mode: bool = False) -> str:
         payload = {"model": self.model, "messages": messages, "temperature": 0.3, "max_tokens": max_tokens,
@@ -430,9 +522,12 @@ class AiClient:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:300]
+            if e.code == 404 and "page not found" in detail.lower():  # адрес не того API, а не нехватка модели
+                raise AiError(f"по адресу {self.base_url} нет API нейросети (HTTP 404: {detail.strip()}) — проверьте "
+                              "«Адрес API»" + (": для Ollama это http://адрес:11434" if self.cfg.provider == "ollama"
+                                               else ", обычно он заканчивается на /v1")) from e
             if self.cfg.provider == "ollama" and e.code == 404:
-                where = "" if self.local else f" на компьютере с Ollama ({urllib.parse.urlparse(self.base_url).hostname})"
-                raise AiError(f"модель «{self.model}» не скачана — выполните{where}: ollama pull {self.model}") from e
+                raise AiError(self._model_missing(ollama_models(ollama_root(self.base_url)))) from e
             raise AiError(f"сервис ИИ ответил HTTP {e.code}: {detail}") from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if isinstance(e, TimeoutError) or "timed out" in str(e):  # связь есть, модель не успела ответить
