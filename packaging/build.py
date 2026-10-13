@@ -1,13 +1,13 @@
 """Сборка приложения под текущую систему.
 
-    Windows:  build.bat (двойной клик) или python packaging/build.py
-    macOS:    ./build-macos.sh → dist/HH-Auto-Response.app и dist/HH-Auto-Response-macos-<arch>.zip
-    Linux:    ./build.sh       → dist/HH-Auto-Response/HH-Auto-Response и dist/HH-Auto-Response-linux-<arch>.tar.gz
-    Linux из Windows или macOS через Docker: ./build-linux.sh
+    Windows:  packaging\build.bat (двойной клик) или python packaging/build.py
+    macOS:    ./packaging/build-macos.sh → dist/HH-Auto-Response.app и dist/HH-Auto-Response-macos-<arch>.zip
+    Linux:    ./packaging/build.sh       → dist/HH-Auto-Response/HH-Auto-Response и dist/HH-Auto-Response-linux-<arch>.tar.gz
+    Linux из Windows или macOS через Docker: ./packaging/build-linux.sh
     Все три системы сразу — GitHub Actions (.github/workflows/build.yml)
 
 PyInstaller собирает только под ту ОС, на которой запущен: exe для Windows — на Windows, .app — на Mac,
-Linux-версию — на Linux (или в Docker: ./build-linux.sh). Всё ставится в отдельное окружение
+Linux-версию — на Linux (или в Docker: ./packaging/build-linux.sh). Всё ставится в отдельное окружение
 .venv-build, чтобы в сборку не попали лишние библиотеки. Нужны Python 3.11+ и интернет для pip.
 """
 
@@ -94,7 +94,7 @@ def main() -> int:
     if PLATFORM == "linux" and tk_font_system() == "x11":
         print("! Tk этого Python собран без Xft: в окне приложения не будет кириллицы (одни пустые места).\n"
               "  Соберите системным Python: sudo apt install python3 python3-venv python3-tk && PYTHON=/usr/bin/python3 "
-              "./build.sh\n  или в Docker: ./build-linux.sh")
+              "./packaging/build.sh\n  или в Docker: ./packaging/build-linux.sh")
         return 1
 
     python = venv_python()
@@ -106,7 +106,7 @@ def main() -> int:
 
     step("2/5 Библиотеки")
     run(python, "-m", "pip", "install", "--upgrade", "--quiet", "pip")
-    run(python, "-m", "pip", "install", "--upgrade", "--quiet", "-r", "requirements.txt", "-r", "requirements-app.txt",
+    run(python, "-m", "pip", "install", "--upgrade", "--quiet", "-r", "requirements.txt",
         "pyinstaller>=6", "pillow")
 
     step("3/5 Иконка")

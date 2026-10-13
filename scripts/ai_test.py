@@ -1,11 +1,11 @@
 """Песочница ИИ: проверить ответы нейросети на анкеты, ничего не отправляя в hh.
 
-    python ai_test.py                  диалог: вы пишете за работодателя, ИИ отвечает
-    python ai_test.py --demo           прогнать готовую анкету из примеров
-    python ai_test.py --show-prompt    показать, что получает нейросеть, и выйти
-    python ai_test.py --form           как ИИ заполнит пример анкеты при отклике (текст + варианты)
-    python ai_test.py --letter         какое сопроводительное письмо ИИ напишет к примеру вакансии
-    python ai_test.py --fetch-resume   сначала загрузить свежее резюме с hh (откроется браузер)
+    python scripts/ai_test.py                  диалог: вы пишете за работодателя, ИИ отвечает
+    python scripts/ai_test.py --demo           прогнать готовую анкету из примеров
+    python scripts/ai_test.py --show-prompt    показать, что получает нейросеть, и выйти
+    python scripts/ai_test.py --form           как ИИ заполнит пример анкеты при отклике (текст + варианты)
+    python scripts/ai_test.py --letter         какое сопроводительное письмо ИИ напишет к примеру вакансии
+    python scripts/ai_test.py --fetch-resume   сначала загрузить свежее резюме с hh (откроется браузер)
 
 В диалоге:  текст — сообщение от «Робота-рекрутера»;  hr: текст — от живого HR;
             /prompt — что получает нейросеть;  /raw — показывать сырой ответ модели;
@@ -18,12 +18,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from hh_auto.ai import AiError
-from hh_auto.ai_playground import (ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, Turn, fill_sample_form,
-                                   write_sample_letter)
-from hh_auto.config import ConfigError, load_config
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # пакет hh_auto лежит в папке проекта
 
-ROOT = Path(__file__).resolve().parent
+from hh_auto.ai import AiError  # noqa: E402
+from hh_auto.ai_playground import (ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, Turn,  # noqa: E402
+                                   fill_sample_form, write_sample_letter)
+from hh_auto.config import ConfigError, load_config  # noqa: E402
+from hh_auto.paths import app_root  # noqa: E402
+
+ROOT = app_root()  # hh-data/ в папке проекта или HH_AUTO_HOME: тот же config.toml, что у откликов
 
 
 def show(turn: Turn, raw: bool) -> None:

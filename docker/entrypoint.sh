@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Команды контейнера:
 #   login              открыть браузер для первого входа в hh (смотреть по VNC через SSH-туннель)
-#   responses [опции]  один запуск откликов (опции как у main.py: --dry-run, --limit 5 …)
-#   chats [опции]      один запуск чатов (опции как у read_rejections.py)
+#   responses [опции]  один запуск откликов (опции как у scripts/responses.py: --dry-run, --limit 5 …)
+#   chats [опции]      один запуск чатов (опции как у scripts/chats.py)
 #   loop               отклики и чаты по кругу раз в INTERVAL_HOURS часов (по умолчанию 6)
 #   любая другая команда выполняется как есть (например, bash)
 set -euo pipefail
@@ -40,23 +40,23 @@ shift || true
 case "$cmd" in
   login)
     start_vnc
-    exec python /app/main.py --login "$@"
+    exec python /app/scripts/responses.py --login "$@"
     ;;
   responses)
-    exec python /app/main.py "$@"
+    exec python /app/scripts/responses.py "$@"
     ;;
   chats)
-    exec python /app/read_rejections.py "$@"
+    exec python /app/scripts/chats.py "$@"
     ;;
   loop)
     hours="${INTERVAL_HOURS:-6}"
     [ "${VNC_ALWAYS:-0}" = "1" ] && start_vnc
     while true; do
       echo "━━━ $(date '+%F %T') отклики"
-      python /app/main.py || echo "отклики завершились с кодом $?"
+      python /app/scripts/responses.py || echo "отклики завершились с кодом $?"
       if [ "${RUN_CHATS:-1}" = "1" ]; then
         echo "━━━ $(date '+%F %T') чаты"
-        python /app/read_rejections.py || echo "чаты завершились с кодом $?"
+        python /app/scripts/chats.py || echo "чаты завершились с кодом $?"
       fi
       echo "━━━ следующий запуск через ${hours} ч"
       sleep "$((hours * 3600))"

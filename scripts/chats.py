@@ -1,10 +1,10 @@
-"""Прочитать отказы: открывает непрочитанные чаты hh, где последнее сообщение — «Отказ».
+"""Чаты hh: читает непрочитанные отказы, а если включён ИИ — отвечает на вопросы работодателей.
 
-    python read_rejections.py              открыть все непрочитанные чаты с отказом
-    python read_rejections.py --dry-run    только показать, какие чаты были бы открыты
+    python scripts/chats.py              открыть непрочитанные чаты с отказом и ответить на анкеты
+    python scripts/chats.py --dry-run    только показать, что было бы сделано
 
-Использует тот же config.toml и тот же профиль браузера (вход), что и main.py.
-Не запускайте одновременно с main.py: у них общий профиль браузера.
+Использует тот же config.toml и тот же профиль браузера (вход), что и scripts/responses.py.
+Не запускайте одновременно с откликами: у них общий профиль браузера.
 """
 
 from __future__ import annotations
@@ -13,13 +13,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from hh_auto.app import run_chats
-from hh_auto.chats import ChatStats
-from hh_auto.config import ConfigError, load_config
-from hh_auto.logger import log, setup_logging
-from hh_auto.paths import app_root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # пакет hh_auto лежит в папке проекта
 
-ROOT = app_root()  # папка проекта или HH_AUTO_HOME
+from hh_auto.app import run_chats  # noqa: E402
+from hh_auto.chats import ChatStats  # noqa: E402
+from hh_auto.config import ConfigError, load_config  # noqa: E402
+from hh_auto.logger import log, setup_logging  # noqa: E402
+from hh_auto.paths import app_root  # noqa: E402
+
+ROOT = app_root()  # hh-data/ в папке проекта или HH_AUTO_HOME
 
 
 def parse_args() -> argparse.Namespace:

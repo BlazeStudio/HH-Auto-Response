@@ -100,6 +100,10 @@ def run(
                 stats.skipped[f"компания: «{company_word}»"] += 1
                 log.info(f"{tag} «{vac.title}» — компания «{vac.company}» содержит «{company_word}» ([filters]), пропускаю")
                 continue
+            if cfg.filters.include_company_words and not _find_word(vac.company, cfg.filters.include_company_words):
+                stats.skipped["компания не из списка ([filters] include_company_words)"] += 1
+                log.info(f"{tag} «{vac.title}» — компания «{vac.company}» не из списка include_company_words, пропускаю")
+                continue
             if cfg.filters.include_words:
                 where = f"{vac.title} {vac.snippet}" if cfg.filters.include_in_snippet else vac.title
                 if not _find_word(where, cfg.filters.include_words):

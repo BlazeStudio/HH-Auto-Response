@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # macOS-версия приложения: HH-Auto-Response.app и архив dist/HH-Auto-Response-macos-<arm64|x86_64>.zip
-#   ./build-macos.sh
+#   ./packaging/build-macos.sh
 #
 # Собирается только на Mac: PyInstaller не умеет собирать под другую систему. Архитектура — как у этого Mac
 # (Apple Silicon → arm64, Intel → x86_64). Нет Mac — запустите сборку в GitHub Actions
@@ -8,7 +8,7 @@
 #
 # Нужен Python 3.11+ с Tk:  brew install python@3.11 python-tk@3.11
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "! Это не macOS. Mac-версию собирает Mac или GitHub Actions (.github/workflows/build.yml)."
   exit 1
