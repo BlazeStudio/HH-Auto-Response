@@ -1,13 +1,16 @@
 .git
+.github
 .venv-build
 __pycache__
 **/__pycache__
 build
 dist
 docs
+packaging
+# данные: в образ не попадают, на сервере подключаются как volume
+hh-data
 browser-profile
 config.toml
 app_prefs.json
 data
 logs
-hh-data

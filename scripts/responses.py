@@ -1,9 +1,9 @@
 """HH-Auto-Response — автоматические отклики на вакансии hh.ru с сопроводительным письмом.
 
-    python main.py                 обычный запуск
-    python main.py --dry-run       вход + проверка резюме + список вакансий, без откликов
-    python main.py --limit 1       один отклик — для проверки, что всё работает
-    python main.py --login         только войти в hh и сохранить сессию (первый запуск на сервере)
+    python scripts/responses.py              обычный запуск
+    python scripts/responses.py --dry-run    вход + проверка резюме + список вакансий, без откликов
+    python scripts/responses.py --limit 1    один отклик — для проверки, что всё работает
+    python scripts/responses.py --login      только войти в hh и сохранить сессию (первый запуск на сервере)
 """
 
 from __future__ import annotations
@@ -12,13 +12,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from hh_auto.app import run_login, run_responses
-from hh_auto.config import ConfigError, load_config, validate_search_source
-from hh_auto.logger import log, setup_logging
-from hh_auto.paths import app_root
-from hh_auto.runner import RunOptions, Stats
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # пакет hh_auto лежит в папке проекта
 
-ROOT = app_root()  # папка проекта или HH_AUTO_HOME: config.toml, логи, профиль браузера
+from hh_auto.app import run_login, run_responses  # noqa: E402
+from hh_auto.config import ConfigError, load_config, validate_search_source  # noqa: E402
+from hh_auto.logger import log, setup_logging  # noqa: E402
+from hh_auto.paths import app_root  # noqa: E402
+from hh_auto.runner import RunOptions, Stats  # noqa: E402
+
+ROOT = app_root()  # hh-data/ в папке проекта или HH_AUTO_HOME: config.toml, логи, профиль браузера
 
 
 def parse_args() -> argparse.Namespace:

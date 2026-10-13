@@ -78,7 +78,7 @@ class Playground:
             when = datetime.fromtimestamp(self.resume_path.stat().st_mtime).strftime("%d.%m.%Y %H:%M")
             resume = f"{len(self.resume)} символов, загружено с hh {when}"
         else:
-            resume = "не загружено — нажмите «Загрузить резюме с hh» (или python ai_test.py --fetch-resume)"
+            resume = "не загружено — нажмите «Загрузить резюме с hh» (или python scripts/ai_test.py --fetch-resume)"
         context = self.cfg.ai.context.strip()
         return [
             f"Нейросеть: {self.client.describe()}",

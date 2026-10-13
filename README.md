@@ -30,7 +30,7 @@
 
 - [Что умеет](#что-умеет)
 - [Скриншоты](#скриншоты)
-- [Установка](#установка) и [первый запуск](#первый-запуск)
+- [Установка](#установка), [первый запуск](#первый-запуск) и [обновление](#обновление)
 - [Как проходит отклик](#как-проходит-отклик)
 - [Поиск и фильтры](#поиск-и-фильтры)
 - [Сопроводительное письмо](#сопроводительное-письмо)
@@ -38,6 +38,7 @@
 - [Отчёт, логи, уведомления](#отчёт-логи-уведомления)
 - [Docker на сервере](#docker-на-сервере)
 - [Сборка приложения](#сборка-приложения)
+- [Что где лежит](#что-где-лежит)
 - [hh.ru и Россия](#hhru-и-россия)
 - [Почему это легально](#почему-это-легально)
 - [Ограничения](#ограничения)
@@ -79,8 +80,11 @@
 
 Нужны Windows 10 или 11 и Google Chrome или Microsoft Edge (Edge в Windows есть всегда). Python не нужен.
 
-1. Возьмите архив `HH-Auto-Response-windows.zip` (как его собрать, написано [ниже](#сборка-приложения)).
-2. Распакуйте в любую папку и запустите `HH-Auto-Response.exe`. Папка `_internal` должна лежать рядом с ним.
+1. Скачайте `HH-Auto-Response-<версия>-windows.zip` со страницы
+   [релизов](https://github.com/BlazeStudio/hh-auto-response/releases) (или соберите сами, см. [ниже](#сборка-приложения)).
+2. Распакуйте в любую свою папку, например в «Документы», и запустите `HH-Auto-Response.exe`. Папка `_internal`
+   должна лежать рядом с ним. В `Program Files` лучше не класть: туда без прав администратора не запишешь,
+   и обновление не сможет поставиться само.
 
 Приложение не подписано платным сертификатом, поэтому при первом запуске Windows может показать «Windows
 защитил ваш компьютер». Нажмите «Подробнее», затем «Выполнить в любом случае». Антивирусы иногда ругаются
@@ -110,15 +114,16 @@ tar -xzf HH-Auto-Response-linux-x86_64.tar.gz
 install chromium` и `channel = ""` в `config.toml`.
 
 ```bash
-pip install -r requirements.txt -r requirements-app.txt
+pip install -r requirements.txt
 ```
 
 ```bash
-python gui.py
+python scripts/gui.py
 ```
 
-Из исходников приложение и консольные скрипты используют одну папку: `config.toml`, логи и вход в hh
-лежат прямо в папке проекта.
+Из исходников приложение и консольные скрипты используют одну папку `hh-data/` внутри проекта: там
+`config.toml`, логи и вход в hh. Если вы запускали версию до 1.0.4, где всё это лежало прямо в корне проекта,
+файлы сами переедут в `hh-data/` при первом запуске.
 
 ### Где хранятся данные
 
@@ -127,11 +132,12 @@ python gui.py
 | Windows | `%LOCALAPPDATA%\HH-Auto-Response` |
 | macOS | `~/Library/Application Support/HH-Auto-Response` |
 | Linux | `~/.local/share/HH-Auto-Response` |
-| Docker | volume `/data` (в `docker-compose.yml` это `./hh-data`) |
+| Из исходников | `hh-data/` в папке проекта |
+| Docker | volume `/data`, на сервере это та же `hh-data/` в папке проекта |
 
 Там лежат `config.toml`, логи, таблица откликов, память между запусками и профиль браузера со входом в hh.
-Своё место можно задать переменной `HH_AUTO_HOME`. При обновлении достаточно заменить само приложение:
-настройки и вход останутся.
+Своё место можно задать переменной `HH_AUTO_HOME`. Обновление эту папку не трогает: настройки и вход
+остаются.
 
 ## Первый запуск
 
@@ -143,11 +149,12 @@ python gui.py
    на что откликнулась бы, ничего не отправляя.
 4. Если всё устраивает, нажмите «Начать отклики».
 
-В консоли то же самое: `python main.py --dry-run`, потом `python main.py --limit 1` для одного настоящего
-отклика, потом просто `python main.py`.
+В консоли то же самое: `python scripts/responses.py --dry-run`, потом `python scripts/responses.py --limit 1`
+для одного настоящего отклика, потом просто `python scripts/responses.py`. Чаты — `python scripts/chats.py`
+(`--dry-run` только покажет, что было бы сделано).
 
 <details>
-<summary>Все параметры <code>main.py</code></summary>
+<summary>Все параметры <code>scripts/responses.py</code></summary>
 
 | Параметр | Что делает |
 |---|---|
@@ -164,6 +171,25 @@ python gui.py
 Остановить можно в любой момент через `Ctrl+C`, итоги всё равно выведутся.
 
 </details>
+
+## Обновление
+
+Приложение само узнаёт о новых версиях. При запуске (и дальше раз в 12 часов) оно заглядывает в
+[релизы на GitHub](https://github.com/BlazeStudio/hh-auto-response/releases), и если там есть версия новее,
+в меню слева появляется зелёная кнопка «⬇ Обновить до …». По нажатию приложение покажет, что нового,
+скачает архив под вашу систему, сверит контрольную сумму, перезапустится уже новой версией и напишет
+«Обновлено до …». Настройки, логи, история откликов и вход в hh остаются как были.
+
+Установщик для этого не нужен: обновление кладёт новые файлы на место старых (`HH-Auto-Response.exe`
+и `_internal`, на Mac — `HH-Auto-Response.app`). Старые файлы сначала откладываются в сторону. Если
+заменить не получилось, всё возвращается как было и запускается прежняя версия. Журнал обновления пишется
+в `logs/update.log` в папке данных.
+
+- Отключить проверку или проверить вручную: «Настройки» → «Данные приложения».
+- Если в папку программы нельзя писать (например, она лежит в `Program Files`), приложение предложит
+  открыть страницу релиза и скачать архив вручную. Его достаточно распаковать поверх старой папки.
+- Из исходников: `git pull` и `pip install -r requirements.txt`. В Docker: `git pull`, затем
+  `docker compose build` и `docker compose up -d` в папке `docker/`.
 
 ## Как проходит отклик
 
@@ -256,7 +282,7 @@ python gui.py
 под требования. Если модель припишет вам технологию из вакансии, которой в резюме нет, программа попросит
 её переписать письмо, а если не поможет, вырежет такие предложения. Длину задаёт `[letter] ai_max_chars`.
 Проверить без отклика можно кнопкой «Тест письма» на странице «Проверка ИИ» или командой
-`python ai_test.py --letter`.
+`python scripts/ai_test.py --letter`.
 
 ## Нейросеть: анкеты и чаты
 
@@ -312,8 +338,8 @@ SSH-туннель или по домашней сети/VPN. В настрой�
 Включается всё в «Настройках» → «ИИ-ответы в чатах». Там же есть кнопка «Проверить подключение к ИИ».
 В консоли это секция `[ai]` в `config.toml`. Ключ можно не хранить в файле, а задать переменной `HH_AI_API_KEY`.
 
-Посмотреть, как модель отвечает, не трогая hh, можно на странице «Проверка ИИ» или командой `python ai_test.py`
-(`--demo`, `--form`, `--letter`, `--show-prompt`). Видно ровно то, что уходит модели.
+Посмотреть, как модель отвечает, не трогая hh, можно на странице «Проверка ИИ» или командой
+`python scripts/ai_test.py` (`--demo`, `--form`, `--letter`, `--show-prompt`). Видно ровно то, что уходит модели.
 
 ## Отчёт, логи, уведомления
 
@@ -351,8 +377,10 @@ chat id в «Настройки» → «Уведомления по итогам
 git clone https://github.com/BlazeStudio/hh-auto-response.git
 ```
 
+Все команды `docker compose` дальше выполняются в папке `docker/`:
+
 ```bash
-cd hh-auto-response && docker compose build
+cd hh-auto-response/docker && docker compose build
 ```
 
 **2. Войдите в hh.** На сервере запустите контейнер в режиме входа:
@@ -371,7 +399,7 @@ ssh -L 5900:127.0.0.1:5900 user@ваш-сервер
 к `localhost:5900`. Вы увидите браузер со страницей входа hh. Войдите как обычно: телефон или почта, затем код.
 Контейнер сам поймёт, что вход выполнен, сохранит сессию и завершится.
 
-**3. Настройте.** При первом запуске в `./hh-data/config.toml` появится конфиг. Впишите ссылку поиска
+**3. Настройте.** При первом запуске в `hh-data/config.toml` (в корне проекта) появится конфиг. Впишите ссылку поиска
 (`search_url`) или запрос, а при желании нейросеть и Telegram-уведомления. Проверьте всё пробным прогоном:
 
 ```bash
@@ -395,48 +423,54 @@ docker compose logs -f
 - если вместо цикла удобнее cron на сервере, поставьте `restart: "no"` и вызывайте
   `docker compose run --rm hh responses` по расписанию;
 - переменные `INTERVAL_HOURS`, `RUN_CHATS`, `VNC_PASSWORD`, `HH_AI_API_KEY`, `HH_TELEGRAM_TOKEN` задаются
-  в `docker-compose.yml`;
-- если hh разлогинил вас, повторите шаг 2. Логи, Excel и профиль браузера лежат в `./hh-data`;
+  в `docker/docker-compose.yml`;
+- если hh разлогинил вас, повторите шаг 2. Логи, Excel и профиль браузера лежат в `hh-data/`;
 - Ollama на том же сервере доступна из контейнера по адресу `http://host.docker.internal:11434/v1`
   (на Linux добавьте в сервис `extra_hosts: ["host.docker.internal:host-gateway"]`).
 
 ## Сборка приложения
 
+Готовые архивы для всех систем лежат в [релизах](https://github.com/BlazeStudio/hh-auto-response/releases).
+Собрать самому:
+
 PyInstaller собирает только под ту систему, на которой запущен: exe на Windows, .app на Mac, Linux-версию
-на Linux. С Windows Linux-версию можно собрать в Docker, а Mac-версию без Mac соберёт GitHub Actions.
-Сборщик сам создаёт окружение `.venv-build`, ставит библиотеки и упаковывает архив.
+на Linux. С Windows Linux-версию можно собрать в Docker. Сборщик сам создаёт окружение `.venv-build`, ставит
+библиотеки и упаковывает архив. Всё для сборки лежит в папке `packaging/`.
 
 | Что собрать | Где | Команда | Результат в `dist/` |
 |---|---|---|---|
-| Windows | Windows | двойной клик по `build.bat` | `HH-Auto-Response-windows.zip` |
-| macOS | Mac | `./build-macos.sh` | `HH-Auto-Response.app`, `HH-Auto-Response-macos-arm64.zip` (или `-x86_64` на Intel) |
-| Linux | Linux | `./build.sh` | `HH-Auto-Response-linux-x86_64.tar.gz` |
-| Linux | Windows или Mac с Docker | `./build-linux.sh` | `HH-Auto-Response-linux-x86_64.tar.gz` |
-| всё сразу | GitHub | Actions → «Сборка» → Run workflow | архивы в Artifacts запуска |
-
-**GitHub Actions** (`.github/workflows/build.yml`) собирает Windows, macOS (Apple Silicon и Intel) и Linux
-на машинах GitHub. Сборка привязана к релизам: создайте релиз (Releases → Draft a new release, тег вида
-`1.0.4-beta`) и нажмите Publish. Через 10–15 минут к нему сами приложатся архивы для всех систем
-с версией в имени (`HH-Auto-Response-1.0.4-beta-windows.zip` и т.д.) и `SHA256SUMS.txt` с контрольными
-суммами. Описание релиза workflow не меняет. Пробную сборку без релиза можно запустить вручную:
-Actions → «Сборка» → Run workflow, архивы будут внизу страницы запуска в Artifacts.
-
-Workflow берётся из того коммита, на который указывает тег, поэтому `.github/workflows/build.yml` и папка
-`packaging/` должны быть закоммичены до создания релиза. Для публичного репозитория сборка бесплатная,
-для приватного минуты macOS считаются по повышенному тарифу.
+| Windows | Windows | двойной клик по `packaging\build.bat` | `HH-Auto-Response-windows.zip` |
+| macOS | Mac | `./packaging/build-macos.sh` | `HH-Auto-Response.app`, `HH-Auto-Response-macos-arm64.zip` (или `-x86_64` на Intel) |
+| Linux | Linux | `./packaging/build.sh` | `HH-Auto-Response-linux-x86_64.tar.gz` |
+| Linux | Windows или Mac с Docker | `./packaging/build-linux.sh` | `HH-Auto-Response-linux-x86_64.tar.gz` |
 
 Перед сборкой на Windows закройте приложение, иначе открытый exe нельзя будет перезаписать.
 
 На macOS нужен Python с Tk: `brew install python@3.11 python-tk@3.11`. На Linux нужны системные пакеты
 `python3 python3-venv python3-tk binutils`. Портативные сборки Python (uv, conda, pyenv) часто идут с Tk
 без Xft, и тогда в окне не будет кириллицы. Сборщик это проверяет и подскажет, что делать.
-`./build-linux.sh` берёт Debian с правильным Tk, так что там всё в порядке.
+`./packaging/build-linux.sh` берёт Debian с правильным Tk, так что там всё в порядке.
 
 Иконки лежат готовыми в `packaging/` (`icon.ico`, `icon.png`, `icon.icns`), поэтому на всех системах
 они одинаковые. Перерисовать: `python packaging/make_icon.py`.
 
 Проверить готовую сборку можно командой `HH-Auto-Response --self-test`: она запускает браузеры и пишет
 результат в `logs/self_test.txt`.
+
+Версия приложения записана в одном месте, `hh_auto/__init__.py`. Её показывает окно, по ней сборка
+называет архивы, с ней сравнивается версия релиза при проверке обновлений.
+
+## Что где лежит
+
+| Папка | Что внутри |
+|---|---|
+| `hh_auto/` | вся программа: поиск и отклики, чаты, нейросеть, окно, отчёт, обновление |
+| `scripts/` | точки входа: `gui.py` (окно), `responses.py` (отклики), `chats.py` (чаты), `ai_test.py` (песочница ИИ) |
+| `packaging/` | сборка приложения: `build.bat`, `build.sh`, `build-macos.sh`, `build-linux.sh`, настройки PyInstaller, иконки |
+| `docker/` | `Dockerfile`, `entrypoint.sh` и `docker-compose.yml` для сервера |
+| `docs/` | гайд по [Ollama на другом компьютере](docs/ollama.md), [что нового в версии](docs/release-notes.md), скриншоты |
+| `hh-data/` | ваши данные при запуске из исходников и в Docker (в git не попадает) |
+| `config.example.toml` | все настройки с пояснениями |
 
 ## hh.ru и Россия
 
@@ -481,6 +515,6 @@ VPN или укажите российский прокси: `[geo] proxy = "htt
 
 <div align="center">
 
-[GitHub](https://github.com/BlazeStudio/hh-auto-response) · [CHANGELOG](CHANGELOG.md) · [Release notes](RELEASE_NOTES.md) · [config.example.toml](config.example.toml)
+[GitHub](https://github.com/BlazeStudio/hh-auto-response) · [CHANGELOG](CHANGELOG.md) · [Что нового](docs/release-notes.md) · [config.example.toml](config.example.toml)
 
 </div>

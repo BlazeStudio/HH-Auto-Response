@@ -23,7 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt \
  && rm -rf /var/lib/apt/lists/*
 
 COPY hh_auto ./hh_auto
-COPY main.py read_rejections.py ai_test.py config.example.toml ./
+COPY scripts ./scripts
+COPY config.example.toml ./
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

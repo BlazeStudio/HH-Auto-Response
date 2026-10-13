@@ -3,3 +3,5 @@
 
 # скрипты для Linux/macOS и Docker — всегда с LF, иначе bash не запустит их после checkout на Windows
 *.sh text eol=lf
+# а bat — всегда с CRLF: cmd с LF-строками иногда путается
+*.bat text eol=crlf

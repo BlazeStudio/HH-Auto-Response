@@ -180,8 +180,8 @@ timeout = 120                        # сколько ждать ответа; �
 ## Ollama и HH-Auto-Response в Docker на одном сервере
 
 Если программа уже работает на сервере в Docker ([README → Docker на сервере](../README.md#docker-на-сервере)),
-Ollama проще поставить рядом в тот же `docker compose`. Создайте рядом с `docker-compose.yml` файл
-`docker-compose.override.yml`:
+Ollama проще поставить рядом в тот же `docker compose`. Создайте в папке `docker/` рядом с `docker-compose.yml`
+файл `docker-compose.override.yml`:
 
 ```yaml
 services:
@@ -204,7 +204,7 @@ volumes:
   ollama:
 ```
 
-Запустить и скачать модель:
+Запустить и скачать модель (команды — из папки `docker/`):
 
 ```bash
 docker compose up -d ollama
@@ -214,7 +214,7 @@ docker compose up -d ollama
 docker compose exec ollama ollama pull qwen3:8b
 ```
 
-В `./hh-data/config.toml` укажите `base_url = "http://ollama:11434"`. Порт Ollama при этом наружу
+В `hh-data/config.toml` (в корне проекта) укажите `base_url = "http://ollama:11434"`. Порт Ollama при этом наружу
 вообще не открывается: программа ходит к ней внутри сети Docker. Без видеокарты уберите блок `deploy`.
 
 ## Если не работает

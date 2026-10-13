@@ -22,9 +22,11 @@ from pathlib import Path
 import tkinter
 from tkinter import messagebox
 
+import _tkinter
+
 import customtkinter as ctk
 
-from . import control
+from . import __version__, control
 from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_chats, run_responses
 from .chats import ChatStats
 from . import hh_filters as hhf
@@ -36,11 +38,12 @@ from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playgrou
 from .results import HH_DAILY_LIMIT, Summary, load_summary
 from .search import describe_search
 from .logger import SUCCESS, log, setup_logging
-from .paths import app_root, bundled
+from .paths import app_root, bundled, is_frozen
 from .runner import RunOptions, Stats
+from . import updater
 
 APP_NAME = "HH-Auto-Response"
-APP_VERSION = "1.0.4-beta"
+APP_VERSION = __version__
 GITHUB_URL = "https://github.com/BlazeStudio/hh-auto-response"
 
 # --- палитра: (светлая тема, тёмная тема) ---
@@ -120,6 +123,74 @@ class QueueLogHandler(logging.Handler):
 class Card(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=CARD_BG, corner_radius=14, border_width=1, border_color=BORDER, **kwargs)
+
+
+class ScrollFrame(ctk.CTkScrollableFrame):
+    """Прокручиваемая область без «плывущего» текста и без застревания колеса на полях с текстом.
+
+    У CTkScrollableFrame каждый щелчок колеса сразу сдвигает страницу, а перерисовка у Windows — самое
+    последнее дело: при быстрой прокрутке сдвиги идут один за другим, и на экране остаются куски текста
+    со старых мест. Здесь щелчки копятся и применяются не чаще раза в кадр, а после сдвига окно
+    перерисовывается целиком. Колесо над многострочным полем customtkinter отдаёт самому полю, даже если
+    листать в нём нечего, — тогда листаем страницу.
+    """
+
+    FRAME_MS = 15
+
+    def __init__(self, *args, **kwargs):
+        self._wheel_units = 0
+        self._wheel_job = None
+        super().__init__(*args, **kwargs)
+
+    def _mouse_wheel_all(self, event):
+        if self._shift_pressed:  # горизонтальной прокрутки у нас нет — как в customtkinter
+            return super()._mouse_wheel_all(event)
+        if sys.platform == "win32":
+            units = -int(event.delta / 6)
+        elif sys.platform == "darwin":
+            units = -event.delta
+        else:
+            units = -1 if event.num == 4 else 1
+        if not units or not self._wheel_is_ours(event.widget, units < 0):
+            return
+        self._wheel_units += units
+        if self._wheel_job is None:
+            self._wheel_job = self.after(self.FRAME_MS, self._apply_wheel)
+
+    def _wheel_is_ours(self, widget, up: bool) -> bool:
+        """Колесо крутят над этой областью, и листать нужно её (а не поле с текстом внутри)."""
+        while isinstance(widget, tkinter.Misc):
+            if widget == self._parent_canvas:
+                return True
+            if isinstance(widget, ctk.CTkTextbox):
+                first, last = widget._textbox.yview()
+                if (up and first > 0.0) or (not up and last < 1.0):
+                    return False  # в поле есть что листать — его листает сам Tk
+            elif isinstance(widget, (ctk.CTkScrollbar, ctk.CTkSlider)):
+                return False
+            elif isinstance(widget, ctk.CTkScrollableFrame):
+                return widget._parent_canvas == self._parent_canvas
+            widget = widget.master
+        return False
+
+    def _apply_wheel(self) -> None:
+        self._wheel_job = None
+        units, self._wheel_units = self._wheel_units, 0
+        canvas = self._parent_canvas
+        if not units or canvas.yview() == (0.0, 1.0):
+            return
+        canvas.yview_scroll(units, "units")
+        if sys.platform != "win32":
+            return
+        try:  # сразу дорисовать всё, что открылось при сдвиге, — до следующего щелчка колеса
+            canvas.update_idletasks()  # Tk передвинул окна
+            ctypes.windll.user32.RedrawWindow(canvas.winfo_id(), None, None, 0x0080 | 0x0100)  # ALLCHILDREN|UPDATENOW
+            for _ in range(200):  # Windows прислал «перерисуй» — разобрать их, но не всю очередь событий
+                if not self.tk.dooneevent(_tkinter.WINDOW_EVENTS | _tkinter.DONT_WAIT):
+                    break
+            canvas.update_idletasks()  # и нарисовать
+        except (AttributeError, OSError, tkinter.TclError):
+            pass
 
 
 class StatCard(Card):
@@ -863,7 +934,7 @@ class PickerDialog(ctk.CTkToplevel):
         self.counter = ctk.CTkLabel(top, text="", text_color=MUTED)
         self.counter.pack(side="left", padx=12)
 
-        self.list = ctk.CTkScrollableFrame(self, fg_color=CARD_BG)
+        self.list = ScrollFrame(self, fg_color=CARD_BG)
         self.list.pack(fill="both", expand=True, padx=14)
         self.rows: list[tuple[ctk.CTkFrame, list[tuple[ctk.CTkCheckBox, str]]]] = []
         for group, items in groups:
@@ -933,7 +1004,7 @@ class SettingsPage(Page):
         self.app = app
         self.widgets: dict[tuple[str, str], tuple[str, object]] = {}
 
-        scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        scroll = ScrollFrame(self, fg_color="transparent")
         scroll.pack(fill="both", expand=True)
         for section_title, items in SETTINGS:
             card = Card(scroll)
@@ -981,6 +1052,18 @@ class SettingsPage(Page):
         ctk.CTkButton(row, text="Выйти из аккаунта hh (сбросить вход)", height=32, fg_color="transparent",
                       border_width=1, border_color=RED, text_color=RED, hover_color=ACCENT_SOFT,
                       command=app.reset_login).pack(side="left", padx=10)
+        row = ctk.CTkFrame(danger, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 14))
+        self.check_updates_switch = ctk.CTkSwitch(row, text="Проверять обновления на GitHub",
+                                                  command=lambda: app.save_prefs(
+                                                      check_updates=bool(self.check_updates_switch.get())))
+        if app.prefs.get("check_updates", True):
+            self.check_updates_switch.select()
+        self.check_updates_switch.pack(side="left")
+        _secondary_button(row, "Проверить сейчас", lambda: app.check_updates(manual=True), width=160,
+                          height=32).pack(side="left", padx=12)
+        ctk.CTkLabel(row, text="Новая версия скачивается и ставится по кнопке в меню слева, настройки остаются",
+                     text_color=MUTED, font=ctk.CTkFont(size=12)).pack(side="left")
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.pack(fill="x", pady=(10, 0))
@@ -1200,7 +1283,7 @@ class JournalsPage(Page):
         body.pack(fill="both", expand=True)
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
-        self.files = ctk.CTkScrollableFrame(body, width=250, fg_color=CARD_BG, corner_radius=12,
+        self.files = ScrollFrame(body, width=250, fg_color=CARD_BG, corner_radius=12,
                                             border_width=1, border_color=BORDER)
         self.files.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         self.view = LogView(body)
@@ -1329,6 +1412,9 @@ class App(ctk.CTk):
         self.chat_stats = ChatStats()
         self.run_limit = 0
         self.closing = False
+        self.update_release: updater.Release | None = None  # найденная новая версия
+        self.update_root: Path | None = None  # скачанная и распакованная новая версия
+        self.update_busy = False
         self.cfg = self.read_config_file(check_search_url=False)
         self.xlsx_path = self.root_dir / "logs" / "responses.xlsx"
         self.summary = load_summary(self.root_dir)
@@ -1346,6 +1432,11 @@ class App(ctk.CTk):
             validate_search_source(self.cfg)
         except ConfigError:
             self.after(400, self._first_run_hint)
+        if "--updated" in sys.argv:
+            self.after(1200, lambda: self.toast(f"Обновлено до версии {APP_VERSION}"))
+        if is_frozen():  # остатки прошлого обновления — когда программа обновления точно закрылась
+            threading.Thread(target=lambda: (time.sleep(20), updater.cleanup()), daemon=True).start()
+        self.after(4000, self.check_updates)
 
     # ---------- построение окна ----------
 
@@ -1381,8 +1472,13 @@ class App(ctk.CTk):
         mode = ctk.CTkOptionMenu(bar, values=list(APPEARANCE), command=self._set_appearance)
         mode.set(current)
         mode.pack(fill="x", padx=22, pady=(4, 10))
+        # появляется, когда на GitHub вышла новая версия
+        self.update_btn = ctk.CTkButton(bar, text="", height=34, corner_radius=10, fg_color=GREEN,
+                                        hover_color=("#15803D", "#16A34A"), text_color="#FFFFFF",
+                                        font=ctk.CTkFont(size=13, weight="bold"), command=self._update_clicked)
         about = ctk.CTkFrame(bar, fg_color="transparent")
         about.pack(fill="x", padx=22, pady=(0, 16))
+        self._about = about
         ctk.CTkLabel(about, text=f"версия {APP_VERSION}", text_color=MUTED, font=ctk.CTkFont(size=11)).pack(side="left")
         github = ctk.CTkLabel(about, text="GitHub ↗", text_color=ACCENT, cursor="hand2",
                               font=ctk.CTkFont(size=11, underline=True))
@@ -1500,6 +1596,103 @@ class App(ctk.CTk):
             return
         shutil.rmtree(profile, ignore_errors=True)
         self.toast("Вход сброшен")
+
+    # ---------- обновление из релизов GitHub ----------
+
+    def check_updates(self, manual: bool = False) -> None:
+        """Есть ли новая версия на GitHub — в фоне; ответ придёт в _poll событием update_found."""
+        if not manual:  # пока программа открыта — заглядываем раз в 12 часов
+            self.after(12 * 3600 * 1000, self.check_updates)
+            if not self.prefs.get("check_updates", True):
+                return
+        if self.update_busy:
+            return
+
+        def work():
+            try:
+                self.events.put(("update_found", updater.check(), "", manual))
+            except updater.UpdateError as e:
+                self.events.put(("update_found", None, str(e), manual))
+
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+
+    def _on_update_found(self, release: updater.Release | None, error: str, manual: bool) -> None:
+        if release is not None and not self.update_busy and self.update_root is None:
+            self.update_release = release
+            self.update_btn.configure(text=f"⬇  Обновить до {release.version}", state="normal")
+            self.update_btn.pack(fill="x", padx=22, pady=(0, 10), before=self._about)
+        if not manual:
+            return
+        if error:
+            messagebox.showwarning(APP_NAME, f"Не получилось проверить обновления: {error}")
+        elif release is None:
+            messagebox.showinfo(APP_NAME, f"У вас последняя версия: {APP_VERSION}.")
+        else:
+            self._update_clicked()
+
+    def _update_clicked(self) -> None:
+        release = self.update_release
+        if release is None or self.update_busy:
+            return
+        if self.update_root is not None:
+            self._restart_into_update()
+            return
+        reason = updater.can_install()
+        if reason:
+            if messagebox.askyesno(APP_NAME, f"Вышла версия {release.version} (у вас {APP_VERSION}).\n\n"
+                                             f"Обновить прямо из приложения не получится: {reason}.\n\n"
+                                             "Открыть страницу релиза, чтобы скачать архив?"):
+                webbrowser.open(release.page)
+            return
+        notes = "\n".join(line.strip().lstrip("#").strip() for line in release.notes.replace("**", "").splitlines()
+                          if line.strip())
+        if len(notes) > 700:
+            notes = notes[:700].rsplit("\n", 1)[0] + "\n…"
+        size = f", {release.size / 1024 / 1024:.0f} МБ" if release.size else ""
+        if not messagebox.askyesno(APP_NAME, f"Вышла версия {release.version} (у вас {APP_VERSION}).\n\n"
+                                             f"{notes or 'Подробности — на странице релиза.'}\n\n"
+                                             f"Скачать{size} и установить? Приложение перезапустится, настройки, "
+                                             "логи и вход в hh останутся."):
+            return
+        self.update_busy = True
+        self.update_btn.configure(state="disabled", text="⬇  Скачиваю…")
+
+        def work():
+            try:
+                root = updater.download(release, lambda done, total: self.events.put(("update_progress", done, total)))
+                self.events.put(("update_ready", root, ""))
+            except updater.UpdateError as e:
+                self.events.put(("update_ready", None, str(e)))
+
+        threading.Thread(target=work, name="update-download", daemon=True).start()
+
+    def _on_update_progress(self, done: int, total: int) -> None:
+        text = f"{done * 100 // total}%" if total else f"{done / 1024 / 1024:.0f} МБ"
+        self.update_btn.configure(text=f"⬇  Скачиваю… {text}")
+
+    def _on_update_ready(self, root: Path | None, error: str) -> None:
+        self.update_busy = False
+        if root is None:
+            self.update_btn.configure(state="normal", text=f"⬇  Обновить до {self.update_release.version}")
+            messagebox.showerror(APP_NAME, f"Обновление не скачалось: {error}")
+            return
+        self.update_root = root
+        self.update_btn.configure(state="normal", text="↻  Перезапустить и обновить")
+        if messagebox.askyesno(APP_NAME, f"Версия {self.update_release.version} скачана. Перезапустить приложение "
+                                         "и установить её сейчас?"):
+            self._restart_into_update()
+
+    def _restart_into_update(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning(APP_NAME, "Идёт работа. Дождитесь конца или остановите её — после этого нажмите "
+                                             "«Перезапустить и обновить».")
+            return
+        try:
+            updater.launch(self.update_root)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"Не удалось запустить обновление: {e}")
+            return
+        self.destroy()  # новая версия ждёт, пока это окно закроется, и ставит себя на место старой
 
     # ---------- запуск и остановка ----------
 
@@ -1650,6 +1843,12 @@ class App(ctk.CTk):
                     self.pages["settings"]._ai_tested(event[1], event[2])
                 elif event[0] == "done":
                     self._finish(event[1], event[2])
+                elif event[0] == "update_found":
+                    self._on_update_found(*event[1:])
+                elif event[0] == "update_progress":
+                    self._on_update_progress(*event[1:])
+                elif event[0] == "update_ready":
+                    self._on_update_ready(*event[1:])
         except queue.Empty:
             pass
         if self.running_kind == "responses":
@@ -1780,6 +1979,8 @@ def self_test() -> int:
 def main() -> None:
     if "--self-test" in sys.argv:
         sys.exit(self_test())
+    if "--apply-update" in sys.argv:  # запущены из скачанного обновления — ставим себя на место старой версии
+        sys.exit(updater.run_apply(sys.argv))
     if sys.platform == "win32":
         try:  # своя иконка на панели задач вместо иконки Python
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("HH-Auto-Response")

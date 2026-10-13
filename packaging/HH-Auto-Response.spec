@@ -1,11 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Сборка оконного приложения HH-Auto-Response (PyInstaller) под текущую ОС. Запуск — через packaging/build.py.
+import re
 import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH).parent
+# версия одна на всё: hh_auto/__init__.py (её же проверяет workflow перед релизом)
+VERSION = re.search(r'__version__ = "([^"]+)"', (ROOT / "hh_auto" / "__init__.py").read_text(encoding="utf-8"))[1]
 ICONS = ROOT / "packaging"
 MAC = sys.platform == "darwin"
 # Linux: у исполняемого файла иконки нет — окно ставит её само из icon.png
@@ -21,7 +24,7 @@ datas += [
 ]
 
 a = Analysis(
-    [str(ROOT / "gui.py")],
+    [str(ROOT / "scripts" / "gui.py")],
     pathex=[str(ROOT)],
     datas=datas,
     hiddenimports=[],
@@ -49,5 +52,6 @@ if MAC:
         icon=str(icon),
         bundle_identifier="io.github.blazestudio.hh-auto-response",
         info_plist={"NSHighResolutionCapable": True, "LSMinimumSystemVersion": "11.0",
-                    "CFBundleShortVersionString": "1.0.4"},
+                    "CFBundleShortVersionString": VERSION.split("-")[0],  # macOS ждёт только цифры: 1.0.4
+                    "CFBundleVersion": VERSION.split("-")[0]},
     )

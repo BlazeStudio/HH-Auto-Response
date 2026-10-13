@@ -1,17 +1,18 @@
 __pycache__/
 *.pyc
-.venv-build
 
-# личные настройки, профиль браузера с сессией hh, логи и история откликов
-config.toml
-browser-profile/
-logs/
-data/
+# данные программы: config.toml, профиль браузера с сессией hh, логи и история откликов
+# (из исходников и в Docker — папка hh-data/)
+hh-data/
 
 # сборка приложения
+.venv-build
 build/
 dist/
 
-# данные Docker-контейнера и настройки окна
-hh-data/
+# так данные лежали до 1.0.4 — при первом запуске они сами переедут в hh-data/
+config.toml
 app_prefs.json
+browser-profile/
+logs/
+data/

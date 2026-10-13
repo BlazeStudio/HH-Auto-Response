@@ -1,8 +1,10 @@
 # Сборка приложения под Windows, macOS (Apple Silicon и Intel) и Linux на машинах GitHub.
 #
-# Релиз: Releases → Draft a new release → тег вида 1.0.4-beta → Publish release.
-#   Workflow запустится сам, соберёт все системы и приложит архивы и SHA256SUMS.txt к этому релизу
-#   (~10–15 минут). Описание релиза не трогается.
+# Релиз: поднимите __version__ в hh_auto/__init__.py, закоммитьте, затем Releases → Draft a new release →
+#   тег = эта версия (например 1.0.5-beta) → Publish release. Workflow запустится сам, соберёт все системы
+#   и приложит архивы и SHA256SUMS.txt к этому релизу (~10–15 минут). Описание релиза не трогается.
+# Автообновление в приложении берёт именно эти файлы: архив под свою систему + SHA256SUMS.txt для проверки.
+#   Поэтому тег обязан совпадать с версией в коде — иначе приложение предлагало бы обновиться по кругу.
 # Пробная сборка без релиза: Actions → «Сборка» → Run workflow — архивы будут в Artifacts запуска.
 name: Сборка
 
@@ -33,6 +35,18 @@ jobs:
           - { name: Linux, os: ubuntu-22.04, optional: false }         # старая glibc — запустится на большем числе систем
     steps:
       - uses: actions/checkout@v4
+
+      - name: Тег релиза = версия приложения
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          app=$(sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' hh_auto/__init__.py | tr -d '\r')
+          if [ "${TAG#v}" != "$app" ]; then
+            echo "::error::Тег $TAG не совпадает с версией приложения $app в hh_auto/__init__.py"
+            exit 1
+          fi
 
       - uses: actions/setup-python@v5
         with:

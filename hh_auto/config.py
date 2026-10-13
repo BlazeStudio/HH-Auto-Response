@@ -291,7 +291,8 @@ def validate_search_source(cfg: Config) -> None:
 def load_config(path: Path, check_search_url: bool = True) -> Config:
     """check_search_url=False — для формы настроек в приложении: ссылку ещё могут не вписать."""
     if not path.exists():
-        raise ConfigError(f"не найден {path}. Скопируйте config.example.toml в config.toml и укажите ссылку поиска.")
+        raise ConfigError(f"не найден {path}. Скопируйте туда config.example.toml и укажите ссылку поиска "
+                          "(или настройте всё в приложении: python scripts/gui.py).")
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
