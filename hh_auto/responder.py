@@ -27,7 +27,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from . import control
 from . import selectors as S
 from .auth import hh_role, is_auth_url
-from .browser import FatalError
+from .browser import CaptchaShown, FatalError, captcha_shown, wait_captcha
 from .ai import SENSITIVE, AiClient, AiError, FormAnswer, FormQuestion
 from .config import Config
 from .logger import log
@@ -47,6 +47,8 @@ SUBMIT_ERROR_TEXT = re.compile(
 VIEWED_TEXT = "просмотрен работодателем"
 RESPONDED_TEXT = re.compile(r"Вы откликнулись|Резюме доставлено|Отклик отправлен", re.I)
 LETTER_SETTLE_SECONDS = 2.5  # текст письма не меняется столько секунд → генерация закончилась
+NO_BUTTON = "в карточке нет кнопки «Откликнуться» (уже откликались?)"
+CAPTCHA_ATTEMPTS = 3  # капча на одной вакансии — повторяем отклик после неё, но не бесконечно
 
 
 # Вопросы анкеты на странице отклика: текст, тип ответа и подписи вариантов
@@ -105,20 +107,48 @@ class Responder:
         self.form_ai = ai if cfg.ai.enabled else None
         self.resume_text = resume_text
         self._search_url = ""
+        self.captchas = 0  # сколько раз за запуск hh просил капчу
 
     def apply(self, vac: Vacancy) -> Result:
-        """Откликается на вакансию; непредвиденные исключения превращает в Result(FAILED)."""
-        try:
-            return self._apply(vac)
-        except FatalError:
-            raise
-        except Exception as e:
-            first_line = (str(e).splitlines() or [""])[0]
-            log.error(f"  ✗ непредвиденная ошибка: {type(e).__name__}: {first_line}")
-            log.debug("  трассировка:", exc_info=True)
-            self._snapshot(vac.id, "error")
-            self._close_dialogs()
-            return Result(Status.FAILED, f"{type(e).__name__}: {first_line}")
+        """Откликается на вакансию; непредвиденные исключения превращает в Result(FAILED).
+
+        Капча вместо отклика — не ошибка: ждём, пока человек её решит, и повторяем ту же вакансию."""
+        after_captcha = False
+        for _ in range(CAPTCHA_ATTEMPTS):
+            try:
+                result = self._apply(vac)
+            except CaptchaShown:
+                self._wait_captcha()
+                after_captcha = True
+                continue
+            except FatalError:
+                raise
+            except Exception as e:
+                first_line = (str(e).splitlines() or [""])[0]
+                log.error(f"  ✗ непредвиденная ошибка: {type(e).__name__}: {first_line}")
+                log.debug("  трассировка:", exc_info=True)
+                self._snapshot(vac.id, "error")
+                self._close_dialogs()
+                return Result(Status.FAILED, f"{type(e).__name__}: {first_line}")
+            if after_captcha and result.status is Status.SKIPPED and result.reason == NO_BUTTON:
+                # кнопки больше нет — hh сам дослал отклик, когда капчу решили
+                log.success("  ✓ ОТКЛИК ОТПРАВЛЕН — hh принял его после капчи")
+                return Result(Status.APPLIED, reason="отклик ушёл после капчи — письмо и ответы проверьте на hh")
+            return result
+        return Result(Status.FAILED, f"hh {CAPTCHA_ATTEMPTS} раза подряд просил капчу на этой вакансии")
+
+    def _wait_captcha(self) -> None:
+        """Капча посреди отклика: ждём человека, потом начинаем вакансию заново с чистой выдачи."""
+        self.captchas += 1
+        if not wait_captcha(self.page):
+            log.info("  окно капчи закрылось само")
+        if self.captchas == 1:
+            log.info("  hh просит капчу, когда откликов много подряд. Если она будет появляться часто, "
+                     "увеличьте паузы между вакансиями («Лимиты и паузы»)")
+        self._close_dialogs()
+        if self._search_url:
+            self.page.goto(self._search_url, wait_until="domcontentloaded")  # свежие карточки: ушёл ли отклик
+        log.info("  ↻ повторяю отклик на эту вакансию")
 
     def on_search_page(self) -> bool:
         return urlparse(self.page.url).path.startswith("/search/vacancy")
@@ -134,6 +164,8 @@ class Responder:
     # --- сценарий отклика ---
 
     def _apply(self, vac: Vacancy) -> Result:
+        if captcha_shown(self.page):  # капча уже на экране — сначала её решает человек
+            raise CaptchaShown()
         self._close_dialogs()  # хвосты от предыдущей вакансии
         card = self._card(vac.id)
         if card.count() == 0:  # выдачу только что открыли заново — hh догружает карточки не сразу
@@ -147,7 +179,7 @@ class Responder:
             return Result(Status.FAILED, "карточка вакансии не найдена на странице")
         button = card.locator(S.RESPONSE_BUTTON).first
         if button.count() == 0 or "Откликнуться" not in button.inner_text():
-            return Result(Status.SKIPPED, "в карточке нет кнопки «Откликнуться» (уже откликались?)", remember=True)
+            return Result(Status.SKIPPED, NO_BUTTON, remember=True)
 
         card.scroll_into_view_if_needed()
         self._pause()
@@ -205,6 +237,8 @@ class Responder:
         while time.monotonic() < deadline:
             if new_pages:
                 return _Outcome.NEW_WINDOW
+            if captcha_shown(self.page):  # окно «Пройдите капчу» вместо отклика
+                raise CaptchaShown()
             if not self.on_search_page():
                 return _Outcome.NAVIGATED
             try:
@@ -692,6 +726,8 @@ class Responder:
         button.click()
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
+            if captcha_shown(self.page):  # hh не отправил форму, а попросил капчу
+                raise CaptchaShown()
             if questions_page:
                 if not self._visible(button) or (not until_hidden and not self._questions_shown()):
                     return None
@@ -758,7 +794,10 @@ class Responder:
         """Закрывает всплывающие окна: крестик, кнопка «Закрыть»/«Отменить», в крайнем случае Escape.
 
         Если окно так и не закрылось — перезагружает страницу, иначе оно перекроет следующую вакансию.
+        Окно капчи не трогаем: его решает человек.
         """
+        if captcha_shown(self.page):
+            return
         for _ in range(3):
             try:
                 dialogs = self.page.locator(S.DIALOG).filter(visible=True)

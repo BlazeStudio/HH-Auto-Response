@@ -1412,6 +1412,7 @@ class App(ctk.CTk):
         self.chat_stats = ChatStats()
         self.run_limit = 0
         self.closing = False
+        self.waiting_captcha = False  # hh показал капчу, работа ждёт человека
         self.update_release: updater.Release | None = None  # найденная новая версия
         self.update_root: Path | None = None  # скачанная и распакованная новая версия
         self.update_busy = False
@@ -1778,6 +1779,7 @@ class App(ctk.CTk):
     def _finish(self, kind: str, code: int) -> None:
         self._set_running(False)
         self.running_kind = None
+        self.waiting_captcha = False
         self.summary = load_summary(self.root_dir)
         self.pages["responses"].update_totals(self.summary)
         minutes, seconds = divmod(int(time.monotonic() - self.started_at), 60)
@@ -1837,6 +1839,13 @@ class App(ctk.CTk):
                     self.console.add(levelno, text)
                     if "▶" in text and self.running_kind == "responses":
                         self.pages["responses"].current.configure(text=text.split("▶", 1)[1].strip())
+                    if "показал капчу" in text and self.running_kind:  # ждём человека — видно и в меню слева
+                        self.waiting_captcha = True
+                        self._set_status("●  Нужна капча", AMBER, "решите её в окне браузера")
+                        self.bell()
+                    elif "капча пройдена" in text and self.waiting_captcha:
+                        self.waiting_captcha = False
+                        self._set_status("●  Отклики" if self.running_kind == "responses" else "●  Чаты", ACCENT)
                 elif event[0] == "ai_pg":
                     self.pages["ai"].on_result(event[1], event[2])
                 elif event[0] == "ai_test":
@@ -1858,7 +1867,8 @@ class App(ctk.CTk):
             self.pages["chats"].update_stats(self.chat_stats)
         if self.running_kind and not control.stop_requested():
             minutes, seconds = divmod(int(time.monotonic() - self.started_at), 60)
-            self.status_detail.configure(text=f"идёт {minutes:02d}:{seconds:02d}")
+            what = "решите капчу в окне браузера • " if self.waiting_captcha else "идёт "
+            self.status_detail.configure(text=f"{what}{minutes:02d}:{seconds:02d}")
         self.after(120, self._poll)
 
     def toast(self, text: str) -> None:
