@@ -20,7 +20,6 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 import tkinter
-from tkinter import messagebox
 
 import _tkinter
 
@@ -41,25 +40,12 @@ from .logger import SUCCESS, log, setup_logging
 from .paths import app_root, bundled, is_frozen
 from .runner import RunOptions, Stats
 from . import updater
+from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
+from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, MAIN_BG,
+                    MUTED, RED, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon, sharp_windows_icon)
 
-APP_NAME = "HH-Auto-Response"
 APP_VERSION = __version__
 GITHUB_URL = "https://github.com/BlazeStudio/hh-auto-response"
-
-# --- палитра: (светлая тема, тёмная тема) ---
-ACCENT = ("#2563EB", "#3B82F6")
-ACCENT_HOVER = ("#1D4ED8", "#2563EB")
-ACCENT_SOFT = ("#DBEAFE", "#1E3A5F")
-SIDEBAR_BG = ("#EDF0F5", "#131519")
-MAIN_BG = ("#F6F7FB", "#1A1C21")
-CARD_BG = ("#FFFFFF", "#23262D")
-BORDER = ("#E3E6EC", "#2F333B")
-TEXT = ("#111827", "#F3F4F6")
-MUTED = ("#6B7280", "#9CA3AF")
-GREEN = ("#16A34A", "#22C55E")
-AMBER = ("#D97706", "#F59E0B")
-RED = ("#DC2626", "#EF4444")
-RED_HOVER = ("#B91C1C", "#DC2626")
 
 LOG_COLORS = {  # тег → (светлая, тёмная)
     "debug": ("#9CA3AF", "#6B7280"),
@@ -735,6 +721,7 @@ class PromptWindow(ctk.CTkToplevel):
         super().__init__(master)
         self.title("Что получает нейросеть")
         self.geometry("900x700")
+        apply_app_icon(self)
         box = ctk.CTkTextbox(self, wrap="word", font=ctk.CTkFont(family="Consolas", size=12))
         box.pack(fill="both", expand=True, padx=12, pady=12)
         box.insert("1.0", text)
@@ -923,6 +910,7 @@ class PickerDialog(ctk.CTkToplevel):
         self.title(title)
         self.geometry("760x680")
         self.transient(master.winfo_toplevel())
+        apply_app_icon(self)
         self.on_done = on_done
         self.order: list[str] = []  # id в порядке справочника — так же сохраняем
         self.vars: dict[str, ctk.BooleanVar] = {}
@@ -1207,12 +1195,14 @@ class SettingsPage(Page):
 
     def import_hh_filters(self) -> None:
         """Фильтры из ссылки hh: настроили на сайте, скопировали адрес — все поля заполнились."""
-        url = ctk.CTkInputDialog(title=APP_NAME, text="Вставьте адрес страницы поиска hh с выбранными фильтрами:").get_input()
-        if not url or not url.strip():
+        url = messagebox.askstring("Фильтры из ссылки hh", "Настройте фильтры на hh.ru, скопируйте адрес страницы "
+                                   "из браузера и вставьте сюда — поля заполнятся сами.",
+                                   placeholder="https://hh.ru/search/vacancy?…", ok="Заполнить")
+        if not url:
             return
-        url = url.strip()
         if "hh.ru/search/vacancy" not in url:
-            messagebox.showerror(APP_NAME, "Это не ссылка поиска вакансий hh (нужна вида https://hh.ru/search/vacancy?...)")
+            messagebox.showerror(APP_NAME, "Это не ссылка поиска вакансий hh\n\nНужна ссылка вида "
+                                           "https://hh.ru/search/vacancy?… — со страницы, где выбраны фильтры.")
             return
         found = hhf.from_url(url)
         for name in hhf.MANAGED:
@@ -1221,7 +1211,8 @@ class SettingsPage(Page):
         if "resume=" in url:  # ссылка «подходящие к резюме» — её же без фильтров ставим ссылкой поиска
             self._set_value("", "search_url", hhf.strip(url))
             note = " Ссылка поиска тоже обновлена (без фильтров — они теперь в полях ниже)."
-        messagebox.showinfo(APP_NAME, f"Заполнено фильтров: {hhf.count(found)}.{note}\n\nПроверьте и нажмите «Сохранить».")
+        messagebox.showinfo(APP_NAME, f"Заполнено фильтров: {hhf.count(found)}\n\nПроверьте поля и нажмите "
+                                      f"«Сохранить».{note}", kind="success")
 
     def reset_hh_filters(self) -> None:
         empty = hhf.HhFilters()
@@ -1245,7 +1236,10 @@ class SettingsPage(Page):
 
     def _ai_tested(self, ok: bool, text: str) -> None:
         self.ai_test_btn.configure(state="normal", text="Проверить подключение к ИИ")
-        (messagebox.showinfo if ok else messagebox.showerror)(APP_NAME, text)
+        if ok:
+            messagebox.showinfo(APP_NAME, text.replace(" ✓", ""), kind="success")
+        else:
+            messagebox.showerror(APP_NAME, text.replace("Не получилось: ", "Нейросеть не отвечает\n\n", 1))
 
     @staticmethod
     def _label(section: str, key: str) -> str:
@@ -1341,27 +1335,31 @@ class JournalsPage(Page):
         if path is None or not path.exists():
             return
         if path == self._busy_log():
-            messagebox.showinfo(APP_NAME, "В этот лог сейчас пишет идущий запуск — удалить можно после него.")
+            messagebox.showinfo(APP_NAME, "В этот лог сейчас пишет идущий запуск\n\nУдалить его можно, когда "
+                                          "запуск закончится.")
             return
-        if messagebox.askyesno(APP_NAME, f"Удалить лог {path.name}?"):
+        if messagebox.askyesno(APP_NAME, f"Удалить лог {path.name}?", yes="Удалить", no="Отмена", danger=True):
             self._unlink([path])
 
     def delete_all(self) -> None:
         busy = self._busy_log()
         logs = [p for p in (self.app.root_dir / "logs").glob("*.log") if p != busy]
         if not logs:
-            messagebox.showinfo(APP_NAME, "Удалять нечего.")
+            messagebox.showinfo(APP_NAME, "Удалять нечего: логов прошлых запусков нет.")
             return
         if messagebox.askyesno(APP_NAME, f"Удалить все логи ({len(logs)} шт.)?\n\nТаблица откликов (Excel) "
-                                         "и статистика останутся — они хранятся отдельно."):
+                                         "и статистика останутся — они хранятся отдельно.",
+                               yes="Удалить все", no="Отмена", danger=True):
             self._unlink(logs)
 
     def delete_snapshots(self) -> None:
         files = [p for p in (self.app.root_dir / "logs" / "snapshots").glob("*") if p.is_file()]
         if not files:
-            messagebox.showinfo(APP_NAME, "Снимков нет.")
+            messagebox.showinfo(APP_NAME, "Снимков страниц нет — удалять нечего.")
             return
-        if messagebox.askyesno(APP_NAME, f"Удалить снимки страниц ({len(files)} файлов)?"):
+        if messagebox.askyesno(APP_NAME, f"Удалить снимки страниц ({len(files)} файлов)?\n\nОни нужны, только чтобы "
+                                         "разобраться в ошибке, если hh поменял вёрстку.",
+                               yes="Удалить", no="Отмена", danger=True):
             self._unlink(files)
 
     def _unlink(self, paths: list[Path]) -> None:
@@ -1391,18 +1389,8 @@ class App(ctk.CTk):
         self.title(f"{APP_NAME} — автоотклики hh.ru")
         self.geometry("1180x800")
         self.minsize(1000, 680)
-        try:  # .ico — для Windows (панель задач), .png — для macOS и Linux
-            if sys.platform == "win32" and bundled("packaging/icon.ico").exists():
-                self.iconbitmap(str(bundled("packaging/icon.ico")))
-                # Tk ставит окну иконку 32 px, и на экране с масштабом 125–150% панель задач её растягивает —
-                # выходит мыло. Ставим сами нужного размера; повторно — когда окно точно появится
-                self.after(50, self._sharp_windows_icon)
-                self.after(800, self._sharp_windows_icon)
-            elif bundled("packaging/icon.png").exists():
-                self._icon = tkinter.PhotoImage(file=str(bundled("packaging/icon.png")))
-                self.iconphoto(True, self._icon)
-        except Exception:
-            pass
+        apply_app_icon(self)  # .ico — Windows (заголовок, панель задач), .png — macOS и Linux
+        self.after(800, lambda: sharp_windows_icon(self))  # ещё раз, когда окно точно появилось
 
         self.events: queue.Queue = queue.Queue()
         self.log_handler = QueueLogHandler(self.events)
@@ -1476,9 +1464,13 @@ class App(ctk.CTk):
         mode.set(current)
         mode.pack(fill="x", padx=22, pady=(4, 10))
         # появляется, когда на GitHub вышла новая версия
-        self.update_btn = ctk.CTkButton(bar, text="", height=34, corner_radius=10, fg_color=GREEN,
-                                        hover_color=("#15803D", "#16A34A"), text_color="#FFFFFF",
+        self._icon_download = icon("download", 16)  # свой значок: «⬇» есть не в каждом шрифте
+        self._icon_restart = icon("restart", 16)
+        self.update_btn = ctk.CTkButton(bar, text="", image=self._icon_download, compound="left", height=36,
+                                        corner_radius=10, fg_color=GREEN, hover_color=GREEN_HOVER,
+                                        text_color="#FFFFFF", text_color_disabled="#FFFFFF",
                                         font=ctk.CTkFont(size=13, weight="bold"), command=self._update_clicked)
+        self.update_progress = ctk.CTkProgressBar(bar, height=4, corner_radius=2, progress_color=GREEN)
         about = ctk.CTkFrame(bar, fg_color="transparent")
         about.pack(fill="x", padx=22, pady=(0, 16))
         self._about = about
@@ -1538,28 +1530,6 @@ class App(ctk.CTk):
         self.pages["chats"].refresh_config(self.cfg)
         self.pages["ai"].invalidate()
 
-    def _sharp_windows_icon(self) -> None:
-        """Иконки окна (заголовок и панель задач) из .ico ровно под текущий масштаб экрана: 32 px при 100%,
-        40 при 125%, 48 при 150%… — все эти размеры есть в icon.ico, Windows ничего не растягивает."""
-        try:
-            from ctypes import wintypes
-
-            user32 = ctypes.windll.user32
-            user32.LoadImageW.restype = wintypes.HANDLE
-            user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int,
-                                          ctypes.c_int, wintypes.UINT]
-            user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-            hwnd = int(self.wm_frame(), 16)  # настоящее окно Windows вокруг Tk-окна
-            dpi = user32.GetDpiForWindow(hwnd) or 96
-            path = str(bundled("packaging/icon.ico"))
-            for which, base in ((1, 32), (0, 16)):  # ICON_BIG — панель задач и Alt+Tab, ICON_SMALL — заголовок
-                size = round(base * dpi / 96)
-                icon = user32.LoadImageW(None, path, 1, size, size, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
-                if icon:
-                    user32.SendMessageW(hwnd, 0x80, which, icon)  # WM_SETICON
-        except Exception:
-            pass
-
     def _load_prefs(self) -> dict:
         try:
             return json.loads(self.prefs_path.read_text(encoding="utf-8"))
@@ -1594,8 +1564,9 @@ class App(ctk.CTk):
             messagebox.showwarning(APP_NAME, "Сначала остановите текущую работу.")
             return
         profile = self.root_dir / self.cfg.browser.profile_dir
-        if not messagebox.askyesno(APP_NAME, "Удалить сохранённый вход в hh.ru?\n\n"
-                                             "При следующем запуске нужно будет войти заново."):
+        if not messagebox.askyesno(APP_NAME, "Выйти из аккаунта hh?\n\nСохранённый вход удалится, "
+                                             "при следующем запуске нужно будет войти заново.",
+                                   yes="Выйти из аккаунта", no="Отмена", danger=True):
             return
         shutil.rmtree(profile, ignore_errors=True)
         self.toast("Вход сброшен")
@@ -1622,14 +1593,16 @@ class App(ctk.CTk):
     def _on_update_found(self, release: updater.Release | None, error: str, manual: bool) -> None:
         if release is not None and not self.update_busy and self.update_root is None:
             self.update_release = release
-            self.update_btn.configure(text=f"⬇  Обновить до {release.version}", state="normal")
+            self.update_btn.configure(text=f"Обновить до {release.version}", image=self._icon_download,
+                                      state="normal")
             self.update_btn.pack(fill="x", padx=22, pady=(0, 10), before=self._about)
         if not manual:
             return
         if error:
             messagebox.showwarning(APP_NAME, f"Не получилось проверить обновления: {error}")
         elif release is None:
-            messagebox.showinfo(APP_NAME, f"У вас последняя версия: {APP_VERSION}.")
+            messagebox.showinfo(APP_NAME, f"У вас последняя версия\n\nСейчас установлена {APP_VERSION} — "
+                                          "новее на GitHub пока нет.", kind="success")
         else:
             self._update_clicked()
 
@@ -1642,23 +1615,20 @@ class App(ctk.CTk):
             return
         reason = updater.can_install()
         if reason:
-            if messagebox.askyesno(APP_NAME, f"Вышла версия {release.version} (у вас {APP_VERSION}).\n\n"
-                                             f"Обновить прямо из приложения не получится: {reason}.\n\n"
-                                             "Открыть страницу релиза, чтобы скачать архив?"):
+            hint = ("\n\nСкачайте архив со страницы релиза и распакуйте его поверх старой папки." if is_frozen()
+                    else "")
+            if messagebox.askyesno(APP_NAME, f"Обновить прямо из приложения не получится: {reason}.{hint}",
+                                   title=f"Вышла версия {release.version}", yes="Открыть страницу релиза",
+                                   no="Позже", kind="update"):
                 webbrowser.open(release.page)
             return
-        notes = "\n".join(line.strip().lstrip("#").strip() for line in release.notes.replace("**", "").splitlines()
-                          if line.strip())
-        if len(notes) > 700:
-            notes = notes[:700].rsplit("\n", 1)[0] + "\n…"
-        size = f", {release.size / 1024 / 1024:.0f} МБ" if release.size else ""
-        if not messagebox.askyesno(APP_NAME, f"Вышла версия {release.version} (у вас {APP_VERSION}).\n\n"
-                                             f"{notes or 'Подробности — на странице релиза.'}\n\n"
-                                             f"Скачать{size} и установить? Приложение перезапустится, настройки, "
-                                             "логи и вход в hh останутся."):
+        if not messagebox.ask_update(release.version, APP_VERSION, release.notes, release.size / 1024 / 1024,
+                                     release.page):
             return
         self.update_busy = True
-        self.update_btn.configure(state="disabled", text="⬇  Скачиваю…")
+        self.update_btn.configure(state="disabled", text="Скачиваю…")
+        self.update_progress.set(0)
+        self.update_progress.pack(fill="x", padx=24, pady=(0, 10), before=self._about)
 
         def work():
             try:
@@ -1671,18 +1641,22 @@ class App(ctk.CTk):
 
     def _on_update_progress(self, done: int, total: int) -> None:
         text = f"{done * 100 // total}%" if total else f"{done / 1024 / 1024:.0f} МБ"
-        self.update_btn.configure(text=f"⬇  Скачиваю… {text}")
+        self.update_btn.configure(text=f"Скачиваю… {text}")
+        if total:
+            self.update_progress.set(done / total)
 
     def _on_update_ready(self, root: Path | None, error: str) -> None:
         self.update_busy = False
+        self.update_progress.pack_forget()
         if root is None:
-            self.update_btn.configure(state="normal", text=f"⬇  Обновить до {self.update_release.version}")
+            self.update_btn.configure(state="normal", text=f"Обновить до {self.update_release.version}")
             messagebox.showerror(APP_NAME, f"Обновление не скачалось: {error}")
             return
         self.update_root = root
-        self.update_btn.configure(state="normal", text="↻  Перезапустить и обновить")
-        if messagebox.askyesno(APP_NAME, f"Версия {self.update_release.version} скачана. Перезапустить приложение "
-                                         "и установить её сейчас?"):
+        self.update_btn.configure(state="normal", text="Перезапустить и обновить", image=self._icon_restart)
+        if messagebox.askyesno(APP_NAME, "Приложение закроется на несколько секунд и откроется уже новой версией.",
+                               title=f"Версия {self.update_release.version} скачана и проверена",
+                               yes="Перезапустить сейчас", no="Позже", kind="update"):
             self._restart_into_update()
 
     def _restart_into_update(self) -> None:
@@ -1817,7 +1791,8 @@ class App(ctk.CTk):
             return
         if not messagebox.askyesno(APP_NAME, "Показывать уведомление, когда запуск закончился?\n\n"
                                              "Например: «Отправлено 14, пропущено 161, ошибок 0». "
-                                             "Изменить можно в «Настройки» → «Уведомления по итогам»."):
+                                             "Изменить можно в «Настройки» → «Уведомления по итогам».",
+                                   yes="Показывать", no="Не нужно", kind="info"):
             return
         try:
             cfg = self.read_config_file(check_search_url=False)
@@ -1879,7 +1854,9 @@ class App(ctk.CTk):
 
     def on_close(self) -> None:
         if self.worker and self.worker.is_alive():
-            if not messagebox.askyesno(APP_NAME, "Идёт работа. Остановить и закрыть приложение?"):
+            if not messagebox.askyesno(APP_NAME, "Идёт работа. Остановить и закрыть приложение?\n\nТекущий "
+                                                 "шаг доделается, итоги сохранятся.", yes="Остановить и закрыть",
+                                       no="Продолжить работу", kind="warning"):
                 return
             self.closing = True
             self.stop()

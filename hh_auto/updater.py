@@ -153,7 +153,7 @@ def update_dir() -> Path:
 def download(release: Release, progress: Callable[[int, int], None] | None = None, timeout: float = 30) -> Path:
     """Скачать архив, сверить контрольную сумму, распаковать. Возвращает новую версию (папку или .app)."""
     folder = update_dir()
-    shutil.rmtree(folder, ignore_errors=True)
+    _remove(folder)
     folder.mkdir(parents=True, exist_ok=True)
     archive = folder / release.asset
     digest = hashlib.sha256()
@@ -265,9 +265,16 @@ def _retry(action: Callable[[], object], timeout: float = 20) -> None:
             time.sleep(0.5)
 
 
+def _long(path: Path) -> str:
+    """Путь, который Windows примет и длиннее 260 символов. Отложенные «_internal.old-…» на 15 символов длиннее
+    настоящих, и при длинном пути к программе обычное удаление их не берёт (если длинные пути выключены)."""
+    text = str(path.resolve())
+    return "\\\\?\\" + text if sys.platform == "win32" and not text.startswith("\\\\") else text
+
+
 def _remove(path: Path) -> None:
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(_long(path), ignore_errors=True)
     elif path.exists() or path.is_symlink():
         path.unlink(missing_ok=True)
 
@@ -325,7 +332,7 @@ def cleanup() -> None:
     """Убрать остатки прошлого обновления: распакованный архив и отложенные старые файлы."""
     if not is_frozen():
         return
-    shutil.rmtree(update_dir(), ignore_errors=True)
+    _remove(update_dir())
     target = install_dir()
     folder = target.parent if sys.platform == "darwin" else target
     try:
@@ -371,37 +378,74 @@ def run_apply(argv: list[str]) -> int:
         work(lambda _text: None)
         return 0 if "ok" in result else 1
 
-    import tkinter
-    from tkinter import messagebox
+    _progress_window(work, result)
+    if "error" in result:
+        if _wait_exit(wait_pid, timeout=0):  # файлы возвращены — запускаем прежнюю версию (если она закрыта)
+            restart(target)
+        return 1
+    restart(target, "--updated")
+    return 0
 
-    window = tkinter.Tk()
-    window.title(APP_NAME)
+
+def _progress_window(work: Callable[[Callable[[str], None]], None], result: dict[str, str]) -> None:
+    """Окно «Устанавливаю…» в стиле приложения (иконка программы, полоса прогресса) на время замены файлов.
+    Ошибка — окно с объяснением; закрыли его — закрылось и это."""
+    import tkinter
+
+    import customtkinter as ctk
+
+    from . import dialogs
+    from .theme import CARD_BG, GREEN, MUTED, TEXT, apply_app_icon, badge
+
+    try:  # светлое или тёмное оформление — как выбрано в приложении
+        prefs = json.loads((app_root() / "app_prefs.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        prefs = {}
+    ctk.set_appearance_mode(prefs.get("appearance", "system"))
+    window = ctk.CTk(fg_color=CARD_BG)
+    window.title(f"Обновление {APP_NAME}")
     window.resizable(False, False)
-    label = tkinter.Label(window, text="Обновляю HH-Auto-Response…", padx=28, pady=22, font=("Segoe UI", 11))
-    label.pack()
+    apply_app_icon(window)
+    frame = ctk.CTkFrame(window, fg_color="transparent")
+    frame.pack(fill="both", expand=True, padx=26, pady=24)
+    head = ctk.CTkFrame(frame, fg_color="transparent")
+    head.pack(fill="x")
+    ctk.CTkLabel(head, text="", image=badge("update", 44)).pack(side="left", padx=(0, 16))
+    column = ctk.CTkFrame(head, fg_color="transparent")
+    column.pack(side="left", fill="x", expand=True)
+    ctk.CTkLabel(column, text=f"Устанавливаю {APP_NAME} {__version__}", text_color=TEXT, anchor="w",
+                 font=ctk.CTkFont(size=17, weight="bold")).pack(fill="x")
+    status = ctk.CTkLabel(column, text="Готовлюсь…", text_color=MUTED, anchor="w", font=ctk.CTkFont(size=13))
+    status.pack(fill="x", pady=(4, 0))
+    bar = ctk.CTkProgressBar(frame, mode="indeterminate", height=6, corner_radius=3, progress_color=GREEN)
+    bar.pack(fill="x", pady=(20, 0))
+    bar.start()
+    ctk.CTkLabel(frame, text="Настройки, логи и вход в hh остаются на месте", text_color=MUTED, anchor="w",
+                 font=ctk.CTkFont(size=12)).pack(fill="x", pady=(12, 0))
+
     window.update_idletasks()
-    x = (window.winfo_screenwidth() - window.winfo_width()) // 2
-    y = (window.winfo_screenheight() - window.winfo_height()) // 3
-    window.geometry(f"+{x}+{y}")
+    scaling = ctk.ScalingTracker.get_window_scaling(window)
+    w, h = max(round(460 * scaling), window.winfo_reqwidth()), window.winfo_reqheight()
+    x, y = (window.winfo_screenwidth() - w) // 2, (window.winfo_screenheight() - h) // 3
+    tkinter.Tk.geometry(window, f"{w}x{h}+{x}+{y}")
+
     statuses: list[str] = []
     thread = threading.Thread(target=work, args=(statuses.append,), daemon=True)
     thread.start()
 
     def poll() -> None:
         if statuses:
-            label.configure(text=statuses[-1])
+            status.configure(text=statuses[-1])
         if thread.is_alive():
             window.after(150, poll)
-        else:
-            window.destroy()
+            return
+        bar.stop()
+        if "error" in result:
+            status.configure(text="Не получилось — старая версия на месте")
+            dialogs.showerror(APP_NAME, f"Обновление не установилось\n\n{result['error']}\n\n"
+                                        f"Скачать архив вручную можно на странице релизов: {RELEASES_PAGE}",
+                              parent=window)
+        window.destroy()
 
     window.after(150, poll)
     window.mainloop()
-    if "error" in result:
-        messagebox.showerror(APP_NAME, f"Обновление не установилось: {result['error']}\n\n"
-                                       f"Скачать архив вручную: {RELEASES_PAGE}")
-        if _wait_exit(wait_pid, timeout=0):  # файлы возвращены — запускаем прежнюю версию (если она закрыта)
-            restart(target)
-        return 1
-    restart(target, "--updated")
-    return 0
