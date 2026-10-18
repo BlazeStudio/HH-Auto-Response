@@ -13,10 +13,14 @@ from . import control
 from .browser import FatalError
 from .config import Config
 from .logger import log
-from .responder import Responder, Status
-from .search import build_search_url, describe_hh_filters, next_page_info, open_results_page, results_page_url
+from .responder import MOVED, Responder, Status
+from .search import (Vacancy, build_search_url, collect_vacancies, describe_hh_filters, next_page_info,
+                     open_results_page, results_page_url, wait_all_cards)
 from .results import ResultsBook
 from .state import State
+
+
+RESCANS = 2  # сколько раз дособрать вакансии, которые hh подвинул на текущую страницу
 
 
 @dataclass
@@ -61,6 +65,86 @@ def run(
     log.info(f"  фильтры hh: {describe_hh_filters(search_url)}")
     responder = Responder(page, cfg, snapshots_dir, resume_title, ai, resume_text)
     errors_in_row = 0
+    filters_warned = False
+
+    def handle(vac: Vacancy, tag: str, url: str) -> bool:
+        """Одна вакансия: фильтры → отклик → итог. False — запуск пора заканчивать."""
+        nonlocal errors_in_row
+        seen = state.seen(vac.id, opts.retry_skipped)
+        if seen:
+            stats.already += 1
+            log.debug(f"{tag} «{vac.title}» — {seen}")
+            return True
+        if not vac.can_respond:
+            stats.already += 1
+            log.info(f"{tag} «{vac.title}» — кнопки «Откликнуться» нет ({vac.button_text or 'уже откликались'}), пропускаю")
+            return True
+
+        excluded = _find_word(vac.title, cfg.filters.exclude_title_words)
+        if excluded:
+            stats.skipped[f"в названии «{excluded}»"] += 1
+            log.info(f"{tag} «{vac.title}» — в названии «{excluded}» ([filters]), пропускаю")
+            return True
+        company_word = _find_word(vac.company, cfg.filters.exclude_company_words)
+        if company_word:
+            stats.skipped[f"компания: «{company_word}»"] += 1
+            log.info(f"{tag} «{vac.title}» — компания «{vac.company}» содержит «{company_word}» ([filters]), пропускаю")
+            return True
+        if cfg.filters.include_company_words and not _find_word(vac.company, cfg.filters.include_company_words):
+            stats.skipped["компания не из списка ([filters] include_company_words)"] += 1
+            log.info(f"{tag} «{vac.title}» — компания «{vac.company}» не из списка include_company_words, пропускаю")
+            return True
+        if cfg.filters.include_words:
+            where = f"{vac.title} {vac.snippet}" if cfg.filters.include_in_snippet else vac.title
+            if not _find_word(where, cfg.filters.include_words):
+                stats.skipped["нет нужных слов ([filters] include_words)"] += 1
+                log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
+                return True
+
+        log.info("")
+        log.info(f"{tag} ▶ «{vac.title}» — {vac.company}")
+        log.info(f"  {vac.url}")
+        if opts.dry_run:
+            stats.dry_run += 1
+            log.info("  [dry-run] здесь был бы отклик")
+            return True
+
+        result = responder.apply(vac)
+        if result.reason != MOVED:  # вакансию ещё не трогали — в таблицу её не пишем
+            results.add(vac, result)
+        if result.status is Status.APPLIED:
+            stats.applied += 1
+            stats.with_letter += result.letter
+            state.mark_applied(vac, result.letter)
+            if result.reason:
+                (log.info if result.letter else log.warning)(f"  {'' if result.letter else '! '}{result.reason}")
+            log.info(f"  итого отправлено откликов: {stats.applied} из {max_responses}")
+        elif result.status is Status.SKIPPED:
+            stats.skipped[result.reason] += 1
+            if result.remember:
+                state.mark_skipped(vac, result.reason)
+            (log.info if result.reason == MOVED else log.warning)(f"  ⤼ вакансия пропущена: {result.reason}")
+        elif result.status is Status.FAILED:
+            stats.failed += 1
+            log.error(f"  ✗ не удалось откликнуться: {result.reason}")
+        else:  # Status.LIMIT
+            log.error("hh сообщил, что лимит откликов исчерпан — останавливаюсь. Попробуйте через сутки.")
+            return False
+
+        errors_in_row = errors_in_row + 1 if result.status is Status.FAILED else 0
+        if errors_in_row >= limits.max_consecutive_errors:
+            raise FatalError(
+                f"{errors_in_row} ошибок подряд — похоже, hh поменял вёрстку или слетела сессия. "
+                + (f"Скриншоты и HTML страниц: {snapshots_dir}" if cfg.logs.snapshots else
+                   "Включите снимки страниц ([logs] snapshots), чтобы было по чему разобраться")
+            )
+        if stats.applied >= max_responses:
+            log.success(f"Достигнут лимит этого запуска: {max_responses} откликов")
+            return False
+
+        responder.back_to_results(url)
+        _sleep(limits.delay_min, limits.delay_max, "перед следующей вакансией")
+        return True
 
     for page_num in range(opts.start_page, limits.max_pages):
         url = results_page_url(search_url, page_num)
@@ -78,85 +162,29 @@ def run(
         )
 
         skipped_before = sum(stats.skipped.values())
-        for i, vac in enumerate(vacancies, 1):
-            tag = f"[стр. {page_num + 1}, {i}/{len(vacancies)}]"
-            seen = state.seen(vac.id, opts.retry_skipped)
-            if seen:
-                stats.already += 1
-                log.debug(f"{tag} «{vac.title}» — {seen}")
-                continue
-            if not vac.can_respond:
-                stats.already += 1
-                log.info(f"{tag} «{vac.title}» — кнопки «Откликнуться» нет ({vac.button_text or 'уже откликались'}), пропускаю")
-                continue
-
-            excluded = _find_word(vac.title, cfg.filters.exclude_title_words)
-            if excluded:
-                stats.skipped[f"в названии «{excluded}»"] += 1
-                log.info(f"{tag} «{vac.title}» — в названии «{excluded}» ([filters]), пропускаю")
-                continue
-            company_word = _find_word(vac.company, cfg.filters.exclude_company_words)
-            if company_word:
-                stats.skipped[f"компания: «{company_word}»"] += 1
-                log.info(f"{tag} «{vac.title}» — компания «{vac.company}» содержит «{company_word}» ([filters]), пропускаю")
-                continue
-            if cfg.filters.include_company_words and not _find_word(vac.company, cfg.filters.include_company_words):
-                stats.skipped["компания не из списка ([filters] include_company_words)"] += 1
-                log.info(f"{tag} «{vac.title}» — компания «{vac.company}» не из списка include_company_words, пропускаю")
-                continue
-            if cfg.filters.include_words:
-                where = f"{vac.title} {vac.snippet}" if cfg.filters.include_in_snippet else vac.title
-                if not _find_word(where, cfg.filters.include_words):
-                    stats.skipped["нет нужных слов ([filters] include_words)"] += 1
-                    log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
-                    continue
-
+        on_page = {v.id for v in vacancies}
+        batch = vacancies
+        for rescan in range(RESCANS + 1):
+            for i, vac in enumerate(batch, 1):
+                if not handle(vac, f"[стр. {page_num + 1}, {i}/{len(batch)}{'+' if rescan else ''}]", url):
+                    return
+            # После перезагрузки выдачи hh заново сортирует «подходящие к резюме»: часть вакансий уезжает
+            # на другие страницы, а на эту приезжают новые. Их проходим сразу, не дожидаясь следующего запуска.
+            if opts.dry_run or rescan == RESCANS or not responder.on_search_page():
+                break
+            wait_all_cards(page)
+            batch = [v for v in collect_vacancies(page) if v.id not in on_page]
+            on_page.update(v.id for v in batch)
+            fresh = [v for v in batch if v.can_respond and not state.seen(v.id, opts.retry_skipped)]
+            if not fresh:
+                break
             log.info("")
-            log.info(f"{tag} ▶ «{vac.title}» — {vac.company}")
-            log.info(f"  {vac.url}")
-            if opts.dry_run:
-                stats.dry_run += 1
-                log.info("  [dry-run] здесь был бы отклик")
-                continue
-
-            result = responder.apply(vac)
-            results.add(vac, result)
-            if result.status is Status.APPLIED:
-                stats.applied += 1
-                stats.with_letter += result.letter
-                state.mark_applied(vac, result.letter)
-                if result.reason:
-                    (log.info if result.letter else log.warning)(f"  {'' if result.letter else '! '}{result.reason}")
-                log.info(f"  итого отправлено откликов: {stats.applied} из {max_responses}")
-            elif result.status is Status.SKIPPED:
-                stats.skipped[result.reason] += 1
-                if result.remember:
-                    state.mark_skipped(vac, result.reason)
-                log.warning(f"  ⤼ вакансия пропущена: {result.reason}")
-            elif result.status is Status.FAILED:
-                stats.failed += 1
-                log.error(f"  ✗ не удалось откликнуться: {result.reason}")
-            else:  # Status.LIMIT
-                log.error("hh сообщил, что лимит откликов исчерпан — останавливаюсь. Попробуйте через сутки.")
-                return
-
-            errors_in_row = errors_in_row + 1 if result.status is Status.FAILED else 0
-            if errors_in_row >= limits.max_consecutive_errors:
-                raise FatalError(
-                    f"{errors_in_row} ошибок подряд — похоже, hh поменял вёрстку или слетела сессия. "
-                    + (f"Скриншоты и HTML страниц: {snapshots_dir}" if cfg.logs.snapshots else
-                       "Включите снимки страниц ([logs] snapshots), чтобы было по чему разобраться")
-                )
-            if stats.applied >= max_responses:
-                log.success(f"Достигнут лимит этого запуска: {max_responses} откликов")
-                return
-
-            responder.back_to_results(url)
-            _sleep(limits.delay_min, limits.delay_max, "перед следующей вакансией")
+            log.info(f"  hh пересортировал выдачу: на этой странице появилось ещё {len(fresh)} новых вакансий — прохожу их")
 
         skipped_on_page = sum(stats.skipped.values()) - skipped_before
-        if skipped_on_page >= len(vacancies) * 0.8:
-            log.warning(f"  ! на этой странице фильтры отсеяли {skipped_on_page} из {len(vacancies)} вакансий — "
+        if skipped_on_page >= len(on_page) * 0.8 and not filters_warned:
+            filters_warned = True  # одного раза за запуск достаточно
+            log.warning(f"  ! на этой странице фильтры отсеяли {skipped_on_page} из {len(on_page)} вакансий — "
                         "если откликов мало, проверьте [filters] (особенно «только со словами»)")
         has_next, why = next_page_info(page, page_num)
         if not has_next:

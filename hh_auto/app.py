@@ -26,11 +26,31 @@ from .state import State
 EXIT_OK, EXIT_FATAL, EXIT_STOPPED = 0, 1, 130
 
 
+def prune_snapshots(folder: Path, keep_days: int) -> None:
+    """Снимки страниц копятся быстро (за 12 дней — 220 МБ): старше keep_days удаляем. 0 — хранить всё."""
+    if keep_days <= 0 or not folder.is_dir():
+        return
+    border = time.time() - keep_days * 86400
+    removed = size = 0
+    for item in folder.iterdir():
+        try:
+            if item.is_file() and item.stat().st_mtime < border:
+                size += item.stat().st_size
+                item.unlink()
+                removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.info(f"удалил снимки страниц старше {keep_days} дн.: {removed} файлов, {size / 1024 / 1024:.0f} МБ "
+                 "([logs] keep_days)")
+
+
 def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_path: Path) -> int:
     """Отклики на вакансии. Возвращает код завершения."""
     log_dir = root / "logs"
     results = ResultsBook(root)
     started = time.monotonic()
+    prune_snapshots(log_dir / "snapshots", cfg.logs.keep_days)
     log.info(f"поиск: {describe_search(cfg)}")
 
     def work(page):

@@ -109,6 +109,24 @@ def _check_ip_country(page: Page, cfg: Config) -> None:
     log.warning(f"  ! {message}")
 
 
+def open_url(page: Page, url: str, attempts: int = 3, timeout: float = 45) -> None:
+    """Переход на страницу hh с повтором. hh бывает медленным (20 с не хватало), а после отправки формы
+    сам уводит на другую страницу — тогда наш переход прерывается («interrupted by another navigation»)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            return
+        except PlaywrightError as e:
+            if attempt == attempts or "closed" in str(e).lower():
+                raise
+            log.debug(f"  переход не удался ({(str(e).splitlines() or [''])[0][:120]}) — повторяю")
+            try:  # дать hh закончить свой переход, если он был
+                page.wait_for_load_state("domcontentloaded", timeout=10_000)
+            except PlaywrightError:
+                pass
+            control.sleep(2 * attempt)
+
+
 def captcha_shown(page: Page) -> bool:
     if "captcha" in page.url.lower():
         return True

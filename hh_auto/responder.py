@@ -27,7 +27,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from . import control
 from . import selectors as S
 from .auth import hh_role, is_auth_url
-from .browser import CaptchaShown, FatalError, captcha_shown, wait_captcha
+from .browser import CaptchaShown, FatalError, captcha_shown, open_url, wait_captcha
 from .ai import SENSITIVE, AiClient, AiError, FormAnswer, FormQuestion
 from .config import Config
 from .logger import log
@@ -48,6 +48,7 @@ VIEWED_TEXT = "просмотрен работодателем"
 RESPONDED_TEXT = re.compile(r"Вы откликнулись|Резюме доставлено|Отклик отправлен", re.I)
 LETTER_SETTLE_SECONDS = 2.5  # текст письма не меняется столько секунд → генерация закончилась
 NO_BUTTON = "в карточке нет кнопки «Откликнуться» (уже откликались?)"
+MOVED = "hh пересортировал выдачу, вакансия ушла на другую страницу — вернусь к ней в следующий раз"
 CAPTCHA_ATTEMPTS = 3  # капча на одной вакансии — повторяем отклик после неё, но не бесконечно
 
 
@@ -147,7 +148,7 @@ class Responder:
                      "увеличьте паузы между вакансиями («Лимиты и паузы»)")
         self._close_dialogs()
         if self._search_url:
-            self.page.goto(self._search_url, wait_until="domcontentloaded")  # свежие карточки: ушёл ли отклик
+            open_url(self.page, self._search_url)  # свежие карточки: ушёл ли отклик
         log.info("  ↻ повторяю отклик на эту вакансию")
 
     def on_search_page(self) -> bool:
@@ -159,7 +160,7 @@ class Responder:
             raise FatalError("сессия hh истекла (вы больше не авторизованы), перезапустите скрипт и войдите заново")
         if not self.on_search_page():
             log.info("  ↩ возвращаюсь на страницу выдачи")
-            self.page.goto(url, wait_until="domcontentloaded")
+            open_url(self.page, url)
 
     # --- сценарий отклика ---
 
@@ -175,8 +176,12 @@ class Responder:
                 pass
             wait_all_cards(self.page)
         if card.count() == 0:
+            if self.page.locator(S.VACANCY_CARD).count():
+                # Карточки на месте, нашей нет: после перезагрузки hh заново отсортировал «подходящие к резюме»,
+                # и вакансия уехала на другую страницу. Не ошибка — попробуем её в следующем запуске.
+                return Result(Status.SKIPPED, MOVED)
             self._snapshot(vac.id, "no-card")
-            return Result(Status.FAILED, "карточка вакансии не найдена на странице")
+            return Result(Status.FAILED, "на странице выдачи нет ни одной карточки вакансии")
         button = card.locator(S.RESPONSE_BUTTON).first
         if button.count() == 0 or "Откликнуться" not in button.inner_text():
             return Result(Status.SKIPPED, NO_BUTTON, remember=True)
@@ -375,9 +380,11 @@ class Responder:
         if not fill.can_answer:
             return self._skip_questions(f"ИИ: {fill.reason}", questions=questions)
         log.info(f"  ответы готовы за {time.monotonic() - started:.1f} с:")
+        for note in self.ai.notes:  # где страховки поправили модель
+            log.info(f"  ⚑ {note}")
         pairs = []
         for answer in fill.answers:
-            log.success(f"    {answer.question.text[:70]} → {answer.describe()[:200]}")
+            log.success(f"    {answer.question.text[:70]} → {answer.describe()[:200] or '(ничего не отмечаю)'}")
             if not self._put_answer(answer):
                 self._snapshot(vac.id, "questions-fill")
                 return self._skip_questions(f"не удалось заполнить вопрос «{answer.question.text[:60]}»",
@@ -439,7 +446,11 @@ class Responder:
             return Result(Status.FAILED, f"страница вопросов: {error}")
 
         log.success(f"  ✓ ОТКЛИК ОТПРАВЛЕН {what}" + (" и сопроводительным письмом" if letter else ""))
-        self._back_to_results(direct=True)
+        try:
+            self._back_to_results(direct=True)
+        except PlaywrightError as e:  # отклик уже ушёл — неудачный возврат к выдаче не делает его ошибкой
+            log.warning(f"  ! не удалось вернуться к выдаче ({(str(e).splitlines() or [''])[0][:100]}) — "
+                        "вернусь перед следующей вакансией")
         return Result(Status.APPLIED, reason=f"анкета: {len(answers)} вопр.", letter=letter, answers=answers)
 
     def _open_questions_letter(self, timeout: float = 10) -> tuple[Locator | Page, Locator, Locator | None] | None:
@@ -490,7 +501,7 @@ class Responder:
             except PlaywrightError:
                 pass
         if self.page.url != self._search_url or self._questions_shown():
-            self.page.goto(self._search_url, wait_until="domcontentloaded")
+            open_url(self.page, self._search_url)
         self._close_dialogs()
 
     def _questions_shown(self) -> bool:

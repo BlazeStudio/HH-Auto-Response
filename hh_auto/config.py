@@ -181,6 +181,7 @@ class Logs:
     # скриншот и HTML страницы при каждой ошибке (logs/snapshots) — по ним чинят селекторы, если hh поменял
     # вёрстку. Занимают место (~1–3 МБ на снимок); false — не сохранять
     snapshots: bool = True
+    keep_days: int = 14  # снимки старше стольких дней удаляются при запуске; 0 — хранить всё
 
 
 @dataclass
@@ -343,4 +344,6 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError("[letter] mode = template, но template_text пустой")
     if cfg.limits.delay_min > cfg.limits.delay_max:
         raise ConfigError("[limits] delay_min больше delay_max")
+    if cfg.logs.keep_days < 0:
+        raise ConfigError("[logs] keep_days не может быть меньше 0 (0 — хранить снимки всегда)")
     cfg.geo.playwright_proxy()  # проверка формата прокси заранее
