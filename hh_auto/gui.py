@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -20,8 +21,6 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 import tkinter
-
-import _tkinter
 
 import customtkinter as ctk
 
@@ -41,6 +40,7 @@ from .paths import app_root, bundled, is_frozen
 from .runner import RunOptions, Stats
 from . import updater
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
+from .widgets import ChipGroup, ItemList, PlainFrame, TextLabel, frozen
 from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, MAIN_BG,
                     MUTED, RED, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon, sharp_windows_icon)
 
@@ -112,21 +112,34 @@ class Card(ctk.CTkFrame):
 
 
 class ScrollFrame(ctk.CTkScrollableFrame):
-    """Прокручиваемая область без «плывущего» текста и без застревания колеса на полях с текстом.
+    """Прокручиваемая область без «плывущего» и «размножившегося» текста, без застревания колеса на полях.
 
-    У CTkScrollableFrame каждый щелчок колеса сразу сдвигает страницу, а перерисовка у Windows — самое
-    последнее дело: при быстрой прокрутке сдвиги идут один за другим, и на экране остаются куски текста
-    со старых мест. Здесь щелчки копятся и применяются не чаще раза в кадр, а после сдвига окно
-    перерисовывается целиком. Колесо над многострочным полем customtkinter отдаёт самому полю, даже если
-    листать в нём нечего, — тогда листаем страницу.
+    У CTkScrollableFrame каждый щелчок колеса или движение ползунка сразу сдвигает страницу, Windows копирует
+    старую картинку на новое место, а дорисовать открывшееся не успевает — при быстрой прокрутке строки
+    остаются на экране по нескольку раз. Здесь сдвиги копятся и применяются не чаще раза в кадр, и на время
+    сдвига область заморожена: Windows ничего не копирует, а перерисовывает её целиком. Колесо над
+    многострочным полем customtkinter отдаёт самому полю, даже если листать в нём нечего, — тогда листаем
+    страницу.
     """
 
     FRAME_MS = 15
 
     def __init__(self, *args, **kwargs):
         self._wheel_units = 0
+        self._moveto: float | None = None  # куда перетащили ползунок
         self._wheel_job = None
         super().__init__(*args, **kwargs)
+        self._scrollbar.configure(command=self._scrollbar_command)
+
+    def _scrollbar_command(self, *args) -> None:
+        """Ползунок полосы прокрутки — тот же путь, что и колесо: раз в кадр и без копирования старой картинки."""
+        if args and args[0] == "moveto":
+            self._moveto, self._wheel_units = float(args[1]), 0
+        elif args and args[0] == "scroll":
+            step = int(args[1]) * (self._parent_canvas.winfo_height() if args[2] == "pages" else 20)
+            self._wheel_units += step
+        if self._wheel_job is None:
+            self._wheel_job = self.after(self.FRAME_MS, self._apply_wheel)
 
     def _mouse_wheel_all(self, event):
         if self._shift_pressed:  # горизонтальной прокрутки у нас нет — как в customtkinter
@@ -162,21 +175,16 @@ class ScrollFrame(ctk.CTkScrollableFrame):
     def _apply_wheel(self) -> None:
         self._wheel_job = None
         units, self._wheel_units = self._wheel_units, 0
+        moveto, self._moveto = self._moveto, None
         canvas = self._parent_canvas
-        if not units or canvas.yview() == (0.0, 1.0):
+        if (not units and moveto is None) or canvas.yview() == (0.0, 1.0):
             return
-        canvas.yview_scroll(units, "units")
-        if sys.platform != "win32":
-            return
-        try:  # сразу дорисовать всё, что открылось при сдвиге, — до следующего щелчка колеса
-            canvas.update_idletasks()  # Tk передвинул окна
-            ctypes.windll.user32.RedrawWindow(canvas.winfo_id(), None, None, 0x0080 | 0x0100)  # ALLCHILDREN|UPDATENOW
-            for _ in range(200):  # Windows прислал «перерисуй» — разобрать их, но не всю очередь событий
-                if not self.tk.dooneevent(_tkinter.WINDOW_EVENTS | _tkinter.DONT_WAIT):
-                    break
-            canvas.update_idletasks()  # и нарисовать
-        except (AttributeError, OSError, tkinter.TclError):
-            pass
+        # заморожено: Windows не копирует старую картинку на новое место, а перерисовывает всё сразу (flush)
+        with frozen(canvas, flush=True):
+            if moveto is not None:
+                canvas.yview_moveto(moveto)
+            if units:
+                canvas.yview_scroll(units, "units")
 
 
 class StatCard(Card):
@@ -846,6 +854,16 @@ SETTINGS = [
         ("geo", "require_ru_ip", "Не запускаться с нероссийского IP", "bool", ""),
     ]),
 ]
+# Вкладки настроек: на экране одна вкладка, а не все 13 разделов разом (на ленте было 915 окон Windows,
+# и при прокрутке и переключении страниц они перерисовывались кусками)
+SETTINGS_TABS = [
+    ("Поиск", ("Поиск и резюме", "Фильтры по словам")),
+    ("Фильтры hh", ("Фильтры hh",)),
+    ("Отклики", ("Лимиты и паузы", "Сопроводительное письмо", "Вопросы работодателя", "Вакансии в другом регионе")),
+    ("Нейросеть", ("ИИ-ответы в чатах",)),
+    ("Уведомления", ("Уведомления по итогам",)),
+    ("Прочее", ("Логи и место на диске", "Браузер и сеть", "Данные приложения")),
+]
 # Варианты для полей с несколькими галочками: значение в config → подпись
 MULTI = {("hh_filters", name): options for name, options in hhf.LIST_OPTIONS.items() if options is not None}
 # Большие справочники hh — выбор в отдельном окне с поиском: (группы, id → название)
@@ -883,7 +901,7 @@ class PickerField(ctk.CTkFrame):
         self.title, self.groups, self.names = title, groups, names
         self.values: list[str] = []
         _secondary_button(self, "Выбрать…", self._open, width=120, height=30).pack(side="left")
-        self.summary = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w", justify="left", wraplength=620)
+        self.summary = TextLabel(self, "", color=MUTED, wraplength=620)
         self.summary.pack(side="left", fill="x", expand=True, padx=10)
 
     def set(self, values) -> None:
@@ -893,7 +911,7 @@ class PickerField(ctk.CTkFrame):
         else:
             shown = ", ".join(self.names.get(v, v) for v in self.values[:3])
             text = f"Выбрано {len(self.values)}: {shown}" + ("…" if len(self.values) > 3 else "")
-        self.summary.configure(text=text, text_color=TEXT if self.values else MUTED)
+        self.summary.set(text, TEXT if self.values else MUTED)
 
     def get(self) -> list[str]:
         return list(self.values)
@@ -903,47 +921,44 @@ class PickerField(ctk.CTkFrame):
 
 
 class PickerDialog(ctk.CTkToplevel):
-    """Выбор из справочника hh: поиск по названию, группы, «все в группе», счётчик выбранного."""
+    """Выбор из справочника hh: поиск по названию, группы, «все в группе», счётчик выбранного.
+
+    Каждая группа — «чипы» на одном холсте: у отраслей 326 вариантов, и флажками это было ~1300 окон Windows,
+    которые при прокрутке и поиске перерисовывались кусками."""
 
     def __init__(self, master, title: str, groups, selected: list[str], on_done):
-        super().__init__(master)
+        super().__init__(master, fg_color=MAIN_BG)
         self.title(title)
-        self.geometry("760x680")
+        self.geometry("820x700")
         self.transient(master.winfo_toplevel())
         apply_app_icon(self)
         self.on_done = on_done
-        self.order: list[str] = []  # id в порядке справочника — так же сохраняем
-        self.vars: dict[str, ctk.BooleanVar] = {}
-        self.extra = [v for v in selected if all(v != i for _, items in groups for i, _ in items)]  # неизвестные id
+        known = {item_id for _, items in groups for item_id, _ in items}
+        self.order: list[str] = list(dict.fromkeys(i for _, items in groups for i, _ in items))  # порядок справочника
+        self.selected: set[str] = {str(v) for v in selected if str(v) in known}
+        self.extra = [v for v in selected if str(v) not in known]  # неизвестные id сохраняем как были
 
         top = ctk.CTkFrame(self, fg_color="transparent")
-        top.pack(fill="x", padx=14, pady=(14, 6))
-        self.search = ctk.CTkEntry(top, placeholder_text="Поиск по названию…", height=34)
+        top.pack(fill="x", padx=14, pady=(14, 8))
+        self.search = ctk.CTkEntry(top, placeholder_text="Поиск по названию…", height=36)
         self.search.pack(side="left", fill="x", expand=True)
         self.search.bind("<KeyRelease>", lambda _e: self._schedule_filter())
-        self.counter = ctk.CTkLabel(top, text="", text_color=MUTED)
+        self.counter = TextLabel(top, "", color=MUTED, bg=MAIN_BG)
         self.counter.pack(side="left", padx=12)
 
-        self.list = ScrollFrame(self, fg_color=CARD_BG)
+        self.list = ScrollFrame(self, fg_color=CARD_BG, corner_radius=12)
         self.list.pack(fill="both", expand=True, padx=14)
-        self.rows: list[tuple[ctk.CTkFrame, list[tuple[ctk.CTkCheckBox, str]]]] = []
+        self.groups: list[tuple[PlainFrame, ChipGroup, list[tuple[str, str]]]] = []
         for group, items in groups:
-            header = ctk.CTkFrame(self.list, fg_color="transparent")
-            ctk.CTkLabel(header, text=group, font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+            header = PlainFrame(self.list)
+            TextLabel(header, group, size=14, weight="bold").pack(side="left")
             ids = [item_id for item_id, _ in items]
-            ctk.CTkButton(header, text="все", width=46, height=22, fg_color="transparent", text_color=ACCENT,
-                          hover_color=ACCENT_SOFT, command=lambda ids=ids: self._mark(ids, True)).pack(side="left", padx=6)
-            ctk.CTkButton(header, text="снять", width=52, height=22, fg_color="transparent", text_color=MUTED,
-                          hover_color=ACCENT_SOFT, command=lambda ids=ids: self._mark(ids, False)).pack(side="left")
-            boxes = []
-            for item_id, name in items:
-                if item_id not in self.vars:
-                    self.vars[item_id] = ctk.BooleanVar(value=item_id in selected)
-                    self.order.append(item_id)
-                box = ctk.CTkCheckBox(self.list, text=name, variable=self.vars[item_id], command=self._count,
-                                      checkbox_width=18, checkbox_height=18)
-                boxes.append((box, name.lower()))
-            self.rows.append((header, boxes))
+            for label, color, value in (("все", ACCENT, True), ("снять", MUTED, False)):
+                link = TextLabel(header, label, color=color, size=12, cursor="hand2")
+                link.pack(side="left", padx=(10, 0))
+                link.bind("<Button-1>", lambda _e, ids=ids, value=value: self._mark(ids, value))
+            chips = ChipGroup(self.list, items, selected=self.selected, on_change=self._count)
+            self.groups.append((header, chips, list(items)))
 
         bottom = ctk.CTkFrame(self, fg_color="transparent")
         bottom.pack(fill="x", padx=14, pady=12)
@@ -963,28 +978,32 @@ class PickerDialog(ctk.CTkToplevel):
 
     def _filter(self) -> None:
         query = self.search.get().strip().lower()
-        for header, boxes in self.rows:
-            header.pack_forget()
-            for box, _ in boxes:
-                box.pack_forget()
-        for header, boxes in self.rows:
-            matched = [box for box, name in boxes if query in name]
-            if matched:
-                header.pack(fill="x", pady=(10, 2))
-                for box in matched:
-                    box.pack(anchor="w", padx=(14, 0), pady=1)
+        with frozen(self):  # поиск перестраивает весь список — показываем уже готовый
+            for header, chips, _ in self.groups:
+                header.pack_forget()
+                chips.pack_forget()
+            for header, chips, items in self.groups:
+                matched = [(item_id, name) for item_id, name in items if query in name.lower()]
+                if matched:
+                    header.pack(fill="x", padx=14, pady=(12, 6))
+                    chips.set_options(matched)
+                    chips.pack(fill="x", padx=14)
 
     def _mark(self, ids, value: bool) -> None:
-        for item_id in ids:
-            self.vars[item_id].set(value)
+        if value:
+            self.selected.update(ids)
+        else:
+            self.selected.difference_update(ids)
+        for _, chips, _ in self.groups:
+            chips._render()
         self._count()
 
     def _count(self) -> None:
-        chosen = sum(var.get() for var in self.vars.values())
-        self.counter.configure(text=f"выбрано {chosen}" if chosen else "ничего не выбрано — все")
+        chosen = len(self.selected)
+        self.counter.set(f"выбрано {chosen}" if chosen else "ничего не выбрано — все")
 
     def _done(self) -> None:
-        self.on_done([item_id for item_id in self.order if self.vars[item_id].get()] + self.extra)
+        self.on_done([item_id for item_id in self.order if item_id in self.selected] + self.extra)
         self.destroy()
 
 
@@ -994,19 +1013,31 @@ class SettingsPage(Page):
         self.app = app
         self.widgets: dict[tuple[str, str], tuple[str, object]] = {}
 
-        scroll = ScrollFrame(self, fg_color="transparent")
-        scroll.pack(fill="both", expand=True)
+        # вкладки — как пункты меню слева: выбранная подсвечена
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x", pady=(0, 10))
+        self.tab_buttons: dict[str, ctk.CTkButton] = {}
+        for name, _ in SETTINGS_TABS:
+            button = ctk.CTkButton(bar, text=name, height=34, width=0, corner_radius=9, fg_color="transparent",
+                                   text_color=TEXT, hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=14),
+                                   command=lambda n=name: self.show_tab(n))
+            button.pack(side="left", padx=(0, 6))
+            self.tab_buttons[name] = button
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        self.tabs = {name: ScrollFrame(body, fg_color="transparent") for name, _ in SETTINGS_TABS}
+        tab_of = {section: name for name, sections in SETTINGS_TABS for section in sections}
+        self.field_tab: dict[tuple[str, str], str] = {}
+
         for section_title, items in SETTINGS:
-            card = Card(scroll)
+            card = Card(self.tabs[tab_of[section_title]])
             card.pack(fill="x", pady=(0, 12), padx=(0, 6))
-            ctk.CTkLabel(card, text=section_title, font=ctk.CTkFont(size=15, weight="bold")).pack(
-                anchor="w", padx=16, pady=(12, 4))
+            TextLabel(card, section_title, size=15, weight="bold").pack(anchor="w", padx=16, pady=(12, 4))
             if section_title == "Фильтры hh":
-                hint = ctk.CTkLabel(card, text="Пусто — фильтр не задан, на hh это «выбрано всё». Проще всего настроить "
-                                               "фильтры на hh.ru, скопировать адрес страницы и нажать «Заполнить из ссылки».",
-                                    text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=760)
-                hint.pack(anchor="w", padx=16, pady=(0, 0))
-                row = ctk.CTkFrame(card, fg_color="transparent")
+                TextLabel(card, "Пусто — фильтр не задан, на hh это «выбрано всё». Проще всего настроить фильтры на "
+                                "hh.ru, скопировать адрес страницы и нажать «Заполнить из ссылки».",
+                          color=MUTED, size=12, wraplength=760).pack(anchor="w", padx=16)
+                row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 8))
                 _secondary_button(row, "Заполнить из ссылки hh…", self.import_hh_filters, width=220,
                                   height=32).pack(side="left")
@@ -1014,35 +1045,34 @@ class SettingsPage(Page):
                                   height=32).pack(side="left", padx=8)
             for section, key, label, kind, hint in items:
                 self._add_field(card, section, key, label, kind, hint)
+                self.field_tab[(section, key)] = tab_of[section_title]
             if section_title == "ИИ-ответы в чатах":
-                row = ctk.CTkFrame(card, fg_color="transparent")
+                row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
                 self.ai_test_btn = _secondary_button(row, "Проверить подключение к ИИ", self.test_ai, width=240, height=32)
                 self.ai_test_btn.pack(side="left")
-                ctk.CTkLabel(row, text="Где взять ключ: OpenRouter — openrouter.ai → Keys; DeepSeek — "
-                                       "platform.deepseek.com → API keys; Ollama — ключ не нужен",
-                             text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w", justify="left",
-                             wraplength=480).pack(side="left", padx=12)
+                TextLabel(row, "Где взять ключ: OpenRouter — openrouter.ai → Keys; DeepSeek — platform.deepseek.com → "
+                               "API keys; Ollama — ключ не нужен", color=MUTED, size=12,
+                          wraplength=480).pack(side="left", padx=12)
             if section_title == "Уведомления по итогам":
-                row = ctk.CTkFrame(card, fg_color="transparent")
+                row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
                 self.notify_btn = _secondary_button(row, "Отправить тестовое уведомление", self.test_notify,
                                                     width=260, height=32)
                 self.notify_btn.pack(side="left")
-            ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
+            PlainFrame(card, height=8).pack()
 
-        danger = Card(scroll)
+        danger = Card(self.tabs["Прочее"])
         danger.pack(fill="x", pady=(0, 12), padx=(0, 6))
-        ctk.CTkLabel(danger, text="Данные приложения", font=ctk.CTkFont(size=15, weight="bold")).pack(
-            anchor="w", padx=16, pady=(12, 4))
-        ctk.CTkLabel(danger, text=f"Папка: {app.root_dir}", text_color=MUTED).pack(anchor="w", padx=16)
-        row = ctk.CTkFrame(danger, fg_color="transparent")
+        TextLabel(danger, "Данные приложения", size=15, weight="bold").pack(anchor="w", padx=16, pady=(12, 4))
+        TextLabel(danger, f"Папка: {app.root_dir}", color=MUTED).pack(anchor="w", padx=16)
+        row = PlainFrame(danger)
         row.pack(fill="x", padx=16, pady=(8, 14))
         _secondary_button(row, "Открыть папку", lambda: open_path(app.root_dir), width=150, height=32).pack(side="left")
         ctk.CTkButton(row, text="Выйти из аккаунта hh (сбросить вход)", height=32, fg_color="transparent",
                       border_width=1, border_color=RED, text_color=RED, hover_color=ACCENT_SOFT,
                       command=app.reset_login).pack(side="left", padx=10)
-        row = ctk.CTkFrame(danger, fg_color="transparent")
+        row = PlainFrame(danger)
         row.pack(fill="x", padx=16, pady=(0, 14))
         self.check_updates_switch = ctk.CTkSwitch(row, text="Проверять обновления на GitHub",
                                                   command=lambda: app.save_prefs(
@@ -1052,8 +1082,11 @@ class SettingsPage(Page):
         self.check_updates_switch.pack(side="left")
         _secondary_button(row, "Проверить сейчас", lambda: app.check_updates(manual=True), width=160,
                           height=32).pack(side="left", padx=12)
-        ctk.CTkLabel(row, text="Новая версия скачивается и ставится по кнопке в меню слева, настройки остаются",
-                     text_color=MUTED, font=ctk.CTkFont(size=12)).pack(side="left")
+        TextLabel(row, "Новая версия скачивается и ставится по кнопке в меню слева, настройки остаются",
+                  color=MUTED, size=12).pack(side="left")
+        self.current_tab = ""
+        saved = app.prefs.get("settings_tab")
+        self.show_tab(saved if saved in self.tabs else SETTINGS_TABS[0][0])
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.pack(fill="x", pady=(10, 0))
@@ -1061,26 +1094,41 @@ class SettingsPage(Page):
         _secondary_button(footer, "Отменить изменения", self.load, width=180).pack(side="left", padx=10)
         _secondary_button(footer, "Открыть config.toml", lambda: open_path(app.config_path), width=180).pack(side="right")
 
+    def show_tab(self, name: str) -> None:
+        """Вкладка настроек: на экране только она — остальные не рисуются вовсе."""
+        if name == self.current_tab:
+            return
+        with frozen(self):
+            if self.current_tab:
+                self.tabs[self.current_tab].pack_forget()
+            self.tabs[name].pack(fill="both", expand=True)
+        for tab, button in self.tab_buttons.items():
+            button.configure(fg_color=ACCENT_SOFT if tab == name else "transparent",
+                             text_color=ACCENT if tab == name else TEXT)
+        self.current_tab = name
+        self.app.save_prefs(settings_tab=name)
+
+    def show_field(self, section: str, key: str) -> None:
+        """Ошибка в поле — открыть вкладку, где оно лежит."""
+        tab = self.field_tab.get((section, key)) or next(
+            (t for (s, _k), t in self.field_tab.items() if s == section), None)
+        if tab:
+            self.show_tab(tab)
+
     def _add_field(self, card, section, key, label, kind, hint) -> None:
-        row = ctk.CTkFrame(card, fg_color="transparent")
+        row = PlainFrame(card)
         row.pack(fill="x", padx=16, pady=4)
         if kind == "bool":
             widget = ctk.CTkSwitch(row, text=label)
             widget.pack(anchor="w")
         else:
-            ctk.CTkLabel(row, text=label, anchor="w").pack(anchor="w")
+            TextLabel(row, label).pack(anchor="w", pady=(0, 3))
             if kind == "text":
                 widget = ctk.CTkTextbox(row, height=70, border_width=1, border_color=BORDER)
                 widget.pack(fill="x")
-            elif kind == "multi":
-                box = ctk.CTkFrame(row, fg_color="transparent")
-                box.pack(anchor="w", pady=(2, 0))
-                options = MULTI[(section, key)]
-                widget = {value: ctk.CTkCheckBox(box, text=label, checkbox_width=20, checkbox_height=20)
-                          for value, label in options.items()}
-                columns = 4 if max(len(label) for label in options.values()) <= 22 else 2
-                for i, checkbox in enumerate(widget.values()):
-                    checkbox.grid(row=i // columns, column=i % columns, padx=(0, 18), pady=2, sticky="w")
+            elif kind == "multi":  # «чипы» на одном холсте вместо десятка флажков
+                widget = ChipGroup(row, MULTI[(section, key)])
+                widget.pack(fill="x", pady=(2, 0))
             elif kind == "picker":
                 groups, names = PICKERS[(section, key)]
                 widget = PickerField(row, label, groups, names)
@@ -1098,8 +1146,7 @@ class SettingsPage(Page):
                 widget = ctk.CTkEntry(row)
                 widget.pack(fill="x")
         if hint:
-            ctk.CTkLabel(row, text=hint, text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w",
-                         justify="left", wraplength=760).pack(anchor="w")
+            TextLabel(row, hint, color=MUTED, size=12, wraplength=760).pack(anchor="w", pady=(3, 0))
         self.widgets[(section, key)] = (kind, widget)
 
     def load(self) -> None:
@@ -1118,8 +1165,7 @@ class SettingsPage(Page):
             widget.delete("1.0", "end")
             widget.insert("1.0", value)
         elif kind == "multi":
-            for item, checkbox in widget.items():
-                checkbox.select() if item in value else checkbox.deselect()
+            widget.set(value)
         elif kind == "choice":
             options = CHOICES[(section, key)]
             if value not in options.values():  # например, регион, которого нет в списке
@@ -1149,7 +1195,7 @@ class SettingsPage(Page):
                 elif kind == "text":
                     value = widget.get("1.0", "end").strip()
                 elif kind == "multi":
-                    value = [item for item, checkbox in widget.items() if checkbox.get()]
+                    value = widget.get()
                 elif kind == "picker":
                     value = widget.get()
                 elif kind == "choice":
@@ -1168,9 +1214,13 @@ class SettingsPage(Page):
             if cfg.search.mode == "query":
                 validate_search_source(cfg)
         except ValueError:
+            self.show_field(section, key)
             messagebox.showerror(APP_NAME, f"Неверное число в поле «{self._label(section, key)}»")
             return None
         except ConfigError as e:
+            bad = re.match(r"\[(\w+)\]", str(e))
+            if bad:
+                self.show_field(bad[1], "")
             messagebox.showerror(APP_NAME, f"Не сохранено: {e}")
             return None
         return cfg
@@ -1279,34 +1329,41 @@ class JournalsPage(Page):
         body.pack(fill="both", expand=True)
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
-        self.files = ScrollFrame(body, width=250, fg_color=CARD_BG, corner_radius=12,
-                                            border_width=1, border_color=BORDER)
-        self.files.grid(row=0, column=0, sticky="ns", padx=(0, 10))
+        # список логов — одно окно на весь список (раньше кнопка на каждый лог, до 600 окон Windows,
+        # и все пересоздавались при каждом открытии страницы и после удаления — экран мигал)
+        files = Card(body, width=250)
+        files.grid(row=0, column=0, sticky="ns", padx=(0, 10))
+        files.grid_propagate(False)
+        files.grid_rowconfigure(0, weight=1)
+        files.grid_columnconfigure(0, weight=1)
+        self.files = ItemList(files, self.show, width=1, height=1)
+        self.files.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=8)
+        bar = ctk.CTkScrollbar(files, command=self.files.yview, width=12)
+        bar.grid(row=0, column=1, sticky="ns", padx=(0, 4), pady=8)
+        self.files.configure(yscrollcommand=bar.set)
         self.view = LogView(body)
         self.view.grid(row=0, column=1, sticky="nsew")
-        self.buttons: list[ctk.CTkButton] = []
 
     def refresh(self) -> None:
-        for button in self.buttons:
-            button.destroy()
-        self.buttons.clear()
         logs = sorted((self.app.root_dir / "logs").glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
         self._show_usage()
         if not logs:
             self.current = None
+            self.files.set_items([])
             self.view.set_lines(["Запусков ещё не было."])
             return
+        items = []
         for path in logs[:200]:
             kind = "Чаты" if path.name.startswith("chats_") else "Отклики"
             when = datetime.fromtimestamp(path.stat().st_mtime).strftime("%d.%m %H:%M")
-            button = ctk.CTkButton(self.files, text=f"{kind}   {when}", anchor="w", height=30, fg_color="transparent",
-                                   text_color=TEXT, hover_color=ACCENT_SOFT, command=lambda p=path: self.show(p))
-            button.pack(fill="x", pady=1)
-            self.buttons.append(button)
-        self.show(logs[0])
+            items.append((path, f"{kind}   {when}"))
+        current = self.current if self.current in logs else logs[0]
+        self.files.set_items(items, current)
+        self.show(current)
 
     def show(self, path: Path) -> None:
         self.current = path
+        self.files.select(path)
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-5000:]
         except OSError as e:
@@ -1369,7 +1426,8 @@ class JournalsPage(Page):
                 path.unlink()
             except OSError:
                 failed += 1
-        self.refresh()
+        with frozen(self):
+            self.refresh()
         self.app.toast(f"Удалено: {len(paths) - failed}" + (f", не удалось: {failed}" if failed else ""))
 
 
@@ -1496,20 +1554,24 @@ class App(ctk.CTk):
         self.main = main
 
     def show_page(self, key: str) -> None:
-        for name, page in self.pages.items():
-            page.grid_forget()
-            self.nav[name].configure(fg_color=ACCENT_SOFT if name == key else "transparent")
-        page = self.pages[key]
-        if key in ("responses", "chats"):
-            page.grid(row=0, column=0, sticky="new")
-            self.console.grid(row=1, column=0, sticky="nsew", pady=(18, 0))
-        else:
-            self.console.grid_forget()
-            page.grid(row=0, column=0, rowspan=2, sticky="nsew")
-        if key == "settings":
-            page.load()
-        elif key in ("journals", "ai"):
-            page.refresh()
+        # пока страница собирается, правая часть окна не рисуется — иначе видны куски старой и новой страницы
+        # и белые/чёрные прямоугольники на месте ещё не нарисованных элементов
+        with frozen(self.main):
+            for name, page in self.pages.items():
+                if name != key:
+                    page.grid_forget()
+                self.nav[name].configure(fg_color=ACCENT_SOFT if name == key else "transparent")
+            page = self.pages[key]
+            if key in ("responses", "chats"):
+                page.grid(row=0, column=0, sticky="new")
+                self.console.grid(row=1, column=0, sticky="nsew", pady=(18, 0))
+            else:
+                self.console.grid_forget()
+                page.grid(row=0, column=0, rowspan=2, sticky="nsew")
+            if key == "settings":
+                page.load()
+            elif key in ("journals", "ai"):
+                page.refresh()
 
     # ---------- настройки ----------
 

@@ -6,7 +6,7 @@
 
 Автоотклики на hh.ru: письмо под вакансию, ответы на анкеты, разбор чатов с отказами
 
-[![version](https://img.shields.io/badge/version-1.0.5--beta-2563EB)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.0.6--beta-2563EB)](CHANGELOG.md)
 [![platforms](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Docker-0078D6)](#установка)
 [![python](https://img.shields.io/badge/python-3.11%2B-3776AB)](#из-исходников)
 
@@ -67,7 +67,7 @@
     <td width="50%"><img src="docs/screenshots/ai.png" alt="Проверка ИИ"><br>Проверка ИИ: пишете за работодателя и смотрите, что ответит модель. В hh ничего не уходит</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/settings.png" alt="Настройки"><br>Настройки: все фильтры hh, можно заполнить одной ссылкой с сайта</td>
+    <td width="50%"><img src="docs/screenshots/settings.png" alt="Настройки"><br>Настройки по вкладкам: все фильтры hh, можно заполнить одной ссылкой с сайта</td>
     <td width="50%"><img src="docs/screenshots/journals.png" alt="Журналы"><br>Журналы: логи прошлых запусков, копирование и удаление</td>
   </tr>
 </table>
