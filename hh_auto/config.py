@@ -114,6 +114,18 @@ class Ai:
     timeout: float = 60  # ожидание ответа нейросети, сек
 
 
+@dataclass
+class AiFilter:
+    # Фильтр вакансий нейросетью: перед откликом спрашиваем ИИ, подходит ли вакансия.
+    # ИИ читает заголовок и сниппет карточки и по описанию criteria отвечает «интересна» / «не интересна».
+    enabled: bool = False
+    # Что вы ищете и чего не хотите — свободным текстом. Именно это описание уходит нейросети в каждой вакансии.
+    criteria: str = ""
+    max_snippet_chars: int = 800  # сколько символов сниппета карточки отправлять нейросети
+    # true — при сбое ИИ (нет связи, непонятный ответ) вакансию пропустить; false — обработать как обычно
+    skip_on_error: bool = False
+
+
 LETTER_MODES = ("generate", "ai", "template", "none")
 
 
@@ -207,6 +219,7 @@ class Config:
     relocation: Relocation = field(default_factory=Relocation)
     chats: Chats = field(default_factory=Chats)
     ai: Ai = field(default_factory=Ai)
+    ai_filter: AiFilter = field(default_factory=AiFilter)
     browser: Browser = field(default_factory=Browser)
     geo: Geo = field(default_factory=Geo)
     hh_filters: HhFilters = field(default_factory=HhFilters)
@@ -311,6 +324,7 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         relocation=_section(Relocation, raw.pop("relocation", {}), "relocation"),
         chats=_section(Chats, raw.pop("chats", {}), "chats"),
         ai=_section(Ai, raw.pop("ai", {}), "ai"),
+        ai_filter=_section(AiFilter, raw.pop("ai_filter", {}), "ai_filter"),
         browser=_section(Browser, raw.pop("browser", {}), "browser"),
         geo=_section(Geo, raw.pop("geo", {}), "geo"),
         hh_filters=hh_filters.normalize(_section(HhFilters, raw.pop("hh_filters", {}), "hh_filters")),
@@ -344,6 +358,11 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError("[letter] mode = template, но template_text пустой")
     if cfg.limits.delay_min > cfg.limits.delay_max:
         raise ConfigError("[limits] delay_min больше delay_max")
+    if cfg.ai_filter.enabled and not cfg.ai_filter.criteria.strip():
+        raise ConfigError("[ai_filter] включён (enabled = true), но не заполнено поле criteria — "
+                          "опишите, что вы ищете и чего не хотите")
+    if cfg.ai_filter.max_snippet_chars < 0:
+        raise ConfigError("[ai_filter] max_snippet_chars не может быть отрицательным")
     if cfg.logs.keep_days < 0:
         raise ConfigError("[logs] keep_days не может быть меньше 0 (0 — хранить снимки всегда)")
     cfg.geo.playwright_proxy()  # проверка формата прокси заранее

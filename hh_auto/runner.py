@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import random
 from collections import Counter
 from dataclasses import dataclass, field
@@ -10,10 +11,11 @@ from pathlib import Path
 from playwright.sync_api import Page
 
 from . import control
+from .ai import AiError
 from .browser import FatalError
 from .config import Config
 from .logger import log
-from .responder import MOVED, Responder, Status
+from .responder import MOVED, Responder, Result, Status
 from .search import (Vacancy, build_search_url, collect_vacancies, describe_hh_filters, next_page_info,
                      open_results_page, results_page_url, wait_all_cards)
 from .results import ResultsBook
@@ -21,6 +23,7 @@ from .state import State
 
 
 RESCANS = 2  # сколько раз дособрать вакансии, которые hh подвинул на текущую страницу
+AI_SKIP = "ИИ-фильтр: не подходит под ваше описание"  # одна строка в итогах; причина по каждой вакансии — в Excel
 
 
 @dataclass
@@ -63,14 +66,20 @@ def run(
     )
     search_url = build_search_url(cfg)
     log.info(f"  фильтры hh: {describe_hh_filters(search_url)}")
-    responder = Responder(page, cfg, snapshots_dir, resume_title, ai, resume_text)
+    # Нейросеть для писем и анкет — только если вы их включали. Включённый [ai_filter] тоже создаёт
+    # нейросеть, но письма от этого писать ей нельзя: резюме для фильтра даже не загружается.
+    responder_ai = ai if (cfg.ai.enabled or cfg.letter.mode == "ai") else None
+    responder = Responder(page, cfg, snapshots_dir, resume_title, responder_ai, resume_text)
     errors_in_row = 0
     filters_warned = False
+    criteria_key = _criteria_key(cfg)
 
     def handle(vac: Vacancy, tag: str, url: str) -> bool:
         """Одна вакансия: фильтры → отклик → итог. False — запуск пора заканчивать."""
         nonlocal errors_in_row
         seen = state.seen(vac.id, opts.retry_skipped)
+        if seen and _ai_skip_outdated(state, vac.id, cfg, criteria_key):
+            seen = None  # отказ ИИ-фильтра по старому описанию (или фильтр выключили) — смотрим заново
         if seen:
             stats.already += 1
             log.debug(f"{tag} «{vac.title}» — {seen}")
@@ -99,6 +108,17 @@ def run(
             if not _find_word(where, cfg.filters.include_words):
                 stats.skipped["нет нужных слов ([filters] include_words)"] += 1
                 log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
+                return True
+        if cfg.ai_filter.enabled:
+            ai_reason, rejected = _ai_skip_reason(cfg, ai, vac, tag)
+            if ai_reason:
+                stats.skipped[AI_SKIP if rejected else ai_reason] += 1
+                log.info(f"{tag} «{vac.title}» — {ai_reason}, пропускаю")
+                if rejected and not opts.dry_run:
+                    # запоминаем: в следующих запусках не спрашиваем нейросеть снова (токены и время), а в
+                    # таблице на листе «Пропущенные» видно, что и почему отсеяно, — по ней удобно править описание
+                    state.mark_skipped(vac, f"{AI_SKIP} [{criteria_key}]: {ai_reason}")
+                    results.add(vac, Result(Status.SKIPPED, ai_reason, remember=True))
                 return True
 
         log.info("")
@@ -214,6 +234,40 @@ def log_summary(stats: Stats, elapsed: float) -> None:
 def _find_word(title: str, words: list[str]) -> str | None:
     lowered = title.lower()
     return next((w for w in words if w.lower() in lowered), None)
+
+
+def _criteria_key(cfg: Config) -> str:
+    """Отпечаток описания из [ai_filter]: поменяли описание — старые отказы фильтра пересматриваются."""
+    text = " ".join(cfg.ai_filter.criteria.lower().split())
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+
+
+def _ai_skip_outdated(state: State, vacancy_id: str, cfg: Config, key: str) -> bool:
+    """Вакансию раньше отсеял ИИ-фильтр, но фильтр с тех пор выключили или поменяли описание."""
+    entry = state.skipped.get(vacancy_id)
+    if not entry or not str(entry.get("reason", "")).startswith(AI_SKIP):
+        return False
+    return not cfg.ai_filter.enabled or f"[{key}]" not in entry["reason"]
+
+
+def _ai_skip_reason(cfg: Config, ai, vac: Vacancy, tag: str) -> tuple[str, bool]:
+    """Спросить нейросеть, интересна ли вакансия ([ai_filter]). Возвращает (причина пропуска или '',
+    отказ ли это нейросети). '' — вакансию обрабатываем как обычно. При сбое ИИ решает [ai_filter] skip_on_error;
+    такой пропуск не запоминается — в следующий раз спросим снова."""
+    if ai is None:
+        log.warning(f"{tag} [ai_filter] включён, но нейросеть недоступна — пропускаю проверку")
+        return ("ИИ: не удалось проверить (нейросеть недоступна)" if cfg.ai_filter.skip_on_error else ""), False
+    log.info(f"{tag} нейросеть оценивает вакансию…")
+    try:
+        verdict = ai.evaluate_vacancy(cfg.ai_filter.criteria, vac.title, vac.company, vac.snippet,
+                                      cfg.ai_filter.max_snippet_chars, remote=vac.remote)
+    except AiError as e:
+        log.warning(f"{tag} нейросеть не оценила вакансию: {e}")
+        return ("ИИ: не удалось проверить (ошибка нейросети)" if cfg.ai_filter.skip_on_error else ""), False
+    if verdict.interesting:
+        log.success(f"{tag} нейросеть: интересна" + (f" — {verdict.reason}" if verdict.reason else ""))
+        return "", False
+    return "ИИ: не интересна" + (f" — {verdict.reason}" if verdict.reason else ""), True
 
 
 def _sleep(low: float, high: float, what: str) -> None:

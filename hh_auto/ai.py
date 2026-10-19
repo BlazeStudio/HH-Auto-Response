@@ -129,6 +129,25 @@ LETTER_PROMPT = """Ты пишешь сопроводительное письм
 Верни только текст письма."""
 
 
+FILTER_PROMPT = """Ты помогаешь соискателю отбирать вакансии на hh.ru.
+Тебе дают описание того, что человек ищет и чего он не хочет, и карточку вакансии (название, компания, сниппет).
+Реши, стоит ли откликаться на эту вакансию.
+
+Верни строго JSON без пояснений:
+{"interesting": true, "reason": "очень коротко почему"}
+или
+{"interesting": false, "reason": "очень коротко почему"}
+
+Правила:
+- "interesting": true — вакансия в целом про то, что человек ищет, и не попадает под то, чего он не хочет;
+- "interesting": false — вакансия явно не про это или подпадает под нежелательное;
+- reason — не длиннее 12 слов, по-русски, одним коротким предложением (например: «нужен опыт с 1С, а ищут Python»);
+- оценивай ТОЛЬКО по тексту карточки, не выдумывай деталей, которых там нет;
+- сомневаешься — отвечай true: лучше показать человеку лишнее, чем потерять подходящую вакансию.
+
+Верни ТОЛЬКО JSON."""
+
+
 @dataclass
 class FormQuestion:
     index: int  # номер блока вопроса на странице (с 0)
@@ -310,6 +329,12 @@ class Decision:
     button: str = ""  # нажать кнопку быстрого ответа вместо текста
 
 
+@dataclass
+class VacancyVerdict:
+    interesting: bool  # откликаться ли: подходит вакансия под описание соискателя
+    reason: str = ""  # короткое объяснение от нейросети (для журнала)
+
+
 # ─────────── страховки поверх нейросети (общие для боевого режима и песочницы) ───────────
 
 SENSITIVE = re.compile(
@@ -351,6 +376,54 @@ def ours_is_last(transcript: str, last_sent: str) -> bool:
 
 # Провайдеры, которые понимают response_format = json_object (у остальных просим JSON словами)
 JSON_MODE_PROVIDERS = ("ollama", "deepseek")
+
+_TRUE_WORDS = {"true", "yes", "да", "интересна", "интересно", "interesting", "подходит", "интересный"}
+_FALSE_WORDS = {"false", "no", "нет", "не интересна", "неинтересна", "неинтересно", "not interesting",
+                "не подходит", "неинтересный"}
+# «interesting»/«интересна» → значение (в ответе нейросети ключ стоит первым, поэтому найдётся даже в обрезанном JSON)
+_DECISION_RE = re.compile(r"(?:interesting|интересна|интересно)\D{0,8}(true|false|да|нет|yes|no)\b", re.I)
+_REASON_RE = re.compile(r'(?:reason|причина|пояснение)"?\s*[:=]\s*"?(.*)', re.I | re.S)
+
+
+def _as_bool(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in _TRUE_WORDS:
+            return True
+        if low in _FALSE_WORDS:
+            return False
+    return None
+
+
+def _reason_from_text(text: str) -> str:
+    m = _REASON_RE.search(text)
+    if not m:
+        return ""
+    return m.group(1).strip().rstrip('"\' }.').strip()[:200]
+
+
+def parse_verdict(raw: str) -> VacancyVerdict:
+    """Разбор ответа нейросети на оценку вакансии. Непонятный ответ — AiError (решает [ai_filter] skip_on_error).
+    Ответ бывает обрезан на лимите токенов — тогда решение берём регуляркой (ключ «interesting» идёт первым)."""
+    text = (raw or "").strip()
+    match = re.search(r"\{.*\}", text, flags=re.S)  # обычный случай: корректный JSON (можно в ```json … ```)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            decided = _as_bool(data.get("interesting", data.get("интересна")))
+            reason = str(data.get("reason", data.get("причина", "")) or "").strip()
+            if decided is not None:
+                return VacancyVerdict(decided, reason[:200])
+    decided = _as_bool(m.group(1)) if (m := _DECISION_RE.search(text)) else None
+    if decided is not None:
+        return VacancyVerdict(decided, _reason_from_text(text))
+    raise AiError(f"нейросеть не объяснила, интересна ли вакансия (ответ: {text[:200]})")
+
 
 # Сообщения о завершении анкеты: отвечать не нужно, переходим к следующему чату
 DONE = re.compile(
@@ -565,6 +638,27 @@ class AiClient:
         """Проверка подключения: короткий запрос, возвращает ответ модели."""
         prompt = "Ответь одним словом: работает" + (" /no_think" if "qwen3" in self.model.lower() else "")
         return self.complete([{"role": "user", "content": prompt}], max_tokens=20).strip()
+
+    def evaluate_vacancy(self, criteria: str, title: str, company: str, snippet: str,
+                         max_snippet_chars: int = 800, remote: bool | None = None) -> VacancyVerdict:
+        """Фильтр вакансий: подходит ли карточка (название + сниппет) под описание соискателя.
+        remote — в карточке есть «Можно удалённо» (в сниппете об этом обычно ни слова)."""
+        description = (snippet or "").strip()
+        if 0 < max_snippet_chars < len(description):
+            description = description[:max_snippet_chars].rstrip() + "…"
+        user = (
+            f"ЧТО ИЩЕТ И ЧЕГО НЕ ХОЧЕТ СОИСКАТЕЛЬ:\n{criteria.strip() or '(не задано)'}\n\n"
+            f"КАРТОЧКА ВАКАНСИИ:\nНазвание: {title}\n"
+            f"Компания: {company or '(не указана)'}\n"
+            + ("Формат: можно удалённо (отметка hh в карточке)\n" if remote else "")
+            + f"Сниппет:\n{description or '(пусто)'}"
+        )
+        # «Рассуждающие» модели: просим не тратить токены на размышления
+        if "qwen3" in self.model.lower():
+            user += "\n\n/no_think"
+        messages = [{"role": "system", "content": FILTER_PROMPT}, {"role": "user", "content": user}]
+        # Запас токенов: даже если модель «рассуждает», решение и короткая причина успевают целиком
+        return parse_verdict(self.complete(messages, max_tokens=512, json_mode=True))
 
     def build_messages(self, resume: str, context: str, transcript: str, sent: list[str] | None = None,
                        focus: str = "", buttons: list[str] | None = None) -> list[dict]:

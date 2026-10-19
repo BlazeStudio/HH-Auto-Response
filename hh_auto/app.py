@@ -86,12 +86,14 @@ def notify_summary(cfg: Config, title: str, text: str) -> None:
 
 
 def _form_ai(page, cfg: Config, root: Path):
-    """ИИ для откликов: анкеты работодателей ([ai] enabled) и письма ([letter] mode = ai). Плюс текст резюме."""
+    """ИИ для откликов: анкеты ([ai] enabled), письма ([letter] mode = ai) и фильтр вакансий ([ai_filter]).
+    Резюме как контекст нужно только анкетам и письмам — для фильтра его не тянем."""
     letters = cfg.letter.mode == "ai"
+    needs_resume = cfg.ai.enabled or letters
     if not cfg.ai.enabled:
         log.info("  анкеты работодателей: без ИИ (отвечаем только на один вопрос о зарплате)")
-        if not letters:
-            return None, ""
+    if not (needs_resume or cfg.ai_filter.enabled):
+        return None, ""
     from .ai import AiClient, AiError
     from .resume import fetch_resume_text
 
@@ -101,13 +103,21 @@ def _form_ai(page, cfg: Config, root: Path):
         if letters:
             raise FatalError(f"письма пишет нейросеть ([letter] mode = ai), но она недоступна: {e}. "
                              "Проверьте «Настройки» → «ИИ-ответы в чатах» → «Проверить подключение к ИИ»") from e
-        log.warning(f"  ! ИИ для анкет недоступен ({e}) — отвечаем только на вопрос о зарплате")
+        if cfg.ai.enabled:
+            log.warning(f"  ! ИИ для анкет недоступен ({e}) — отвечаем только на вопрос о зарплате")
+        if cfg.ai_filter.enabled:
+            log.warning(f"  ! ИИ-фильтр вакансий включён, но нейросеть недоступна ({e}) — "
+                        + ("вакансии пропускаются ([ai_filter] skip_on_error = true)"
+                           if cfg.ai_filter.skip_on_error else "вакансии обработаются без проверки"))
         return None, ""
     if cfg.ai.enabled:
         log.info(f"  анкеты работодателей заполняет ИИ: {ai.describe()}")
     if letters or cfg.letter.mode == "generate" and cfg.ai.enabled:
         log.info(f"  сопроводительные письма {'пишет' if letters else 'без подписки hh пишет'} ИИ: {ai.describe()}")
-    return ai, fetch_resume_text(page, cfg, root / "data" / "resume.txt")
+    if cfg.ai_filter.enabled:
+        log.info(f"  интересность вакансий оценивает нейросеть: {ai.describe()}")
+    resume_text = fetch_resume_text(page, cfg, root / "data" / "resume.txt") if needs_resume else ""
+    return ai, resume_text
 
 
 def run_chats(cfg: Config, dry_run: bool, root: Path, stats: ChatStats, log_path: Path) -> int:
