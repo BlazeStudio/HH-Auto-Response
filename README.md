@@ -9,6 +9,7 @@
 [![version](https://img.shields.io/badge/version-1.0.6--beta-2563EB)](CHANGELOG.md)
 [![platforms](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Docker-0078D6)](#установка)
 [![python](https://img.shields.io/badge/python-3.11%2B-3776AB)](#из-исходников)
+[![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-6B7280)](LICENSE.md)
 
 <img src="docs/screenshots/responses.png" alt="Страница «Отклики»" width="860">
 
@@ -42,6 +43,7 @@
 - [hh.ru и Россия](#hhru-и-россия)
 - [Почему это легально](#почему-это-легально)
 - [Ограничения](#ограничения)
+- [Лицензия и участие](#лицензия-и-участие)
 
 ## Что умеет
 
@@ -517,10 +519,20 @@ VPN или укажите российский прокси: `[geo] proxy = "htt
 - Сборки не подписаны, поэтому Windows и macOS при первом запуске предупреждают.
 - Сборки для macOS и Linux собираются тем же сборщиком, но в бою я гонял в основном Windows.
 
+## Лицензия и участие
+
+Проект распространяется под [PolyForm Noncommercial License 1.0.0](LICENSE.md). Пользоваться программой,
+изучать и менять код, делиться им можно бесплатно в личных и других некоммерческих целях. Продавать
+программу или её части, встраивать в платные сервисы и использовать в коммерческих целях можно только
+с письменного разрешения автора.
+
+Доработки приветствуются: сделайте форк и пришлите pull request. Как это устроено и на каких условиях
+принимается вклад, написано в [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ---
 
 <div align="center">
 
-[GitHub](https://github.com/BlazeStudio/hh-auto-response) · [CHANGELOG](CHANGELOG.md) · [Что нового](docs/release-notes.md) · [config.example.toml](config.example.toml)
+[GitHub](https://github.com/BlazeStudio/hh-auto-response) · [CHANGELOG](CHANGELOG.md) · [Что нового](docs/release-notes.md) · [config.example.toml](config.example.toml) · [Лицензия](LICENSE.md)
 
 </div>
