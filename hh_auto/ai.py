@@ -339,8 +339,23 @@ class VacancyVerdict:
 
 SENSITIVE = re.compile(
     r"паспорт|снилс|\bинн\b|номер карт|на карту|банковск|реквизит|оплатить|предоплат|"
-    r"внести (?:плат|оплат|взнос)|взнос|"
-    r"http|www\.|ссылк|телеграм|telegram|whatsapp|ватсап|номер телефона|ваш телефон|e-?mail|почт",
+    r"внести (?:плат|оплат|взнос)|\bвзнос|"
+    # ссылки: сам адрес или просьба её дать — но не «HTTP-запрос» и не «открывается по прямой ссылке»
+    r"https?://|www\.|"
+    r"\b(?:дайте|дать|пришлите|прислать|приложите|приложить|оставьте|оставить|укажите|указать|приведите|"
+    r"поделитесь|скиньте|отправьте|прикрепите|предоставьте|напишите)\b[^.?!\n]{0,40}?\bссылк|"
+    r"\bссылк\w*\s+на\s+(?:ваш|свой|сво[её]|github|гитхаб|gitlab|гитлаб|портфолио|профил|репозитори|резюме|"
+    r"linkedin|сайт|работ|проект)|"
+    # контакты: «почта» — только само слово, иначе ловятся «отдадим предпочтение» и «почти»
+    r"телеграм|telegram|\bтг\b|whatsapp|ватсап|номер телефона|ваш телефон|e-?mail|\bпочт(?:[аеуы]|ой|ов\w*)?\b",
+    re.I,
+)
+# Ловушки для нейросетей в анкетах: «этот пункт отмечают только нейросети», «если вы ИИ — выберите…».
+# Такое не отмечаем никогда — иначе работодатель сразу видит, что анкету заполнял бот.
+AI_TRAP = re.compile(
+    r"(?:только|лишь)\s+(?:для\s+)?(?:нейросет|искусственн|\bии\b|\bai\b|бот|языков\w* модел|llm|gpt|chatgpt)|"
+    r"если\s+вы\s+(?:[—-]\s*)?(?:нейросет|искусственн|\bии\b|\bai\b|бот|языков\w* модел|llm|gpt|chatgpt)|"
+    r"(?:нейросет\w*|\bии\b|\bai\b|llm|gpt)\s*,?\s+(?:отметьте|отметь|выберите|выбери|поставьте|напишите)",
     re.I,
 )
 
@@ -823,8 +838,15 @@ class AiClient:
 
     def fill_form(self, resume: str, context: str, vacancy: str, questions: list[FormQuestion]) -> FormFill:
         """Анкета при отклике: каждый вопрос — отдельным запросом (так 8B-моделям заметно проще)."""
+        self.notes = []
         answers: list[FormAnswer] = []
         for n, q in enumerate(questions, 1):
+            # Ловушка для нейросетей («этот пункт отмечают только нейросети») — отвечаем как человек, сами
+            trap = trap_answer(q)
+            if trap is not None:
+                self.notes.append(f"вопрос {n} — ловушка для нейросетей, не отмечаю")
+                answers.append(trap)
+                continue
             # «Отметьте технологии»: короткие варианты отмечаем по резюме сами — точно и без выдумок
             picked = skills_from_resume(q, f"{resume}\n{context}")
             if picked is not None:
@@ -853,12 +875,14 @@ class AiClient:
                 continue
             try:
                 answers.append(self._to_answer(q, item, n))
-            except AiError:
-                neutral = _neutral_option(q)
-                if neutral is None:
+            except AiError as e:
+                # пустой ответ или вариант мимо списка — переспрашиваем строже, а не бросаем всю анкету
+                fallback = self._honest_fallback(resume, context, vacancy, q)
+                if fallback is None:
                     raise
-                answers.append(FormAnswer(q, choices=[neutral]))
-        answers = [self._no_invented_tech(resume, context, vacancy, a) for a in answers]
+                self.notes.append(f"вопрос {n}: {e} — ответил осторожно")
+                answers.append(fallback)
+        answers = [drop_trap_choices(self._no_invented_tech(resume, context, vacancy, a)) for a in answers]
         for answer in answers:
             if answer.question.kind == "text":
                 answer.text = fix_text_answer(answer.question, answer.text, resume, context)
@@ -923,14 +947,15 @@ class AiClient:
         forced = FormQuestion(q.index, q.text + "\n(Отказаться нельзя: если прямого опыта нет — подай смежный опыт "
                                                   "или честно ответь, что особого опыта не было и готов освоить; "
                                                   "из вариантов выбери ближайший честный.)", q.kind, q.options)
-        item = self._answer_question(resume, context, vacancy, forced)
-        if item.get("can_answer", True):
-            try:
+        try:
+            item = self._answer_question(resume, context, vacancy, forced)
+            if item.get("can_answer", True):
                 return self._to_answer(q, item, q.index + 1)
-            except AiError:
-                pass
-        if q.kind == "text":
-            return FormAnswer(q, text="Опыта с этим не было, но готов быстро освоить.")
+        except AiError:
+            pass
+        if q.kind == "text":  # «нет опыта» — только на вопрос про опыт с чем-то; на «по ТК или ГПХ?» это чепуха
+            return FormAnswer(q, text="Опыта с этим не было, но готов быстро освоить." if _EXPERIENCE_WITH.search(q.text)
+                              else "Готов рассказать подробнее на собеседовании.")
         k = _modest_option(q)
         if k is None:
             k = _neutral_option(q)
@@ -1064,6 +1089,9 @@ _TECH_WORD = re.compile(r"\b[A-Za-z][A-Za-z0-9+#.\-]*[A-Za-z0-9+#]\b")
 _NO_EXPERIENCE = re.compile(r"не работал|не использовал|не было|нет (?:прямого |коммерческого )?опыта|напрямую не|"
                             r"не применял|не доводилось|знаком на базовом|готов (?:быстро )?освоить|изуча", re.I)
 _EXPERIENCE_Q = re.compile(r"опыт|работал|использовал|владеете|знаете|уровень|сколько лет", re.I)
+# Вопрос именно про опыт с чем-то («опыт с Helm», «работали в Kubernetes») — а не «опыт работы оформлен по ТК?»
+_EXPERIENCE_WITH = re.compile(r"опыт\w*\s+(?:работы\s+)?(?:с|со|в)\s|работал\w*\s+(?:с|со|в)\s|использовал|владеете|"
+                              r"знаете|сколько лет", re.I)
 
 
 def unbacked_tech(q: FormQuestion, resume: str, context: str) -> list[str]:
@@ -1203,6 +1231,28 @@ _NEUTRAL = re.compile(r"готов обсудить|обсудим|по дого
 
 def _neutral_option(q: FormQuestion) -> int | None:
     return next((k for k, o in enumerate(q.options) if _NEUTRAL.search(o)), None)
+
+
+_HUMAN_OPTION = re.compile(r"^\s*нет\b|человек|не (?:нейросеть|ии|бот|ai)\b", re.I)
+
+
+def trap_answer(q: FormQuestion) -> FormAnswer | None:
+    """Вопрос целиком — ловушка для нейросетей («этот пункт отмечают только нейросети»): ничего не отмечаем
+    (или выбираем «нет / я человек»). None — вопрос обычный. Варианты-ловушки в обычных вопросах
+    отсекает drop_trap_choices."""
+    if q.kind == "text" or not AI_TRAP.search(q.text):
+        return None
+    if q.kind == "single":
+        human = next((k for k, o in enumerate(q.options) if _HUMAN_OPTION.search(o) and not AI_TRAP.search(o)), None)
+        return FormAnswer(q, choices=[human] if human is not None else [])
+    return FormAnswer(q, choices=[])
+
+
+def drop_trap_choices(answer: FormAnswer) -> FormAnswer:
+    """Из выбранных вариантов убираем ловушки («отметьте, если вы нейросеть»)."""
+    options = answer.question.options
+    answer.choices = [c for c in answer.choices if c < len(options) and not AI_TRAP.search(options[c])]
+    return answer
 
 
 def skills_from_resume(q: FormQuestion, resume: str) -> list[int] | None:

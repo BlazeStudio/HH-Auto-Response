@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,8 +28,18 @@ class FatalError(Exception):
     """Ошибка, после которой продолжать работу нет смысла."""
 
 
+class CaptchaShown(Exception):
+    """hh показал капчу посреди действия: решит её человек, а действие нужно повторить."""
+
+
+CAPTCHA_WAIT = 30 * 60  # сколько ждать, пока человек решит капчу
+_cfg: Config | None = None  # настройки текущего запуска: окно браузера и уведомления — для капчи
+
+
 def launch(pw: Playwright, cfg: Config) -> BrowserContext:
     """Открывает браузер с постоянным профилем: вход в hh сохраняется между запусками."""
+    global _cfg
+    _cfg = cfg
     channels = [cfg.browser.channel] if cfg.browser.channel else []
     channels += [c for c in ("chrome", "msedge", "") if c not in channels]
 
@@ -98,6 +109,24 @@ def _check_ip_country(page: Page, cfg: Config) -> None:
     log.warning(f"  ! {message}")
 
 
+def open_url(page: Page, url: str, attempts: int = 3, timeout: float = 45) -> None:
+    """Переход на страницу hh с повтором. hh бывает медленным (20 с не хватало), а после отправки формы
+    сам уводит на другую страницу — тогда наш переход прерывается («interrupted by another navigation»)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            return
+        except PlaywrightError as e:
+            if attempt == attempts or "closed" in str(e).lower():
+                raise
+            log.debug(f"  переход не удался ({(str(e).splitlines() or [''])[0][:120]}) — повторяю")
+            try:  # дать hh закончить свой переход, если он был
+                page.wait_for_load_state("domcontentloaded", timeout=10_000)
+            except PlaywrightError:
+                pass
+            control.sleep(2 * attempt)
+
+
 def captcha_shown(page: Page) -> bool:
     if "captcha" in page.url.lower():
         return True
@@ -107,14 +136,36 @@ def captcha_shown(page: Page) -> bool:
         return False
 
 
-def wait_captcha(page: Page, timeout: float = 600) -> None:
-    """Капчу не обходим: просим пользователя решить её руками и ждём."""
+def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
+    """Капчу не обходим и не решаем: зовём человека и ждём, пока он её решит. True — капча была."""
     if not captcha_shown(page):
-        return
-    log.warning("  ! hh.ru показал капчу — решите её вручную в окне браузера, скрипт подождёт")
+        return False
+    if _cfg is not None and _cfg.browser.headless:
+        raise FatalError("hh.ru показал капчу, а браузер работает без окна ([browser] headless = true) — решить её "
+                         "некому. Запустите с окном и решите капчу сами")
+    log.warning(f"  ! hh.ru показал капчу — решите её в окне браузера. Программа подождёт до {timeout / 60:.0f} мин "
+                "и продолжит сама")
+    try:
+        page.bring_to_front()
+    except PlaywrightError:
+        pass
+    _alert_captcha()
     deadline = time.monotonic() + timeout
     while captcha_shown(page):
         if time.monotonic() > deadline:
-            raise FatalError("капча не пройдена за отведённое время")
+            raise FatalError(f"капча не пройдена за {timeout / 60:.0f} мин")
         control.sleep(2)
     log.success("  ✓ капча пройдена, продолжаю")
+    return True
+
+
+def _alert_captcha() -> None:
+    """Вдруг вы отошли: уведомление на компьютер или в Telegram — если вы их разрешили ([notify])."""
+    cfg = _cfg
+    if cfg is None or not (cfg.notify.desktop or cfg.notify.telegram):
+        return
+    from . import notify
+
+    text = "hh.ru просит пройти капчу. Решите её в окне браузера — программа ждёт и потом продолжит сама."
+    threading.Thread(target=notify.send, args=(cfg.notify, "HH-Auto-Response — нужна капча", text),
+                     daemon=True).start()

@@ -14,7 +14,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from . import hh_filters
 from . import selectors as S
 from .auth import hh_role, is_auth_url
-from .browser import FatalError, wait_captcha
+from .browser import FatalError, open_url, wait_captcha
 from .logger import log
 
 
@@ -145,7 +145,7 @@ def fetch_vacancy_text(page: Page, vac: Vacancy, limit: int = 4000) -> str:
 
 def open_results_page(page: Page, url: str) -> list[Vacancy]:
     log.info(f"  открываю выдачу: {url}")
-    page.goto(url, wait_until="domcontentloaded")
+    open_url(page, url)
     wait_captcha(page)
     if is_auth_url(page.url) or hh_role(page) == "anonymous":
         raise FatalError("сессия hh истекла (вы больше не авторизованы), перезапустите скрипт и войдите заново")
@@ -155,7 +155,11 @@ def open_results_page(page: Page, url: str) -> list[Vacancy]:
         log.warning("  ! карточки вакансий не появились за 20 с")
         return []
     wait_all_cards(page)
+    return collect_vacancies(page)
 
+
+def collect_vacancies(page: Page) -> list[Vacancy]:
+    """Вакансии с уже открытой страницы выдачи (без перехода)."""
     selectors = {
         "card": S.VACANCY_CARD,
         "link": S.VACANCY_TITLE_LINK,
