@@ -835,6 +835,18 @@ SETTINGS = [
         ("ai", "timeout", "Сколько ждать ответа нейросети, сек", "float",
          "Обычно 60. Ollama на процессоре без видеокарты или на медленном сервере — 180 и больше"),
     ]),
+    ("ИИ-фильтр вакансий", [
+        ("ai_filter", "enabled", "Оценивать каждую вакансию нейросетью перед откликом", "bool",
+         "Нейросеть читает название и сниппет карточки и решает, подходит ли вакансия под ваше описание ниже. "
+         "Использует ту же нейросеть, что и «ИИ-ответы в чатах». Если вакансия не подходит — отклика не будет"),
+        ("ai_filter", "criteria", "Что вы ищете и чего не хотите (своими словами)", "text",
+         "Например: «Ищу удалённую работу Python-разработчиком. Не хочу продажи, поддержку по телефону, 1С и вакансии "
+         "в офисе в Москве». Чем конкретнее описание, тем точнее отбор"),
+        ("ai_filter", "max_snippet_chars", "Сколько символов описания вакансии отправлять нейросети", "int",
+         "Обычно 800. Меньше — экономит токены, но нейросеть видит меньше деталей карточки"),
+        ("ai_filter", "skip_on_error", "Пропускать вакансию, если нейросеть не ответила", "bool",
+         "Выключено — при сбое нейросети вакансия обрабатывается как обычно (безопаснее, без потери вакансий)"),
+    ]),
     ("Уведомления по итогам", [
         ("notify", "desktop", "Показывать уведомление на компьютере, когда запуск закончился", "bool",
          "Отправлено, пропущено, ошибки. Приложение спросит разрешение после первого запуска"),
@@ -1033,6 +1045,15 @@ class SettingsPage(Page):
                                        "platform.deepseek.com → API keys; Ollama — ключ не нужен",
                              text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w", justify="left",
                              wraplength=480).pack(side="left", padx=12)
+            if section_title == "ИИ-фильтр вакансий":
+                row = ctk.CTkFrame(card, fg_color="transparent")
+                row.pack(fill="x", padx=16, pady=(8, 0))
+                self.filter_test_btn = _secondary_button(row, "Проверить фильтр на примере вакансии",
+                                                         self.test_vacancy_filter, width=300, height=32)
+                self.filter_test_btn.pack(side="left")
+                ctk.CTkLabel(row, text="Отправит нейросети тестовую вакансию и покажет, что она решила",
+                             text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w", justify="left",
+                             wraplength=420).pack(side="left", padx=12)
             if section_title == "Уведомления по итогам":
                 row = ctk.CTkFrame(card, fg_color="transparent")
                 row.pack(fill="x", padx=16, pady=(8, 0))
@@ -1243,6 +1264,36 @@ class SettingsPage(Page):
 
     def _ai_tested(self, ok: bool, text: str) -> None:
         self.ai_test_btn.configure(state="normal", text="Проверить подключение к ИИ")
+        (messagebox.showinfo if ok else messagebox.showerror)(APP_NAME, text)
+
+    def test_vacancy_filter(self) -> None:
+        """ИИ-фильтр на тестовой вакансии с текущими (даже несохранёнными) настройками — в фоне."""
+        cfg = self.collect()
+        if cfg is None:
+            return
+        self.filter_test_btn.configure(state="disabled", text="Проверяю…")
+
+        def work():
+            from .ai_playground import SAMPLE_VACANCY
+
+            title, company, description = SAMPLE_VACANCY
+            try:
+                client = AiClient(cfg.ai)
+                verdict = client.evaluate_vacancy(cfg.ai_filter.criteria, title, company, description,
+                                                  cfg.ai_filter.max_snippet_chars)
+                tag = "интересна — откликнулись бы" if verdict.interesting else "НЕ интересна — пропустили бы"
+                text = f"Тестовая вакансия: «{title}» — {company}\n\nНейросеть: {tag}"
+                if verdict.reason:
+                    text += f"\nПричина: {verdict.reason}"
+                result = (True, text)
+            except AiError as e:
+                result = (False, f"Не получилось: {e}")
+            self.app.events.put(("ai_filter_test", *result))  # окно трогаем только из главного потока (_poll)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _vacancy_filter_tested(self, ok: bool, text: str) -> None:
+        self.filter_test_btn.configure(state="normal", text="Проверить фильтр на примере вакансии")
         (messagebox.showinfo if ok else messagebox.showerror)(APP_NAME, text)
 
     @staticmethod
@@ -1841,6 +1892,8 @@ class App(ctk.CTk):
                     self.pages["ai"].on_result(event[1], event[2])
                 elif event[0] == "ai_test":
                     self.pages["settings"]._ai_tested(event[1], event[2])
+                elif event[0] == "ai_filter_test":
+                    self.pages["settings"]._vacancy_filter_tested(event[1], event[2])
                 elif event[0] == "done":
                     self._finish(event[1], event[2])
                 elif event[0] == "update_found":

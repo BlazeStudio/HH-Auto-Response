@@ -10,11 +10,19 @@ from pathlib import Path
 from playwright.sync_api import Page
 
 from . import control
+from .ai import AiError
 from .browser import FatalError
 from .config import Config
 from .logger import log
 from .responder import Responder, Status
-from .search import build_search_url, describe_hh_filters, next_page_info, open_results_page, results_page_url
+from .search import (
+    Vacancy,
+    build_search_url,
+    describe_hh_filters,
+    next_page_info,
+    open_results_page,
+    results_page_url,
+)
 from .results import ResultsBook
 from .state import State
 
@@ -110,6 +118,12 @@ def run(
                     stats.skipped["нет нужных слов ([filters] include_words)"] += 1
                     log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
                     continue
+            if cfg.ai_filter.enabled:
+                ai_reason = _ai_skip_reason(cfg, ai, vac, tag)
+                if ai_reason:
+                    stats.skipped[ai_reason] += 1
+                    log.info(f"{tag} «{vac.title}» — {ai_reason}, пропускаю")
+                    continue
 
             log.info("")
             log.info(f"{tag} ▶ «{vac.title}» — {vac.company}")
@@ -186,6 +200,25 @@ def log_summary(stats: Stats, elapsed: float) -> None:
 def _find_word(title: str, words: list[str]) -> str | None:
     lowered = title.lower()
     return next((w for w in words if w.lower() in lowered), None)
+
+
+def _ai_skip_reason(cfg: Config, ai, vac: Vacancy, tag: str) -> str:
+    """Спросить нейросеть, интересна ли вакансия ([ai_filter]). Возвращает причину пропуска или ''
+    (тогда вакансию обрабатываем как обычно). При сбое ИИ решает [ai_filter] skip_on_error."""
+    if ai is None:
+        log.warning(f"{tag} [ai_filter] включён, но нейросеть недоступна — пропускаю проверку")
+        return "ИИ: не удалось проверить (нейросеть недоступна)" if cfg.ai_filter.skip_on_error else ""
+    log.info(f"{tag} нейросеть оценивает вакансию…")
+    try:
+        verdict = ai.evaluate_vacancy(cfg.ai_filter.criteria, vac.title, vac.company, vac.snippet,
+                                      cfg.ai_filter.max_snippet_chars)
+    except AiError as e:
+        log.warning(f"{tag} нейросеть не оценила вакансию: {e}")
+        return "ИИ: не удалось проверить (ошибка нейросети)" if cfg.ai_filter.skip_on_error else ""
+    if verdict.interesting:
+        log.success(f"{tag} нейросеть: интересна" + (f" — {verdict.reason}" if verdict.reason else ""))
+        return ""
+    return "ИИ: не интересна" + (f" — {verdict.reason}" if verdict.reason else "")
 
 
 def _sleep(low: float, high: float, what: str) -> None:
