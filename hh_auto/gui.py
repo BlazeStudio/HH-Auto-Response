@@ -872,7 +872,7 @@ SETTINGS_TABS = [
     ("Поиск", ("Поиск и резюме", "Фильтры по словам")),
     ("Фильтры hh", ("Фильтры hh",)),
     ("Отклики", ("Лимиты и паузы", "Сопроводительное письмо", "Вопросы работодателя", "Вакансии в другом регионе")),
-    ("Нейросеть", ("ИИ-ответы в чатах",)),
+    ("Нейросеть", ("ИИ-ответы в чатах", "ИИ-фильтр вакансий")),
     ("Уведомления", ("Уведомления по итогам",)),
     ("Прочее", ("Логи и место на диске", "Браузер и сеть", "Данные приложения")),
 ]
@@ -1326,8 +1326,9 @@ class SettingsPage(Page):
                 client = AiClient(cfg.ai)
                 verdict = client.evaluate_vacancy(cfg.ai_filter.criteria, title, company, description,
                                                   cfg.ai_filter.max_snippet_chars)
-                tag = "интересна — откликнулись бы" if verdict.interesting else "НЕ интересна — пропустили бы"
-                text = f"Тестовая вакансия: «{title}» — {company}\n\nНейросеть: {tag}"
+                head = ("Подходит — откликнулись бы" if verdict.interesting
+                        else "Не подходит — вакансию пропустили бы")
+                text = f"{head}\n\nТестовая вакансия: «{title}» — {company}"
                 if verdict.reason:
                     text += f"\nПричина: {verdict.reason}"
                 result = (True, text)
@@ -1339,7 +1340,10 @@ class SettingsPage(Page):
 
     def _vacancy_filter_tested(self, ok: bool, text: str) -> None:
         self.filter_test_btn.configure(state="normal", text="Проверить фильтр на примере вакансии")
-        (messagebox.showinfo if ok else messagebox.showerror)(APP_NAME, text)
+        if ok:
+            messagebox.showinfo(APP_NAME, text, kind="info")
+        else:
+            messagebox.showerror(APP_NAME, text.replace("Не получилось: ", "Нейросеть не ответила\n\n", 1))
 
     @staticmethod
     def _label(section: str, key: str) -> str:

@@ -640,8 +640,9 @@ class AiClient:
         return self.complete([{"role": "user", "content": prompt}], max_tokens=20).strip()
 
     def evaluate_vacancy(self, criteria: str, title: str, company: str, snippet: str,
-                         max_snippet_chars: int = 800) -> VacancyVerdict:
-        """Фильтр вакансий: подходит ли карточка (название + сниппет) под описание соискателя."""
+                         max_snippet_chars: int = 800, remote: bool | None = None) -> VacancyVerdict:
+        """Фильтр вакансий: подходит ли карточка (название + сниппет) под описание соискателя.
+        remote — в карточке есть «Можно удалённо» (в сниппете об этом обычно ни слова)."""
         description = (snippet or "").strip()
         if 0 < max_snippet_chars < len(description):
             description = description[:max_snippet_chars].rstrip() + "…"
@@ -649,7 +650,8 @@ class AiClient:
             f"ЧТО ИЩЕТ И ЧЕГО НЕ ХОЧЕТ СОИСКАТЕЛЬ:\n{criteria.strip() or '(не задано)'}\n\n"
             f"КАРТОЧКА ВАКАНСИИ:\nНазвание: {title}\n"
             f"Компания: {company or '(не указана)'}\n"
-            f"Сниппет:\n{description or '(пусто)'}"
+            + ("Формат: можно удалённо (отметка hh в карточке)\n" if remote else "")
+            + f"Сниппет:\n{description or '(пусто)'}"
         )
         # «Рассуждающие» модели: просим не тратить токены на размышления
         if "qwen3" in self.model.lower():
