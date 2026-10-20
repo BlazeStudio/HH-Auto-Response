@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 import tkinter
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from pathlib import Path
 
@@ -281,8 +281,11 @@ class ChipGroup(_Light, tkinter.Canvas):
         return [value for value, _ in self.options if value in self.selected]
 
     def set(self, values) -> None:
+        values = {str(v) for v in values or []}
+        if values == self.selected and self._photo is not None:
+            return  # то же самое — не перерисовываем
         self.selected.clear()
-        self.selected.update(str(v) for v in values or [])
+        self.selected.update(values)
         self._render()
 
     def set_options(self, options) -> None:
@@ -565,6 +568,7 @@ class _Snapshot:
         from ctypes import wintypes
 
         self._ok = False
+        self.alpha = alpha
         u, g = ctypes.windll.user32, ctypes.windll.gdi32
         self.u, self.g, self.ct = u, g, ctypes
         H, I = wintypes.HANDLE, ctypes.c_int
@@ -573,6 +577,7 @@ class _Snapshot:
             (u.GetClientRect, [H, ctypes.POINTER(wintypes.RECT)], wintypes.BOOL),
             (u.ClientToScreen, [H, ctypes.POINTER(wintypes.POINT)], wintypes.BOOL),
             (u.PrintWindow, [H, H, wintypes.UINT], wintypes.BOOL),
+            (g.BitBlt, [H, I, I, I, I, H, I, I, wintypes.DWORD], wintypes.BOOL),
             (u.CreateWindowExW, [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, I, I, I, I,
                                  H, H, H, ctypes.c_void_p], H),
             (u.UpdateLayeredWindow, [H, H, ctypes.c_void_p, ctypes.c_void_p, H, ctypes.c_void_p, wintypes.DWORD,
@@ -605,7 +610,13 @@ class _Snapshot:
         self.old = g.SelectObject(self.mem, self.bitmap)
         self.hwnd = None
         try:
-            if not u.PrintWindow(self.frame, self.mem, 0x1 | 0x2):  # PW_CLIENTONLY | PW_RENDERFULLCONTENT
+            # копия того, что окно уже нарисовало (~1 мс); не вышло — PrintWindow (дольше, ~20–40 мс)
+            client = root.winfo_id()
+            source = u.GetDC(client)
+            copied = bool(source) and g.BitBlt(self.mem, 0, 0, width, height, source, 0, 0, 0x00CC0020)  # SRCCOPY
+            if source:
+                u.ReleaseDC(client, source)
+            if not copied and not u.PrintWindow(self.frame, self.mem, 0x1 | 0x2):  # CLIENTONLY | RENDERFULLCONTENT
                 return
             # WS_EX_LAYERED | WS_EX_TRANSPARENT (щелчки — сквозь) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE; WS_POPUP;
             # владелец — наше окно: снимок всегда над ним и только над ним
@@ -634,8 +645,9 @@ class _Snapshot:
         return self._ok
 
     def set_alpha(self, alpha: int) -> None:
+        self.alpha = max(0, min(255, alpha))
         if self.hwnd:
-            blend = self.BLEND(0, 0, max(0, min(255, alpha)), 0)
+            blend = self.BLEND(0, 0, self.alpha, 0)
             self.u.UpdateLayeredWindow(self.hwnd, None, None, None, None, None, 0, self.ct.byref(blend), 0x2)
 
     def close(self) -> None:
@@ -650,14 +662,110 @@ class _Snapshot:
         self._ok = False
 
 
-def _dwm_flush() -> None:
-    """Дождаться, пока Windows покажет на экране то, что уже нарисовано (один кадр)."""
-    try:
-        import ctypes
+class transition:
+    """Плавная смена вида окна: поверх кладётся снимок окна (begin), под ним меняется что угодно —
+    страница, вкладка, тема — и дорисовывается целиком, потом снимок растворяется (fade). Недорисованных
+    кусков и мелькающих углов не видно. Если новый переход начался, пока прошлый ещё растворяется (быстрые
+    щелчки, страница и сразу вкладка), снимок остаётся тот же и растворяется уже в окончательный вид."""
 
-        ctypes.windll.dwmapi.DwmFlush()
-    except (OSError, AttributeError):
-        pass
+    PEAK = 255  # непрозрачность снимка в начале (проверки ставят 0 — снимок не виден)
+    _overlay: "_Snapshot | None" = None
+    _root: tkinter.Misc | None = None
+    _job = None
+    _timer = False  # точный таймер Windows включён, пока снимок растворяется
+    _idle: list = []  # кому сказать, что переход закончился (фоновая докраска темы ждёт его конца)
+
+    @classmethod
+    def active(cls) -> bool:
+        return cls._overlay is not None
+
+    @classmethod
+    def begin(cls, root: tkinter.Misc) -> "_Snapshot | None":
+        if cls._overlay is not None:  # прошлый переход ещё идёт — останавливаем растворение, снимок тот же
+            cls._cancel_step()
+            return cls._overlay
+        if sys.platform != "win32":
+            return None
+        try:
+            if not root.winfo_viewable() or root.state() in ("iconic", "withdrawn"):
+                return None
+            if cls.PEAK and float(root.attributes("-alpha")) < 0.05:
+                return None  # окно невидимо — показывать нечего (и снимок не должен появиться сам по себе)
+            overlay = _Snapshot(root, cls.PEAK)
+        except Exception:  # нет снимка — меняем без перехода, как раньше
+            return None
+        if not overlay:
+            return None
+        cls._overlay, cls._root = overlay, root
+        return overlay
+
+    @classmethod
+    def fade(cls, overlay: "_Snapshot", duration: float) -> None:
+        import time
+
+        if overlay is not cls._overlay:
+            return
+        if not cls._timer:
+            cls._timer = True
+            precise_timer.acquire()
+        # с той непрозрачности, на которой снимок сейчас (прошлый переход мог уже начать растворять)
+        share = overlay.alpha / cls.PEAK if cls.PEAK else 1
+        cls._step(overlay, time.perf_counter(), max(duration * share, 0.001), overlay.alpha)
+
+    @classmethod
+    def _step(cls, overlay, started: float, duration: float, start_alpha: int) -> None:
+        import time
+
+        cls._job = None
+        progress = (time.perf_counter() - started) / duration
+        if progress >= 1 or overlay is not cls._overlay:
+            if overlay is cls._overlay:
+                cls.finish()
+            return
+        eased = progress * progress * (3 - 2 * progress)  # плавно в начале и в конце
+        overlay.set_alpha(round(start_alpha * (1 - eased)))
+        try:
+            cls._job = cls._root.after(8, cls._step, overlay, started, duration, start_alpha)
+        except (tkinter.TclError, AttributeError):
+            cls.finish()
+
+    @classmethod
+    def _cancel_step(cls) -> None:
+        if cls._job is not None:
+            try:
+                cls._root.after_cancel(cls._job)
+            except (tkinter.TclError, AttributeError):
+                pass
+            cls._job = None
+
+    @classmethod
+    def finish(cls) -> None:
+        """Убрать снимок сейчас же (конец перехода, закрытие окна)."""
+        if cls._overlay is None:
+            return
+        overlay, cls._overlay = cls._overlay, None
+        cls._cancel_step()
+        overlay.close()
+        if cls._timer:
+            cls._timer = False
+            precise_timer.release()
+        for callback in list(cls._idle):
+            try:
+                callback()
+            except Exception:
+                pass
+
+
+@contextmanager
+def crossfade(root: tkinter.Misc, duration: float):
+    """with crossfade(окно, 0.14): …перестройка… — внутри меняйте и дорисовывайте (frozen(…, flush=True)),
+    по выходе снимок старого вида растворится за duration."""
+    overlay = transition.begin(root)
+    try:
+        yield
+    finally:
+        if overlay is not None:
+            transition.fade(overlay, duration)
 
 
 class theme_switch:
@@ -671,12 +779,9 @@ class theme_switch:
     _root: tkinter.Misc | None = None
     _pending: list = []
     _job = None
-    _overlay: "_Snapshot | None" = None
-    _fade_job = None
     _timer = False  # точный таймер включён на время фоновой докраски
     BUDGET = 0.012  # сек на порцию фоновой перекраски — меньше кадра
-    FADE = 0.22  # сек на переход
-    PEAK = 255  # непрозрачность снимка в начале перехода (проверки ставят 0 — снимок не виден)
+    FADE = 0.22  # сек на переход (0 — без перехода)
 
     @classmethod
     def install(cls, root: tkinter.Misc) -> None:
@@ -684,6 +789,7 @@ class theme_switch:
 
         cls._root = root
         AppearanceModeTracker.update_callbacks = classmethod(lambda tracker: cls._switch(tracker))
+        transition._idle.append(cls._schedule)  # скрытое докрашиваем, когда переход закончился
 
     @staticmethod
     def _mode(tracker) -> str:
@@ -705,69 +811,16 @@ class theme_switch:
             alive = root is not None and bool(root.winfo_exists())
         except tkinter.TclError:
             alive = False
-        cls._end_fade()  # прошлый переход ещё идёт — завершаем, снимаем окно уже в нынешнем виде
-        overlay = cls._snapshot(root) if alive else None
+        cls._pending = hidden
         if alive:
-            with frozen(root, flush=True):  # под снимком: всё видимое перекрашивается и дорисовывается
-                for callback in visible:
-                    cls._call(callback, mode)
+            with crossfade(root, cls.FADE) if cls.FADE > 0 else nullcontext():
+                with frozen(root, flush=True):  # под снимком: всё видимое перекрашивается и дорисовывается
+                    for callback in visible:
+                        cls._call(callback, mode)
         else:
             for callback in visible:
                 cls._call(callback, mode)
-        cls._pending = hidden
-        if overlay:
-            _dwm_flush()  # новая тема уже на экране под снимком — можно растворять
-            cls._overlay = overlay
-            precise_timer.acquire()
-            cls._fade(overlay, __import__("time").perf_counter())
-        else:
-            cls._schedule()
-
-    @classmethod
-    def _snapshot(cls, root) -> "_Snapshot | None":
-        if sys.platform != "win32" or cls.FADE <= 0:
-            return None
-        try:
-            if not root.winfo_viewable() or root.state() in ("iconic", "withdrawn"):
-                return None
-            overlay = _Snapshot(root, cls.PEAK)
-        except Exception:  # нет снимка — просто перекрашиваем, как раньше
-            return None
-        if not overlay:
-            return None
-        _dwm_flush()  # снимок уже на экране — под ним можно менять что угодно
-        return overlay
-
-    @classmethod
-    def _fade(cls, overlay: "_Snapshot", started: float) -> None:
-        import time
-
-        cls._fade_job = None
-        progress = (time.perf_counter() - started) / cls.FADE
-        if progress >= 1 or cls._overlay is not overlay:
-            cls._end_fade()
-            return
-        eased = progress * progress * (3 - 2 * progress)  # плавно в начале и в конце
-        overlay.set_alpha(round(cls.PEAK * (1 - eased)))
-        try:
-            cls._fade_job = cls._root.after(8, cls._fade, overlay, started)
-        except (tkinter.TclError, AttributeError):
-            cls._end_fade()
-
-    @classmethod
-    def _end_fade(cls) -> None:
-        if cls._overlay is None:
-            return
-        overlay, cls._overlay = cls._overlay, None
-        if cls._fade_job is not None:
-            try:
-                cls._root.after_cancel(cls._fade_job)
-            except (tkinter.TclError, AttributeError):
-                pass
-            cls._fade_job = None
-        overlay.close()
-        precise_timer.release()
-        cls._schedule()  # скрытые страницы — уже после перехода, чтобы он шёл ровно
+        cls._schedule()
 
     @staticmethod
     def _call(callback, mode: str) -> None:
@@ -778,7 +831,7 @@ class theme_switch:
 
     @classmethod
     def _schedule(cls) -> None:
-        if cls._pending and cls._job is None and cls._root is not None and cls._overlay is None:
+        if cls._pending and cls._job is None and cls._root is not None and not transition.active():
             if not cls._timer:  # без точного таймера after(1) срабатывает раз в 15,6 мс — фон шёл бы втрое дольше
                 cls._timer = True
                 precise_timer.acquire()

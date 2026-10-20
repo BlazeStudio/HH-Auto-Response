@@ -29,7 +29,7 @@ from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_chats, run_responses
 from .chats import ChatStats
 from . import hh_filters as hhf
 from .hh_dicts import INDUSTRIES, INDUSTRY_NAMES, PROFESSIONAL_ROLE_CATEGORIES, PROFESSIONAL_ROLES
-from .config import (AI_PROVIDERS, AREAS, WEEKDAYS, Config, ConfigError, load_config, save_config,
+from .config import (AI_PROVIDERS, AREAS, WEEKDAYS, Config, ConfigError, config_values, load_config, save_config,
                      validate_config, validate_search_source)
 from .ai import AiClient, AiError, shutdown_ollama
 from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, fill_sample_form, write_sample_letter
@@ -41,7 +41,7 @@ from .paths import app_root, bundled, is_frozen
 from .runner import RunOptions, Stats
 from . import updater
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
-from .widgets import (Chart, ChipGroup, ItemList, PlainFrame, SelectableText, TextLabel, flush_paint, frozen, install_editing,
+from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, SelectableText, TextLabel, flush_paint, frozen, install_editing,
                       precise_timer, set_titlebar_dark, theme_switch)
 from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, MAIN_BG,
                     MUTED, RED, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon, sharp_windows_icon)
@@ -933,6 +933,8 @@ SETTINGS = [
 ]
 # Вкладки настроек: на экране одна вкладка, а не все 13 разделов разом (на ленте было 915 окон Windows,
 # и при прокрутке и переключении страниц они перерисовывались кусками)
+PAGE_FADE = 0.14  # сек: плавный переход между страницами
+TAB_FADE = 0.12  # и между вкладками настроек
 SETTINGS_TABS = [
     ("Поиск", ("Поиск и резюме", "Фильтры по словам")),
     ("Фильтры hh", ("Фильтры hh",)),
@@ -1090,6 +1092,7 @@ class SettingsPage(Page):
         super().__init__(master, "Настройки", f"Сохраняются в {app.config_path}")
         self.app = app
         self.widgets: dict[tuple[str, str], tuple[str, object]] = {}
+        self._loaded: dict | None = None  # что уже разложено по полям формы
 
         # вкладки — как пункты меню слева: выбранная подсвечена
         bar = ctk.CTkFrame(self, fg_color="transparent")
@@ -1177,21 +1180,23 @@ class SettingsPage(Page):
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.pack(fill="x", pady=(10, 0))
         _primary_button(footer, "Сохранить", self.save, width=150).pack(side="left")
-        _secondary_button(footer, "Отменить изменения", self.load, width=180).pack(side="left", padx=10)
+        _secondary_button(footer, "Отменить изменения", lambda: self.load(force=True), width=180).pack(
+            side="left", padx=10)
         _secondary_button(footer, "Открыть config.toml", lambda: open_path(app.config_path), width=180).pack(side="right")
 
     def show_tab(self, name: str) -> None:
         """Вкладка настроек: на экране только она — остальные не рисуются вовсе."""
         if name == self.current_tab:
             return
-        with frozen(self):
+        # снимок прежней вкладки поверх, новая дорисовывается под ним целиком и плавно проступает
+        with crossfade(self.winfo_toplevel(), TAB_FADE), frozen(self, flush=True):
             if self.current_tab:
                 self.tabs[self.current_tab].pack_forget()
             theme_switch.ensure(self.tabs[name])  # тему сменили, а фон ещё не докрасил эту вкладку
             self.tabs[name].pack(fill="both", expand=True)
-        for tab, button in self.tab_buttons.items():
-            button.configure(fg_color=ACCENT_SOFT if tab == name else "transparent",
-                             text_color=ACCENT if tab == name else TEXT)
+            for tab, button in self.tab_buttons.items():
+                button.configure(fg_color=ACCENT_SOFT if tab == name else "transparent",
+                                 text_color=ACCENT if tab == name else TEXT)
         self.current_tab = name
         self.app.save_prefs(settings_tab=name)
 
@@ -1236,8 +1241,14 @@ class SettingsPage(Page):
             SelectableText(row, hint, color=MUTED, size=12, width_px=760).pack(fill="x", pady=(3, 0))
         self.widgets[(section, key)] = (kind, widget)
 
-    def load(self) -> None:
+    def load(self, force: bool = False) -> None:
+        """Значения из настроек — в форму. Если настройки с прошлого раза не менялись, форма не трогается
+        (переход на страницу быстрее, а несохранённые правки остаются до «Отменить изменения»)."""
         cfg = self.app.cfg
+        values = config_values(cfg)
+        if not force and values == self._loaded:
+            return
+        self._loaded = values
         for (section, key), (kind, widget) in self.widgets.items():
             self._set_value(section, key, getattr(getattr(cfg, section) if section else cfg, key))
 
@@ -1246,11 +1257,14 @@ class SettingsPage(Page):
         if kind == "picker":
             widget.set(value)
             return
+        # то же значение — не трогаем: переключатель и «чипы» перерисовывались бы зря
         if kind == "bool":
-            widget.select() if value else widget.deselect()
+            if bool(widget.get()) != bool(value):
+                widget.select() if value else widget.deselect()
         elif kind == "text":
-            widget.delete("1.0", "end")
-            widget.insert("1.0", value)
+            if widget.get("1.0", "end-1c") != value:
+                widget.delete("1.0", "end")
+                widget.insert("1.0", value)
         elif kind == "multi":
             widget.set(value)
         elif kind == "choice":
@@ -1258,10 +1272,14 @@ class SettingsPage(Page):
             if value not in options.values():  # например, регион, которого нет в списке
                 options[f"{value}"] = value
                 widget.configure(values=list(options))
-            widget.set(next((k for k, v in options.items() if v == value), next(iter(options))))
+            label = next((k for k, v in options.items() if v == value), next(iter(options)))
+            if widget.get() != label:
+                widget.set(label)
         else:
-            widget.delete(0, "end")
-            widget.insert(0, ", ".join(value) if kind == "list" else str(value))
+            text = ", ".join(value) if kind == "list" else str(value)
+            if widget.get() != text:
+                widget.delete(0, "end")
+                widget.insert(0, text)
 
     def save(self) -> None:
         cfg = self.collect()
@@ -1978,9 +1996,9 @@ class App(ctk.CTk):
         self.main = main
 
     def show_page(self, key: str) -> None:
-        # пока страница собирается, правая часть окна не рисуется — иначе видны куски старой и новой страницы
-        # и белые/чёрные прямоугольники на месте ещё не нарисованных элементов
-        with frozen(self.main):
+        # снимок окна поверх: пока новая страница собирается и дорисовывается под ним, не видно ни кусков
+        # старой и новой страницы, ни белых и чёрных прямоугольников; потом снимок плавно растворяется
+        with crossfade(self, PAGE_FADE), frozen(self.main, flush=True):
             for name, page in self.pages.items():
                 if name != key:
                     page.grid_forget()
