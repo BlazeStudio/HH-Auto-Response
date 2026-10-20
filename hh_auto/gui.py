@@ -18,7 +18,7 @@ import threading
 import time
 import traceback
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import tkinter
 
@@ -29,18 +29,20 @@ from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_chats, run_responses
 from .chats import ChatStats
 from . import hh_filters as hhf
 from .hh_dicts import INDUSTRIES, INDUSTRY_NAMES, PROFESSIONAL_ROLE_CATEGORIES, PROFESSIONAL_ROLES
-from .config import (AI_PROVIDERS, AREAS, Config, ConfigError, load_config, save_config,
+from .config import (AI_PROVIDERS, AREAS, WEEKDAYS, Config, ConfigError, load_config, save_config,
                      validate_config, validate_search_source)
 from .ai import AiClient, AiError, shutdown_ollama
 from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, fill_sample_form, write_sample_letter
 from .results import HH_DAILY_LIMIT, Summary, load_summary
 from .search import describe_search
+from .stats import METRICS, SKIP_KINDS, StatsStore, buckets, totals
 from .logger import SUCCESS, log, setup_logging
 from .paths import app_root, bundled, is_frozen
 from .runner import RunOptions, Stats
 from . import updater
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
-from .widgets import ChipGroup, ItemList, PlainFrame, TextLabel, frozen
+from .widgets import (Chart, ChipGroup, ItemList, PlainFrame, SelectableText, TextLabel, flush_paint, frozen, install_editing,
+                      precise_timer, set_titlebar_dark, theme_switch)
 from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, MAIN_BG,
                     MUTED, RED, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon, sharp_windows_icon)
 
@@ -112,49 +114,114 @@ class Card(ctk.CTkFrame):
 
 
 class ScrollFrame(ctk.CTkScrollableFrame):
-    """Прокручиваемая область без «плывущего» и «размножившегося» текста, без застревания колеса на полях.
+    """Плавная прокрутка, как в браузере, без «плывущего» и «размножившегося» текста и без застревания колеса.
 
-    У CTkScrollableFrame каждый щелчок колеса или движение ползунка сразу сдвигает страницу, Windows копирует
-    старую картинку на новое место, а дорисовать открывшееся не успевает — при быстрой прокрутке строки
-    остаются на экране по нескольку раз. Здесь сдвиги копятся и применяются не чаще раза в кадр, и на время
-    сдвига область заморожена: Windows ничего не копирует, а перерисовывает её целиком. Колесо над
-    многострочным полем customtkinter отдаёт самому полю, даже если листать в нём нечего, — тогда листаем
-    страницу.
+    У CTkScrollableFrame щелчок колеса — рывок на 20 пикселей сразу, а Windows копирует старую картинку на новое
+    место и дорисовать открывшееся не успевает: страница ползёт рывками, строки остаются на экране по нескольку
+    раз. Здесь щелчок задаёт цель (около 110 пикселей), и страница доезжает до неё за несколько кадров
+    с замедлением в конце; каждый кадр дорисовывается до следующего. Ползунок полосы прокрутки двигает
+    страницу сразу, но тоже не чаще раза в кадр. Колесо над многострочным полем customtkinter отдаёт самому
+    полю, даже если листать в нём нечего, — тогда листаем страницу.
     """
 
-    FRAME_MS = 15
+    FRAME_MS = 8  # ~120 кадров в секунду (на время анимации включается точный таймер Windows)
+    WHEEL_PX = 110  # один щелчок колеса, при масштабе 100%
+    EASE = 0.3  # доля оставшегося пути за кадр: быстро в начале, мягко в конце
+    PAINT = "blit"  # blit — сдвиг и дорисовка открывшегося; frozen — заморозка и перерисовка целиком
 
     def __init__(self, *args, **kwargs):
-        self._wheel_units = 0
-        self._moveto: float | None = None  # куда перетащили ползунок
-        self._wheel_job = None
+        self._target: float | None = None  # куда доехать (пиксели от верха содержимого)
+        self._moveto: float | None = None  # куда перетащили ползунок (доля)
+        self._anim = None
         super().__init__(*args, **kwargs)
+        self._parent_canvas.configure(yscrollincrement=1)  # по пикселю на любой системе — для плавности
         self._scrollbar.configure(command=self._scrollbar_command)
 
+    def _top(self) -> float:
+        return self._parent_canvas.canvasy(0)
+
+    def _max_top(self) -> float:
+        bbox = self._parent_canvas.bbox("all")
+        total = (bbox[3] - bbox[1]) if bbox else 0
+        return max(0.0, total - self._parent_canvas.winfo_height())
+
+    def _scroll_by(self, pixels: float) -> None:
+        base = self._target if self._target is not None else self._top()
+        self._target = min(max(base + pixels, 0.0), self._max_top())
+        self._start()
+
+    def _start(self) -> None:
+        if self._anim is None:
+            precise_timer.acquire()
+            self._anim = self.after(1, self._frame)
+
+    def _frame(self) -> None:
+        self._anim = None
+        started = time.perf_counter()
+        canvas = self._parent_canvas
+        try:
+            if self._moveto is not None:  # ползунок — сразу туда, без плавности
+                moveto, self._moveto, self._target = self._moveto, None, None
+                self._paint(lambda: canvas.yview_moveto(moveto))
+                precise_timer.release()
+                return
+            if self._target is None:
+                precise_timer.release()
+                return
+            top = self._top()
+            remaining = self._target - top
+            if abs(remaining) < 1:
+                self._target = None
+                precise_timer.release()
+                return
+            step = remaining * self.EASE
+            step = max(1.0, abs(step)) * (1 if remaining > 0 else -1)
+            if abs(step) > abs(remaining):
+                step = remaining
+            self._paint(lambda: canvas.yview_scroll(int(round(step)), "units"))
+            if self._top() == top:  # упёрлись в край
+                self._target = None
+                precise_timer.release()
+                return
+        except tkinter.TclError:
+            precise_timer.release()
+            return
+        # следующий кадр — через FRAME_MS от начала этого, а не от конца перерисовки
+        spent = (time.perf_counter() - started) * 1000
+        self._anim = self.after(max(1, round(self.FRAME_MS - spent)), self._frame)
+
+    def _paint(self, move) -> None:
+        if self.PAINT == "frozen":
+            with frozen(self._parent_canvas, flush=True):
+                move()
+        else:
+            move()
+            flush_paint(self._parent_canvas)
+
     def _scrollbar_command(self, *args) -> None:
-        """Ползунок полосы прокрутки — тот же путь, что и колесо: раз в кадр и без копирования старой картинки."""
+        """Ползунок полосы прокрутки: тянут — страница идёт следом сразу; щелчок по полосе — плавно на экран."""
         if args and args[0] == "moveto":
-            self._moveto, self._wheel_units = float(args[1]), 0
+            self._moveto = float(args[1])
+            self._start()
         elif args and args[0] == "scroll":
-            step = int(args[1]) * (self._parent_canvas.winfo_height() if args[2] == "pages" else 20)
-            self._wheel_units += step
-        if self._wheel_job is None:
-            self._wheel_job = self.after(self.FRAME_MS, self._apply_wheel)
+            scale = ctk.ScalingTracker.get_widget_scaling(self)
+            amount = int(args[1]) * (self._parent_canvas.winfo_height() * 0.9 if args[2] == "pages"
+                                     else self.WHEEL_PX * scale)
+            self._scroll_by(amount)
 
     def _mouse_wheel_all(self, event):
         if self._shift_pressed:  # горизонтальной прокрутки у нас нет — как в customtkinter
             return super()._mouse_wheel_all(event)
+        scale = ctk.ScalingTracker.get_widget_scaling(self)
         if sys.platform == "win32":
-            units = -int(event.delta / 6)
+            pixels = -event.delta / 120 * self.WHEEL_PX * scale  # тачпад даёт дробные щелчки — тоже плавно
         elif sys.platform == "darwin":
-            units = -event.delta
+            pixels = -event.delta * 8
         else:
-            units = -1 if event.num == 4 else 1
-        if not units or not self._wheel_is_ours(event.widget, units < 0):
+            pixels = (-1 if event.num == 4 else 1) * self.WHEEL_PX * scale
+        if not pixels or not self._wheel_is_ours(event.widget, pixels < 0):
             return
-        self._wheel_units += units
-        if self._wheel_job is None:
-            self._wheel_job = self.after(self.FRAME_MS, self._apply_wheel)
+        self._scroll_by(pixels)
 
     def _wheel_is_ours(self, widget, up: bool) -> bool:
         """Колесо крутят над этой областью, и листать нужно её (а не поле с текстом внутри)."""
@@ -172,19 +239,6 @@ class ScrollFrame(ctk.CTkScrollableFrame):
             widget = widget.master
         return False
 
-    def _apply_wheel(self) -> None:
-        self._wheel_job = None
-        units, self._wheel_units = self._wheel_units, 0
-        moveto, self._moveto = self._moveto, None
-        canvas = self._parent_canvas
-        if (not units and moveto is None) or canvas.yview() == (0.0, 1.0):
-            return
-        # заморожено: Windows не копирует старую картинку на новое место, а перерисовывает всё сразу (flush)
-        with frozen(canvas, flush=True):
-            if moveto is not None:
-                canvas.yview_moveto(moveto)
-            if units:
-                canvas.yview_scroll(units, "units")
 
 
 class StatCard(Card):
@@ -345,17 +399,9 @@ class Page(ctk.CTkFrame):
     def __init__(self, master, title: str, subtitle: str):
         super().__init__(master, fg_color="transparent")
         ctk.CTkLabel(self, text=title, font=ctk.CTkFont(size=24, weight="bold"), text_color=TEXT).pack(anchor="w")
-        self.subtitle = ctk.CTkLabel(self, text=subtitle, text_color=MUTED, font=ctk.CTkFont(size=13),
-                                     justify="left", anchor="w", wraplength=700)
+        # выделяемый: в подзаголовке бывает путь (например, к config.toml) — его удобно скопировать
+        self.subtitle = SelectableText(self, subtitle, color=MUTED, size=13, bg=MAIN_BG, width_px=860)
         self.subtitle.pack(fill="x", pady=(2, 14))
-        self.bind("<Configure>", self._rewrap)
-
-    def _rewrap(self, event) -> None:
-        """Перенос подзаголовка по фактической ширине страницы (с учётом масштаба Windows)."""
-        scaling = ctk.ScalingTracker.get_widget_scaling(self)
-        width = max(int(event.width / scaling) - 16, 300)
-        if self.subtitle.cget("wraplength") != width:
-            self.subtitle.configure(wraplength=width)
 
 
 def _primary_button(master, text: str, command, **kwargs):
@@ -743,8 +789,9 @@ SETTINGS = [
         ("search", "mode", "Где искать вакансии", "choice", ""),
         ("", "search_url", "Ссылка на поиск вакансий (режим «По ссылке»)", "str",
          "hh.ru → «Мои резюме» → «N подходящих вакансий» → скопируйте адрес из браузера"),
-        ("search", "query", "Поисковый запрос (режим «По запросу»)", "str",
-         "Как в строке поиска hh: python разработчик, backend OR бэкенд"),
+        ("search", "query", "Поисковые запросы (режим «По запросу»)", "text",
+         "По одному на строку — за запуск пройдём все по очереди, лимит откликов общий, одна и та же вакансия "
+         "дважды не попадётся. Как в строке поиска hh: python разработчик, backend OR бэкенд"),
         ("search", "area", "Регион (режим «По запросу»)", "choice", ""),
         ("search", "title_only", "Искать запрос только в названии вакансии", "bool", ""),
         ("", "resume_url", "Ссылка на резюме (необязательно)", "str",
@@ -753,7 +800,10 @@ SETTINGS = [
     ]),
     ("Лимиты и паузы", [
         ("limits", "max_responses", "Откликов за запуск", "int", "У hh лимит — около 200 откликов в сутки"),
-        ("limits", "max_pages", "Страниц выдачи", "int", ""),
+        ("limits", "max_pages", "Страниц выдачи", "int", "На каждый поисковый запрос"),
+        ("limits", "per_company", "Откликов в одну компанию, не больше", "int",
+         "0 — без ограничения. У крупной компании бывает десяток похожих вакансий — откликнемся только на первые"),
+        ("limits", "per_company_days", "…за последние, дней", "int", "Считаются отклики этой программы"),
         ("limits", "delay_min", "Пауза между вакансиями: от, сек", "float", ""),
         ("limits", "delay_max", "Пауза между вакансиями: до, сек", "float", ""),
     ]),
@@ -842,6 +892,15 @@ SETTINGS = [
         ("ai_filter", "skip_on_error", "Пропускать вакансию, если нейросеть не ответила", "bool",
          "Выключено — при сбое нейросети вакансия обрабатывается как обычно (безопаснее, без потери вакансий)"),
     ]),
+    ("Расписание запусков", [
+        ("schedule", "enabled", "Запускать отклики по расписанию", "bool",
+         "Пока приложение открыто (можно свернуть) и компьютер не спит. Если в это время уже идёт работа — "
+         "запустится сразу после неё. Лимит — «Откликов за запуск»"),
+        ("schedule", "times", "Во сколько", "list", "Через запятую, по часам компьютера: 10:00, 15:30"),
+        ("schedule", "days", "По каким дням", "multi", ""),
+        ("schedule", "chats_after", "После откликов прочитать отказы в чатах", "bool",
+         "И ответить ботам hh, если включены «ИИ-ответы в чатах»"),
+    ]),
     ("Уведомления по итогам", [
         ("notify", "desktop", "Показывать уведомление на компьютере, когда запуск закончился", "bool",
          "Отправлено, пропущено, ошибки. Приложение спросит разрешение после первого запуска"),
@@ -850,6 +909,12 @@ SETTINGS = [
         ("notify", "telegram_token", "Токен бота", "secret", ""),
         ("notify", "telegram_chat_id", "Ваш chat id", "str",
          "Напишите боту что-нибудь и откройте api.telegram.org/bot<токен>/getUpdates — там будет chat.id"),
+    ]),
+    ("Статистика", [
+        ("stats", "disabled", "Не вести статистику", "bool",
+         "Вкладка «Статистика» хранит только числа по дням — без названий вакансий, компаний и текстов. "
+         "Включено — новые запуски не записываются; собранное раньше удаляется на самой вкладке"),
+        ("stats", "keep_days", "Хранить статистику, дней", "int", "Более старые дни удаляются сами. 0 — хранить всё"),
     ]),
     ("Логи и место на диске", [
         ("logs", "snapshots", "Сохранять скриншот и HTML страницы при ошибках", "bool",
@@ -873,11 +938,12 @@ SETTINGS_TABS = [
     ("Фильтры hh", ("Фильтры hh",)),
     ("Отклики", ("Лимиты и паузы", "Сопроводительное письмо", "Вопросы работодателя", "Вакансии в другом регионе")),
     ("Нейросеть", ("ИИ-ответы в чатах", "ИИ-фильтр вакансий")),
-    ("Уведомления", ("Уведомления по итогам",)),
-    ("Прочее", ("Логи и место на диске", "Браузер и сеть", "Данные приложения")),
+    ("Расписание", ("Расписание запусков", "Уведомления по итогам")),
+    ("Прочее", ("Логи и место на диске", "Статистика", "Браузер и сеть", "Данные приложения")),
 ]
 # Варианты для полей с несколькими галочками: значение в config → подпись
 MULTI = {("hh_filters", name): options for name, options in hhf.LIST_OPTIONS.items() if options is not None}
+MULTI[("schedule", "days")] = WEEKDAYS
 # Большие справочники hh — выбор в отдельном окне с поиском: (группы, id → название)
 PICKERS = {
     ("hh_filters", "professional_role"): (PROFESSIONAL_ROLE_CATEGORIES, PROFESSIONAL_ROLES),
@@ -1046,9 +1112,9 @@ class SettingsPage(Page):
             card.pack(fill="x", pady=(0, 12), padx=(0, 6))
             TextLabel(card, section_title, size=15, weight="bold").pack(anchor="w", padx=16, pady=(12, 4))
             if section_title == "Фильтры hh":
-                TextLabel(card, "Пусто — фильтр не задан, на hh это «выбрано всё». Проще всего настроить фильтры на "
-                                "hh.ru, скопировать адрес страницы и нажать «Заполнить из ссылки».",
-                          color=MUTED, size=12, wraplength=760).pack(anchor="w", padx=16)
+                SelectableText(card, "Пусто — фильтр не задан, на hh это «выбрано всё». Проще всего настроить "
+                                     "фильтры на hh.ru, скопировать адрес страницы и нажать «Заполнить из ссылки».",
+                               color=MUTED, size=12, width_px=760).pack(fill="x", padx=16)
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 8))
                 _secondary_button(row, "Заполнить из ссылки hh…", self.import_hh_filters, width=220,
@@ -1063,17 +1129,17 @@ class SettingsPage(Page):
                 row.pack(fill="x", padx=16, pady=(8, 0))
                 self.ai_test_btn = _secondary_button(row, "Проверить подключение к ИИ", self.test_ai, width=240, height=32)
                 self.ai_test_btn.pack(side="left")
-                TextLabel(row, "Где взять ключ: OpenRouter — openrouter.ai → Keys; DeepSeek — platform.deepseek.com → "
-                               "API keys; Ollama — ключ не нужен", color=MUTED, size=12,
-                          wraplength=480).pack(side="left", padx=12)
+                SelectableText(row, "Где взять ключ: OpenRouter — openrouter.ai → Keys; DeepSeek — "
+                                    "platform.deepseek.com → API keys; Ollama — ключ не нужен", color=MUTED, size=12,
+                               width_px=480).pack(side="left", fill="x", expand=True, padx=12)
             if section_title == "ИИ-фильтр вакансий":
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
                 self.filter_test_btn = _secondary_button(row, "Проверить фильтр на примере вакансии",
                                                          self.test_vacancy_filter, width=300, height=32)
                 self.filter_test_btn.pack(side="left")
-                TextLabel(row, "Отправит нейросети тестовую вакансию и покажет, что она решила",
-                          color=MUTED, size=12, wraplength=420).pack(side="left", padx=12)
+                SelectableText(row, "Отправит нейросети тестовую вакансию и покажет, что она решила",
+                               color=MUTED, size=12, width_px=420).pack(side="left", fill="x", expand=True, padx=12)
             if section_title == "Уведомления по итогам":
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
@@ -1085,7 +1151,7 @@ class SettingsPage(Page):
         danger = Card(self.tabs["Прочее"])
         danger.pack(fill="x", pady=(0, 12), padx=(0, 6))
         TextLabel(danger, "Данные приложения", size=15, weight="bold").pack(anchor="w", padx=16, pady=(12, 4))
-        TextLabel(danger, f"Папка: {app.root_dir}", color=MUTED).pack(anchor="w", padx=16)
+        SelectableText(danger, f"Папка: {app.root_dir}", color=MUTED, width_px=760).pack(fill="x", padx=16)
         row = PlainFrame(danger)
         row.pack(fill="x", padx=16, pady=(8, 14))
         _secondary_button(row, "Открыть папку", lambda: open_path(app.root_dir), width=150, height=32).pack(side="left")
@@ -1102,8 +1168,8 @@ class SettingsPage(Page):
         self.check_updates_switch.pack(side="left")
         _secondary_button(row, "Проверить сейчас", lambda: app.check_updates(manual=True), width=160,
                           height=32).pack(side="left", padx=12)
-        TextLabel(row, "Новая версия скачивается и ставится по кнопке в меню слева, настройки остаются",
-                  color=MUTED, size=12).pack(side="left")
+        SelectableText(row, "Новая версия скачивается и ставится по кнопке в меню слева, настройки остаются",
+                       color=MUTED, size=12, width_px=420).pack(side="left", fill="x", expand=True)
         self.current_tab = ""
         saved = app.prefs.get("settings_tab")
         self.show_tab(saved if saved in self.tabs else SETTINGS_TABS[0][0])
@@ -1121,6 +1187,7 @@ class SettingsPage(Page):
         with frozen(self):
             if self.current_tab:
                 self.tabs[self.current_tab].pack_forget()
+            theme_switch.ensure(self.tabs[name])  # тему сменили, а фон ещё не докрасил эту вкладку
             self.tabs[name].pack(fill="both", expand=True)
         for tab, button in self.tab_buttons.items():
             button.configure(fg_color=ACCENT_SOFT if tab == name else "transparent",
@@ -1165,8 +1232,8 @@ class SettingsPage(Page):
             else:
                 widget = ctk.CTkEntry(row)
                 widget.pack(fill="x")
-        if hint:
-            TextLabel(row, hint, color=MUTED, size=12, wraplength=760).pack(anchor="w", pady=(3, 0))
+        if hint:  # подсказку можно выделить и скопировать
+            SelectableText(row, hint, color=MUTED, size=12, width_px=760).pack(fill="x", pady=(3, 0))
         self.widgets[(section, key)] = (kind, widget)
 
     def load(self) -> None:
@@ -1488,6 +1555,294 @@ class JournalsPage(Page):
 # ─────────────────────────────── приложение ───────────────────────────────
 
 
+# ---------- статистика ----------
+
+STAT_COLORS = {
+    "applied": GREEN, "letters": ACCENT, "skipped": AMBER, "failed": RED,
+    "skip_filters": ("#64748B", "#94A3B8"), "skip_ai": ("#9333EA", "#C084FC"),
+    "skip_questions": ("#EA580C", "#FB923C"), "skip_relocation": ("#0D9488", "#2DD4BF"),
+    "skip_company": ("#CA8A04", "#FACC15"), "skip_other": ("#78716C", "#A8A29E"),
+    "rejections": ("#DB2777", "#F472B6"), "ai_answers": ("#7C3AED", "#A78BFA"),
+    "waiting": ("#0891B2", "#22D3EE"), "runs": ("#475569", "#CBD5E1"), "minutes": ("#2563EB", "#60A5FA"),
+}
+STAT_PERIODS = {"7 дней": 7, "30 дней": 30, "90 дней": 90, "Год": 365, "Всё время": None}
+STAT_STEPS = {"По дням": "day", "По неделям": "week", "По месяцам": "month"}
+CHART_KINDS = {"Столбцы": "bar", "Линии": "line", "Итоги": "total"}
+DEFAULT_CHARTS = [
+    {"title": "Отклики", "metrics": ["applied", "letters"], "kind": "bar"},
+    {"title": "Чаты: отказы и ответы ИИ", "metrics": ["rejections", "ai_answers"], "kind": "line"},
+    {"title": "Почему вакансии пропущены", "metrics": list(SKIP_KINDS), "kind": "total"},
+]
+
+
+def _num(value: float) -> str:
+    return f"{value:.0f}" if abs(value - round(value)) < 0.05 else f"{value:.1f}".replace(".", ",")
+
+
+class Segments(ctk.CTkFrame):
+    """Выбор одного из нескольких вариантов — как вкладки настроек: выбранный подсвечен мягким акцентом.
+    (У CTkSegmentedButton в светлой теме невыбранное серое на сером.)"""
+
+    def __init__(self, master, values, command=None, height: int = 30, size: int = 13):
+        super().__init__(master, fg_color="transparent")
+        self.command = command
+        self.value = ""
+        self.buttons: dict[str, ctk.CTkButton] = {}
+        for value in values:
+            button = ctk.CTkButton(self, text=value, width=0, height=height, corner_radius=8, fg_color="transparent",
+                                   text_color=TEXT, hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=size),
+                                   command=lambda v=value: self._clicked(v))
+            button.pack(side="left", padx=(0, 2))
+            self.buttons[value] = button
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: str) -> None:
+        if value == self.value or value not in self.buttons:
+            return
+        self.value = value
+        for name, button in self.buttons.items():
+            button.configure(fg_color=ACCENT_SOFT if name == value else "transparent",
+                             text_color=ACCENT if name == value else TEXT)
+
+    def _clicked(self, value: str) -> None:
+        if value != self.value:
+            self.set(value)
+            if self.command:
+                self.command(value)
+
+
+class ChartCard(Card):
+    """Один график на вкладке «Статистика»: показатели, вид и название настраиваются («Настроить»),
+    наведение на столбец показывает числа за этот период."""
+
+    def __init__(self, master, page: "StatsPage", config: dict):
+        super().__init__(master)
+        self.page = page
+        kind = config.get("kind") if config.get("kind") in CHART_KINDS.values() else "bar"
+        metrics = [m for m in config.get("metrics", []) if m in METRICS]
+        self.config = {"title": str(config.get("title", "")), "metrics": metrics, "kind": kind}
+        self.rows: list[tuple[str, dict]] = []
+
+        head = PlainFrame(self)
+        head.pack(fill="x", padx=16, pady=(12, 0))
+        self.title = TextLabel(head, "", size=15, weight="bold")
+        self.title.pack(side="left")
+        self.readout = TextLabel(head, "", color=MUTED, size=12)
+        self.readout.pack(side="left", padx=12)
+        ctk.CTkButton(head, text="Убрать", width=70, height=26, fg_color="transparent", text_color=MUTED,
+                      hover_color=ACCENT_SOFT, command=lambda: page.remove_chart(self)).pack(side="right")
+        self.edit_btn = ctk.CTkButton(head, text="Настроить", width=96, height=26, fg_color="transparent",
+                                      text_color=ACCENT, hover_color=ACCENT_SOFT, command=self.toggle_editor)
+        self.edit_btn.pack(side="right", padx=(0, 4))
+
+        # настройки графика — спрятаны, пока не нажали «Настроить»
+        self.editor = PlainFrame(self)
+        row = PlainFrame(self.editor)
+        row.pack(fill="x", pady=(10, 6))
+        TextLabel(row, "Название", color=MUTED, size=12).pack(side="left")
+        self.name = ctk.CTkEntry(row, width=260, height=30, placeholder_text="по показателям")
+        if self.config["title"]:
+            self.name.insert(0, self.config["title"])
+        self.name.pack(side="left", padx=(8, 16))
+        self.name.bind("<KeyRelease>", lambda _e: self._edited())
+        TextLabel(row, "Вид", color=MUTED, size=12).pack(side="left")
+        self.kind = Segments(row, list(CHART_KINDS), command=lambda _v: self._edited(), height=28, size=12)
+        self.kind.set(next(label for label, value in CHART_KINDS.items() if value == kind))
+        self.kind.pack(side="left", padx=8)
+        TextLabel(self.editor, "Показатели", color=MUTED, size=12).pack(anchor="w")
+        self.metrics = ChipGroup(self.editor, METRICS, selected=set(metrics), on_change=self._edited)
+        self.metrics.pack(fill="x", pady=(4, 4))
+
+        self.legend = PlainFrame(self)
+        self.legend.pack(fill="x", padx=16, pady=(4, 0))
+        self.legend_labels: dict[str, TextLabel] = {}
+        self.chart = Chart(self, on_hover=self._hover)
+        self.chart.pack(fill="x", padx=12, pady=(6, 14))
+
+    def toggle_editor(self) -> None:
+        with frozen(self.page):
+            if self.editor.winfo_manager():
+                self.editor.pack_forget()
+                self.edit_btn.configure(text="Настроить")
+            else:
+                self.editor.pack(fill="x", padx=16, after=self.title.master)
+                self.edit_btn.configure(text="Готово")
+
+    def _edited(self) -> None:
+        self.config = {"title": self.name.get().strip(), "metrics": self.metrics.get(),
+                       "kind": CHART_KINDS[self.kind.get()]}
+        self.refresh(self.rows)
+        self.page.save_charts()
+
+    def refresh(self, rows: list[tuple[str, dict]]) -> None:
+        self.rows = rows
+        metrics, kind = self.config["metrics"], self.config["kind"]
+        title = self.config["title"] or (" · ".join(METRICS[m] for m in metrics[:2]) + ("…" if len(metrics) > 2 else "")
+                                         if metrics else "Новый график")
+        if self.title.cget("text") != title:
+            self.title.configure(text=title)
+        if list(self.legend_labels) != (metrics if kind != "total" else []):
+            for label in self.legend_labels.values():
+                label.destroy()
+            self.legend_labels = {}
+            if kind != "total":  # у «итогов» подписи уже на полосах
+                for metric in metrics:
+                    label = TextLabel(self.legend, "", color=STAT_COLORS[metric], size=12)
+                    label.pack(side="left", padx=(0, 14))
+                    self.legend_labels[metric] = label
+        series = [(METRICS[m], STAT_COLORS[m], [row.get(m, 0) for _, row in rows]) for m in metrics]
+        empty = "Выберите показатели — «Настроить»" if not metrics else "Пока нет данных за этот период"
+        self.chart.set_data([label for label, _ in rows], series, kind, empty)
+        self._hover(None)
+
+    def _hover(self, index) -> None:
+        for metric, label in self.legend_labels.items():
+            if index is None:
+                text = f"●  {METRICS[metric]}"
+            else:
+                text = f"●  {METRICS[metric]}: {_num(self.rows[index][1].get(metric, 0))}"
+            if label.cget("text") != text:
+                label.configure(text=text)
+        readout = self.rows[index][0] if index is not None and index < len(self.rows) else ""
+        if self.readout.cget("text") != readout:
+            self.readout.configure(text=readout)
+
+
+class StatsPage(Page):
+    def __init__(self, master, app: "App"):
+        super().__init__(master, "Статистика", "Сколько отправлено и пропущено, отказы и ответы ИИ в чатах — по дням. "
+                                               "Хранятся только числа, без названий вакансий и компаний.")
+        self.app = app
+        self.days: dict[str, dict] = {}
+
+        self.notice = Card(self)  # «статистика не ведётся» — видна, только если её выключили
+        TextLabel(self.notice, "Статистика не ведётся: новые запуски не записываются ([stats] disabled). "
+                               "Собранное раньше показано ниже.", color=AMBER).pack(side="left", padx=16, pady=10)
+        _secondary_button(self.notice, "Вести статистику", self.enable, width=160, height=30).pack(
+            side="right", padx=10)
+
+        toolbar = ctk.CTkFrame(self, fg_color="transparent")
+        toolbar.pack(fill="x", pady=(0, 12))
+        self.toolbar = toolbar
+        self.period = Segments(toolbar, list(STAT_PERIODS), command=lambda _v: self._view_changed(), height=32,
+                               size=14)
+        self.period.set(app.prefs.get("stats_period") if app.prefs.get("stats_period") in STAT_PERIODS else "30 дней")
+        self.period.pack(side="left")
+        self.step = ctk.CTkOptionMenu(toolbar, values=list(STAT_STEPS), width=140, height=32,
+                                      command=lambda _v: self._view_changed())
+        self.step.set(app.prefs.get("stats_step") if app.prefs.get("stats_step") in STAT_STEPS else "По дням")
+        self.step.pack(side="left", padx=12)
+        _secondary_button(toolbar, "+  График", self.add_chart, width=120, height=32).pack(side="right")
+
+        cards = ctk.CTkFrame(self, fg_color="transparent")
+        cards.pack(fill="x", pady=(0, 12))
+        self.cards = {
+            "applied": StatCard(cards, "Отправлено", GREEN),
+            "letters": StatCard(cards, "С письмом", ACCENT),
+            "rejections": StatCard(cards, "Отказов в чатах", STAT_COLORS["rejections"]),
+            "share": StatCard(cards, "Отказов на 100 откликов", AMBER),
+        }
+        for i, card in enumerate(self.cards.values()):
+            cards.grid_columnconfigure(i, weight=1, uniform="stats")
+            card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
+
+        self.scroll = ScrollFrame(self, fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True)
+        self.charts: list[ChartCard] = []
+        saved = app.prefs.get("stats_charts")
+        for config in saved if isinstance(saved, list) else DEFAULT_CHARTS:
+            if isinstance(config, dict):
+                self._add_card(config)
+
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(fill="x", pady=(10, 0))
+        ctk.CTkButton(footer, text="Очистить статистику…", height=30, corner_radius=10, fg_color="transparent",
+                      border_width=1, border_color=RED, text_color=RED, hover_color=ACCENT_SOFT,
+                      command=self.clear).pack(side="right")
+        self.info = SelectableText(footer, "", color=MUTED, size=12, bg=MAIN_BG, width_px=620)
+        self.info.pack(side="left", fill="x", expand=True, padx=(0, 12))
+
+    # ---------- данные ----------
+
+    def refresh(self) -> None:
+        cfg = self.app.cfg
+        store = StatsStore(self.app.root_dir, cfg.stats.keep_days)
+        self.days = store.load()  # в первый раз — посчитает дни по уже накопленной истории откликов
+        period = STAT_PERIODS[self.period.get()]
+        rows = buckets(self.days, period, STAT_STEPS[self.step.get()])
+        total = totals(self.days, period)
+        with frozen(self):
+            if cfg.stats.disabled and not self.notice.winfo_manager():
+                self.notice.pack(fill="x", pady=(0, 12), before=self.toolbar)
+            elif not cfg.stats.disabled and self.notice.winfo_manager():
+                self.notice.pack_forget()
+            applied = total.get("applied", 0)
+            self.cards["applied"].set(_num(applied))
+            self.cards["letters"].set(f"{_num(total.get('letters', 0))}" + (
+                f"  ({total.get('letters', 0) * 100 / applied:.0f}%)" if applied else ""))
+            self.cards["rejections"].set(_num(total.get("rejections", 0)))
+            self.cards["share"].set(f"{total.get('rejections', 0) * 100 / applied:.0f}" if applied else "—")
+            for card in self.charts:
+                card.refresh(rows)
+        keep = f"старше {cfg.stats.keep_days} дн. удаляется само" if cfg.stats.keep_days else "хранится без срока"
+        size = f"{store.size() / 1024:.1f}".replace(".", ",")
+        self.info.set(f"Дней в статистике: {len(self.days)} · {size} КБ · data/stats.json в папке данных · {keep}")
+
+    def _view_changed(self) -> None:
+        self.app.save_prefs(stats_period=self.period.get(), stats_step=self.step.get())
+        self.refresh()
+
+    # ---------- графики ----------
+
+    def _add_card(self, config: dict) -> ChartCard:
+        card = ChartCard(self.scroll, self, config)
+        card.pack(fill="x", pady=(0, 12), padx=(0, 6))
+        self.charts.append(card)
+        return card
+
+    def add_chart(self) -> None:
+        with frozen(self):
+            card = self._add_card({"title": "", "metrics": ["applied"], "kind": "bar"})
+            card.refresh(buckets(self.days, STAT_PERIODS[self.period.get()], STAT_STEPS[self.step.get()]))
+            card.toggle_editor()
+        self.save_charts()
+        self.after(50, lambda: self.scroll._parent_canvas.yview_moveto(1.0))
+
+    def remove_chart(self, card: ChartCard) -> None:
+        if card in self.charts:
+            with frozen(self):
+                self.charts.remove(card)
+                card.destroy()
+            self.save_charts()
+
+    def save_charts(self) -> None:
+        self.app.save_prefs(stats_charts=[card.config for card in self.charts])
+
+    # ---------- очистка и включение ----------
+
+    def clear(self) -> None:
+        if not messagebox.askyesno(APP_NAME, "Удалить всю статистику?\n\nГрафики начнутся с нуля. Таблица "
+                                             "откликов (Excel) и журналы останутся.",
+                                   yes="Удалить статистику", no="Отмена", danger=True):
+            return
+        StatsStore(self.app.root_dir, self.app.cfg.stats.keep_days).clear()
+        self.refresh()
+        self.app.toast("Статистика очищена")
+
+    def enable(self) -> None:
+        try:
+            cfg = self.app.read_config_file(check_search_url=False)
+            cfg.stats.disabled = False
+            save_config(cfg, self.app.config_path)
+        except ConfigError as e:
+            messagebox.showerror(APP_NAME, f"Не сохранено: {e}")
+            return
+        self.app.reload_config()
+        self.refresh()
+
+
 class App(ctk.CTk):
     def __init__(self):
         self.root_dir = app_root()
@@ -1497,6 +1852,8 @@ class App(ctk.CTk):
         ctk.set_appearance_mode(self.prefs.get("appearance", "system"))
         ctk.set_default_color_theme("blue")
         super().__init__(fg_color=MAIN_BG)
+        theme_switch.install(self)  # смена темы одним кадром, скрытые страницы — в фоне
+        install_editing(self)  # Ctrl+C/V/X/A/Z в любой раскладке, отмена в полях, меню правой кнопки
 
         self.title(f"{APP_NAME} — автоотклики hh.ru")
         self.geometry("1180x800")
@@ -1518,6 +1875,8 @@ class App(ctk.CTk):
         self.update_release: updater.Release | None = None  # найденная новая версия
         self.update_root: Path | None = None  # скачанная и распакованная новая версия
         self.update_busy = False
+        self.chain_chats = False  # после откликов по расписанию — прочитать чаты
+        self.schedule_since = datetime.now()  # время до этой минуты по расписанию уже не запускаем
         self.cfg = self.read_config_file(check_search_url=False)
         self.xlsx_path = self.root_dir / "logs" / "responses.xlsx"
         self.summary = load_summary(self.root_dir)
@@ -1540,6 +1899,7 @@ class App(ctk.CTk):
         if is_frozen():  # остатки прошлого обновления — когда программа обновления точно закрылась
             threading.Thread(target=lambda: (time.sleep(20), updater.cleanup()), daemon=True).start()
         self.after(4000, self.check_updates)
+        self.after(3000, self._schedule_tick)
 
     # ---------- построение окна ----------
 
@@ -1552,16 +1912,25 @@ class App(ctk.CTk):
         ctk.CTkLabel(bar, text="автоотклики на hh.ru", text_color=MUTED).pack(anchor="w", padx=22, pady=(0, 22))
 
         self.nav: dict[str, ctk.CTkButton] = {}
-        for key, text in (("responses", "➤   Отклики"), ("chats", "✉   Чаты"), ("ai", "✦   Проверка ИИ"),
-                          ("settings", "⚙   Настройки"), ("journals", "☰   Журналы")):
-            button = ctk.CTkButton(bar, text=text, anchor="w", height=42, corner_radius=10, fg_color="transparent",
-                                   text_color=TEXT, hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=15),
+        # значки нарисованы (theme.py), а не символами шрифта: одного размера и толщины, у выбранного — цвет акцента
+        self.nav_icons: dict[str, tuple[ctk.CTkImage, ctk.CTkImage]] = {}
+        for key, name, text in (("responses", "send", "Отклики"), ("chats", "chat", "Чаты"),
+                                ("stats", "chart", "Статистика"), ("ai", "sparkle", "Проверка ИИ"),
+                                ("settings", "gear", "Настройки"), ("journals", "journal", "Журналы")):
+            self.nav_icons[key] = (icon(name, 18, TEXT), icon(name, 18, ACCENT))
+            button = ctk.CTkButton(bar, text=f" {text}", image=self.nav_icons[key][0], compound="left", anchor="w",
+                                   height=42, corner_radius=10, fg_color="transparent", text_color=TEXT,
+                                   hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=15),
                                    command=lambda k=key: self.show_page(k))
             button.pack(fill="x", padx=12, pady=2)
             self.nav[key] = button
 
         spacer = ctk.CTkFrame(bar, fg_color="transparent")
         spacer.pack(fill="both", expand=True)
+        # «Автозапуск сегодня в 15:00» — видно с любой страницы; щелчок — к настройкам расписания
+        self.schedule_label = ctk.CTkLabel(bar, text="", image=icon("clock", 14, MUTED), compound="left",
+                                           text_color=MUTED, anchor="w", cursor="hand2", font=ctk.CTkFont(size=12))
+        self.schedule_label.bind("<Button-1>", lambda _e: self._open_schedule_settings())
 
         self.status = ctk.CTkLabel(bar, text="●  Готово", text_color=MUTED, anchor="w",
                                    font=ctk.CTkFont(size=14, weight="bold"))
@@ -1603,6 +1972,7 @@ class App(ctk.CTk):
             "ai": AiTestPage(main, self),
             "settings": SettingsPage(main, self),
             "journals": JournalsPage(main, self),
+            "stats": StatsPage(main, self),
         }
         self.console = Console(main, self)
         self.main = main
@@ -1614,8 +1984,12 @@ class App(ctk.CTk):
             for name, page in self.pages.items():
                 if name != key:
                     page.grid_forget()
-                self.nav[name].configure(fg_color=ACCENT_SOFT if name == key else "transparent")
+                self.nav[name].configure(fg_color=ACCENT_SOFT if name == key else "transparent",
+                                         text_color=ACCENT if name == key else TEXT,
+                                         image=self.nav_icons[name][name == key])
             page = self.pages[key]
+            theme_switch.ensure(page)
+            theme_switch.ensure(self.console)
             if key in ("responses", "chats"):
                 page.grid(row=0, column=0, sticky="new")
                 self.console.grid(row=1, column=0, sticky="nsew", pady=(18, 0))
@@ -1624,7 +1998,7 @@ class App(ctk.CTk):
                 page.grid(row=0, column=0, rowspan=2, sticky="nsew")
             if key == "settings":
                 page.load()
-            elif key in ("journals", "ai"):
+            elif key in ("journals", "ai", "stats"):
                 page.refresh()
 
     # ---------- настройки ----------
@@ -1637,11 +2011,15 @@ class App(ctk.CTk):
         return load_config(self.config_path, check_search_url=check_search_url)
 
     def reload_config(self) -> None:
+        before = self.cfg.schedule
         try:
             self.cfg = self.read_config_file(check_search_url=False)
         except ConfigError as e:
             messagebox.showerror(APP_NAME, f"Ошибка в config.toml: {e}")
             return
+        if self.cfg.schedule != before:  # включили или поменяли время — уже прошедшее сегодня не запускаем
+            self.schedule_since = datetime.now()
+        self._show_next_run()
         self.pages["responses"].refresh_config(self.cfg)
         self.pages["chats"].refresh_config(self.cfg)
         self.pages["ai"].invalidate()
@@ -1658,6 +2036,14 @@ class App(ctk.CTk):
             self.prefs_path.write_text(json.dumps(self.prefs, ensure_ascii=False), encoding="utf-8")
         except OSError:
             pass
+
+    def _windows_set_titlebar_color(self, color_mode: str) -> None:
+        """customtkinter перекрашивает заголовок окна, пряча окно и показывая его снова: окно мигает и
+        перерисовывается целиком — это и было «подвисание» при смене темы. Хватает перерисовать рамку."""
+        if not getattr(self, "_window_exists", False):  # окно ещё не показано — как в customtkinter
+            super()._windows_set_titlebar_color(color_mode)
+            return
+        set_titlebar_dark(self, color_mode.lower() == "dark")
 
     def _set_appearance(self, label: str) -> None:
         mode = APPEARANCE[label]
@@ -1787,24 +2173,97 @@ class App(ctk.CTk):
             return
         self.destroy()  # новая версия ждёт, пока это окно закроется, и ставит себя на место старой
 
+    # ---------- расписание ----------
+
+    SCHEDULE_CATCH_UP = 3 * 3600  # запуск, отложенный из-за другой работы, догоняем в течение 3 часов
+
+    def _schedule_tick(self) -> None:
+        """Раз в 15 секунд: не пора ли запустить отклики по расписанию ([schedule])."""
+        self.after(15_000, self._schedule_tick)
+        self._show_next_run()
+        if not self.cfg.schedule.enabled or self.closing:
+            return
+        due = self._due_slot(datetime.now())
+        if due is None or (self.worker and self.worker.is_alive()):
+            return  # идёт работа — запустим, когда она закончится
+        self.schedule_since = due
+        self.toast("Запуск по расписанию")
+        self.start_responses(False, scheduled=True)
+
+    def _due_slot(self, now: datetime) -> datetime | None:
+        """Самое позднее время по расписанию между schedule_since и сейчас (не старше SCHEDULE_CATCH_UP)."""
+        sched, due = self.cfg.schedule, None
+        day = self.schedule_since.date()
+        while day <= now.date():
+            if str(day.isoweekday()) in sched.days:
+                for hour, minute in sched.slots():
+                    moment = datetime(day.year, day.month, day.day, hour, minute)
+                    if self.schedule_since < moment <= now and (now - moment).total_seconds() <= self.SCHEDULE_CATCH_UP:
+                        due = moment
+            day += timedelta(days=1)
+        return due
+
+    def _next_slot(self, now: datetime) -> datetime | None:
+        sched = self.cfg.schedule
+        for offset in range(8):
+            day = (now + timedelta(days=offset)).date()
+            if str(day.isoweekday()) not in sched.days:
+                continue
+            for hour, minute in sched.slots():
+                moment = datetime(day.year, day.month, day.day, hour, minute)
+                if moment > now:
+                    return moment
+        return None
+
+    def _show_next_run(self) -> None:
+        """Строка в меню слева: когда следующий запуск по расписанию."""
+        text = ""
+        if self.cfg.schedule.enabled:
+            now = datetime.now()
+            if self.worker and self.worker.is_alive() and self._due_slot(now):
+                text = "Автозапуск — после этой работы"
+            else:
+                moment = self._next_slot(now)
+                if moment is not None:
+                    days = (moment.date() - now.date()).days
+                    when = ("сегодня" if days == 0 else "завтра" if days == 1
+                            else WEEKDAYS[str(moment.isoweekday())].lower())
+                    text = f"Автозапуск {when} в {moment:%H:%M}"
+        if text and self.schedule_label.cget("text") != f" {text}":
+            self.schedule_label.configure(text=f" {text}")
+        if bool(text) != bool(self.schedule_label.winfo_manager()):
+            if text:
+                self.schedule_label.pack(fill="x", padx=22, pady=(0, 12), before=self.status)
+            else:
+                self.schedule_label.pack_forget()
+
+    def _open_schedule_settings(self) -> None:
+        self.show_page("settings")
+        self.pages["settings"].show_tab("Расписание")
+
     # ---------- запуск и остановка ----------
 
-    def start_responses(self, dry_run: bool) -> None:
+    def start_responses(self, dry_run: bool, scheduled: bool = False) -> None:
         page: ResponsesPage = self.pages["responses"]
         cfg = self._config_for_run()
         if cfg is None:
             return
-        try:
-            limit = int(page.limit.get()) if page.limit.get().strip() else cfg.limits.max_responses
-            start_page = max(int(page.start_page.get() or 1), 1)
-        except ValueError:
-            messagebox.showerror(APP_NAME, "«Откликов» и «со страницы» должны быть числами")
-            return
-        opts = RunOptions(dry_run=dry_run, limit=limit, start_page=start_page - 1, retry_skipped=bool(page.retry.get()))
+        if scheduled:  # без человека: лимит и прочее — из настроек, а не из полей на странице
+            limit, start_page, retry = cfg.limits.max_responses, 1, False
+        else:
+            try:
+                limit = int(page.limit.get()) if page.limit.get().strip() else cfg.limits.max_responses
+                start_page = max(int(page.start_page.get() or 1), 1)
+            except ValueError:
+                messagebox.showerror(APP_NAME, "«Откликов» и «со страницы» должны быть числами")
+                return
+            retry = bool(page.retry.get())
+        opts = RunOptions(dry_run=dry_run, limit=limit, start_page=start_page - 1, retry_skipped=retry)
         self.stats = Stats()
         self.run_limit = limit
+        self.chain_chats = scheduled and cfg.schedule.chats_after
         page.update_stats(self.stats, limit)
-        title = "Пробный прогон" if dry_run else "Отклики"
+        title = "Пробный прогон" if dry_run else "Автозапуск" if scheduled else "Отклики"
         self._start("responses", title, "run", lambda log_path: run_responses(cfg, opts, self.root_dir, self.stats,
                                                                                log_path))
 
@@ -1893,9 +2352,16 @@ class App(ctk.CTk):
         else:
             self._set_status("●  Остановлено с ошибкой", RED, "подробности в журнале")
         self.pages["responses"].current.configure(text=f"Последний запуск: {summary}")
+        if self.pages["stats"].winfo_ismapped():  # статистику смотрят прямо сейчас — с итогами этого запуска
+            self.pages["stats"].refresh()
         if self.closing:
             self.destroy()
             return
+        if kind == "responses" and self.chain_chats:  # по расписанию: следом — чаты (если отклики не остановили)
+            self.chain_chats = False
+            if code != EXIT_STOPPED:
+                self.after(3000, lambda: self.start_chats(False))
+        self._show_next_run()
         if kind in ("responses", "chats") and not self.prefs.get("notify_asked"):
             title = "Отклики" if kind == "responses" else "Чаты"
             self.after(400, lambda: self._ask_notify(f"{title}: {summary}"))

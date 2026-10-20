@@ -53,10 +53,11 @@ _COLLECT_JS = """
 SEARCH_PAGE = "https://hh.ru/search/vacancy"
 
 
-def build_search_url(cfg) -> str:
-    """Ссылка выдачи для запуска: ссылка из настроек или общий поиск по запросу, плюс фильтры hh."""
+def build_search_url(cfg, text: str | None = None) -> str:
+    """Ссылка выдачи для запуска: ссылка из настроек или общий поиск по запросу, плюс фильтры hh.
+    text — один из запросов (по умолчанию первый)."""
     if cfg.search.mode == "query":
-        query = [("text", cfg.search.query.strip())]
+        query = [("text", text if text is not None else (cfg.search.queries or [""])[0])]
         if cfg.search.area:
             query.append(("area", cfg.search.area))
         if cfg.search.title_only:
@@ -68,14 +69,30 @@ def build_search_url(cfg) -> str:
     return hh_filters.apply(url, cfg.hh_filters)
 
 
+def search_urls(cfg) -> list[tuple[str, str]]:
+    """Все выдачи одного запуска: (подпись, ссылка). По запросу — своя выдача на каждую строку query."""
+    if cfg.search.mode == "query":
+        return [(f"запрос «{text}»", build_search_url(cfg, text)) for text in cfg.search.queries]
+    return [("ссылка из настроек", build_search_url(cfg))]
+
+
 def describe_search(cfg) -> str:
     if cfg.search.mode == "query":
         from .config import AREAS
 
         area = AREAS.get(cfg.search.area, f"регион {cfg.search.area}")
         where = "в названии" if cfg.search.title_only else "везде"
-        return f"запрос «{cfg.search.query.strip()}» ({area}, искать {where})"
+        queries = cfg.search.queries or [""]
+        if len(queries) == 1:
+            return f"запрос «{queries[0]}» ({area}, искать {where})"
+        shown = ", ".join(f"«{q}»" for q in queries[:3]) + ("…" if len(queries) > 3 else "")
+        return f"{_plural(len(queries), 'запрос', 'запроса', 'запросов')}: {shown} ({area}, искать {where})"
     return f"ссылка: {cfg.search_url}"
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    word = one if n % 10 == 1 and n % 100 != 11 else few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+    return f"{n} {word}"
 
 
 def apply_hh_filters(search_url: str, filters: hh_filters.HhFilters) -> str:

@@ -14,6 +14,7 @@ import customtkinter as ctk
 
 from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, MUTED, RED,
                     RED_HOVER, TEXT, apply_app_icon, badge)
+from .widgets import SelectableText
 
 _DEFAULT_TITLE = {"info": APP_NAME, "success": "Готово", "warning": "Обратите внимание",
                   "error": "Что-то пошло не так", "question": "Подтвердите"}
@@ -74,9 +75,9 @@ class Dialog(ctk.CTkToplevel):
         if title:
             ctk.CTkLabel(column, text=title, font=ctk.CTkFont(size=17, weight="bold"), text_color=TEXT,
                          anchor="w", justify="left", wraplength=wrap).pack(fill="x", pady=(2, 0))
-        if message:
-            ctk.CTkLabel(column, text=message, font=ctk.CTkFont(size=13), text_color=MUTED if title else TEXT,
-                         anchor="w", justify="left", wraplength=wrap).pack(fill="x", pady=(6 if title else 2, 0))
+        if message:  # текст сообщения можно выделить и скопировать (например, текст ошибки)
+            SelectableText(column, message, color=MUTED if title else TEXT, size=13,
+                           width_px=wrap).pack(fill="x", pady=(6 if title else 2, 0))
         if link:
             text, command = link
             label = ctk.CTkLabel(column, text=text, text_color=ACCENT, cursor="hand2", anchor="w",
@@ -129,10 +130,22 @@ class Dialog(ctk.CTkToplevel):
         self.deiconify()
         self.lift()
         self.after(10, self._focus)
+        self.after(40, self._settle)
         try:
             self.grab_set()
         except tkinter.TclError:  # окно ещё не показано — повторим чуть позже
             self.after(50, lambda: self.winfo_exists() and self.grab_set())
+
+    def _settle(self) -> None:
+        """На экране текст перенёсся по настоящей ширине — если строк вышло больше или меньше оценки,
+        подгоняем высоту окна (верх остаётся на месте)."""
+        if not self.winfo_exists():
+            return
+        self.update_idletasks()
+        h = self.winfo_reqheight()
+        if abs(h - self.winfo_height()) > 2:
+            position = tkinter.Toplevel.geometry(self).split("+", 1)[1]
+            tkinter.Toplevel.geometry(self, f"{self.winfo_width()}x{h}+{position}")
 
     def _focus(self) -> None:
         if self.winfo_exists():
