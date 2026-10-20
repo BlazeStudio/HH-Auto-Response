@@ -27,7 +27,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Автоотклики на вакансии hh.ru")
     p.add_argument("--config", type=Path, default=ROOT / "config.toml", help="путь к config.toml")
     p.add_argument("--url", help="ссылка на поиск вакансий (вместо search_url из config)")
-    p.add_argument("--query", help="общий поиск hh по запросу, например \"python разработчик\" (вместо ссылки)")
+    p.add_argument("--query", action="append",
+                   help="общий поиск hh по запросу, например \"python разработчик\" (вместо ссылки); "
+                        "можно несколько раз: --query python --query django")
     p.add_argument("--resume", help="ссылка на резюме для проверки (вместо resume_url из config)")
     p.add_argument("--dry-run", action="store_true", help="пройти выдачу и показать вакансии, не откликаясь")
     p.add_argument("--limit", type=int, help="максимум откликов за запуск (вместо [limits] max_responses)")
@@ -52,7 +54,7 @@ def main() -> int:
         if args.url:
             cfg.search_url, cfg.search.mode = args.url, "resume"
         if args.query:
-            cfg.search.query, cfg.search.mode = args.query, "query"
+            cfg.search.query, cfg.search.mode = "\n".join(args.query), "query"
         validate_search_source(cfg)
         if args.resume:
             cfg.resume_url = args.resume

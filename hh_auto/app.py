@@ -22,6 +22,7 @@ from .search import describe_search
 from .runner import RunOptions, Stats, log_summary, run
 from .results import ResultsBook, log_totals
 from .state import State
+from .stats import chats_counts, record as record_stats, responses_counts
 
 EXIT_OK, EXIT_FATAL, EXIT_STOPPED = 0, 1, 130
 
@@ -51,6 +52,7 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
     results = ResultsBook(root)
     started = time.monotonic()
     prune_snapshots(log_dir / "snapshots", cfg.logs.keep_days)
+    log_config_notes(cfg)
     log.info(f"поиск: {describe_search(cfg)}")
 
     def work(page):
@@ -62,6 +64,8 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
 
     code = _with_browser(cfg, root, work)
     log_summary(stats, time.monotonic() - started)
+    if not opts.dry_run:  # вкладка «Статистика»: только числа за день
+        record_stats(root, cfg, responses_counts(stats, time.monotonic() - started))
     summary = results.summary()
     log_totals(summary)
     notify_summary(cfg, f"Отклики: {_ending(code)}",
@@ -71,6 +75,18 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
         log.info(f"таблица откликов (Excel): {results.xlsx_path}")
     log.info(f"подробный лог: {log_path}")
     return code
+
+
+def log_config_notes(cfg: Config) -> None:
+    """Что программа сделала с config.toml при загрузке: дописала новые параметры, пропустила незнакомые."""
+    added = getattr(cfg, "added", [])
+    if added:
+        log.info(f"config.toml дополнен новыми параметрами ({len(added)}): {', '.join(added[:8])}"
+                 + ("…" if len(added) > 8 else "") + ". Прежний файл — config.toml.bak")
+    ignored = getattr(cfg, "ignored", [])
+    if ignored:
+        log.warning(f"в config.toml есть незнакомые программе параметры — пропускаю: {', '.join(ignored)} "
+                    "(от другой версии или опечатка)")
 
 
 def _ending(code: int) -> str:
@@ -123,8 +139,11 @@ def _form_ai(page, cfg: Config, root: Path):
 def run_chats(cfg: Config, dry_run: bool, root: Path, stats: ChatStats, log_path: Path) -> int:
     """Прочитать отказы в чатах. Возвращает код завершения."""
     started = time.monotonic()
+    log_config_notes(cfg)
     code = _with_browser(cfg, root, lambda page: read_rejections(page, cfg, dry_run, stats, root))
     log_chat_summary(stats, time.monotonic() - started)
+    if not dry_run:
+        record_stats(root, cfg, chats_counts(stats, time.monotonic() - started))
     notify_summary(cfg, f"Чаты: {_ending(code)}",
                    f"Прочитано отказов {stats.opened}, ответов ИИ {stats.answered}, "
                    f"ждут вашего ответа {len(stats.other_unread)}.")

@@ -16,10 +16,10 @@ from .browser import FatalError
 from .config import Config
 from .logger import log
 from .responder import MOVED, Responder, Result, Status
-from .search import (Vacancy, build_search_url, collect_vacancies, describe_hh_filters, next_page_info,
-                     open_results_page, results_page_url, wait_all_cards)
+from .search import (Vacancy, collect_vacancies, describe_hh_filters, next_page_info, open_results_page,
+                     results_page_url, search_urls, wait_all_cards)
 from .results import ResultsBook
-from .state import State
+from .state import State, company_key
 
 
 RESCANS = 2  # сколько раз дособрать вакансии, которые hh подвинул на текущую страницу
@@ -64,8 +64,11 @@ def run(
         f"  лимит на этот запуск: {max_responses} откликов, пауза между вакансиями "
         f"{limits.delay_min:g}–{limits.delay_max:g} с, страниц выдачи максимум {limits.max_pages}"
     )
-    search_url = build_search_url(cfg)
-    log.info(f"  фильтры hh: {describe_hh_filters(search_url)}")
+    searches = search_urls(cfg)
+    log.info(f"  фильтры hh: {describe_hh_filters(searches[0][1])}")
+    if limits.per_company:
+        log.info(f"  в одну компанию — не больше {limits.per_company} откл. за {limits.per_company_days} дн. "
+                 "([limits] per_company)")
     # Нейросеть для писем и анкет — только если вы их включали. Включённый [ai_filter] тоже создаёт
     # нейросеть, но письма от этого писать ей нельзя: резюме для фильтра даже не загружается.
     responder_ai = ai if (cfg.ai.enabled or cfg.letter.mode == "ai") else None
@@ -73,10 +76,16 @@ def run(
     errors_in_row = 0
     filters_warned = False
     criteria_key = _criteria_key(cfg)
+    handled: set[str] = set()  # вакансии этого запуска: в выдаче другого запроса их второй раз не смотрим
+    planned: Counter = Counter()  # пробный прогон: «откликнулись бы» по компаниям — для лимита per_company
 
     def handle(vac: Vacancy, tag: str, url: str) -> bool:
         """Одна вакансия: фильтры → отклик → итог. False — запуск пора заканчивать."""
         nonlocal errors_in_row
+        if vac.id in handled:
+            log.debug(f"{tag} «{vac.title}» — уже была в этом запуске")
+            return True
+        handled.add(vac.id)
         seen = state.seen(vac.id, opts.retry_skipped)
         if seen and _ai_skip_outdated(state, vac.id, cfg, criteria_key):
             seen = None  # отказ ИИ-фильтра по старому описанию (или фильтр выключили) — смотрим заново
@@ -109,6 +118,13 @@ def run(
                 stats.skipped["нет нужных слов ([filters] include_words)"] += 1
                 log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
                 return True
+        if limits.per_company and vac.company:
+            sent = state.company_applied(vac.company, limits.per_company_days) + planned[company_key(vac.company)]
+            if sent >= limits.per_company:
+                stats.skipped[f"лимит откликов в одну компанию ([limits] per_company)"] += 1
+                log.info(f"{tag} «{vac.title}» — в «{vac.company}» уже {sent} откл. за {limits.per_company_days} дн. "
+                         "([limits] per_company), пропускаю")
+                return True
         if cfg.ai_filter.enabled:
             ai_reason, rejected = _ai_skip_reason(cfg, ai, vac, tag)
             if ai_reason:
@@ -126,12 +142,15 @@ def run(
         log.info(f"  {vac.url}")
         if opts.dry_run:
             stats.dry_run += 1
+            planned[company_key(vac.company)] += 1
             log.info("  [dry-run] здесь был бы отклик")
             return True
 
         result = responder.apply(vac)
         if result.reason != MOVED:  # вакансию ещё не трогали — в таблицу её не пишем
             results.add(vac, result)
+        else:
+            handled.discard(vac.id)  # hh увёз её на другую страницу — встретим там и обработаем
         if result.status is Status.APPLIED:
             stats.applied += 1
             stats.with_letter += result.letter
@@ -166,54 +185,67 @@ def run(
         _sleep(limits.delay_min, limits.delay_max, "перед следующей вакансией")
         return True
 
-    for page_num in range(opts.start_page, limits.max_pages):
-        url = results_page_url(search_url, page_num)
-        log.info("")
-        log.info(f"━━━━━━━━━━ Страница выдачи №{page_num + 1} ━━━━━━━━━━")
-        vacancies = open_results_page(page, url)
-        if not vacancies:
-            log.info("  вакансий на странице нет — выдача закончилась")
-            return
-        can_respond = sum(v.can_respond for v in vacancies)
-        done_before = sum(1 for v in vacancies if state.seen(v.id, opts.retry_skipped))
-        log.success(
-            f"  ✓ подтянуто вакансий: {len(vacancies)}, с кнопкой «Откликнуться»: {can_respond}, "
-            f"обработаны в прошлых запусках: {done_before}"
-        )
-
-        skipped_before = sum(stats.skipped.values())
-        on_page = {v.id for v in vacancies}
-        batch = vacancies
-        for rescan in range(RESCANS + 1):
-            for i, vac in enumerate(batch, 1):
-                if not handle(vac, f"[стр. {page_num + 1}, {i}/{len(batch)}{'+' if rescan else ''}]", url):
-                    return
-            # После перезагрузки выдачи hh заново сортирует «подходящие к резюме»: часть вакансий уезжает
-            # на другие страницы, а на эту приезжают новые. Их проходим сразу, не дожидаясь следующего запуска.
-            if opts.dry_run or rescan == RESCANS or not responder.on_search_page():
-                break
-            wait_all_cards(page)
-            batch = [v for v in collect_vacancies(page) if v.id not in on_page]
-            on_page.update(v.id for v in batch)
-            fresh = [v for v in batch if v.can_respond and not state.seen(v.id, opts.retry_skipped)]
-            if not fresh:
-                break
+    def walk(search_url: str, start_page: int) -> bool:
+        """Одна выдача по страницам. False — запуск закончен (лимит откликов, лимит hh)."""
+        nonlocal filters_warned
+        for page_num in range(start_page, limits.max_pages):
+            url = results_page_url(search_url, page_num)
             log.info("")
-            log.info(f"  hh пересортировал выдачу: на этой странице появилось ещё {len(fresh)} новых вакансий — прохожу их")
+            log.info(f"━━━━━━━━━━ Страница выдачи №{page_num + 1} ━━━━━━━━━━")
+            vacancies = open_results_page(page, url)
+            if not vacancies:
+                log.info("  вакансий на странице нет — выдача закончилась")
+                return True
+            can_respond = sum(v.can_respond for v in vacancies)
+            done_before = sum(1 for v in vacancies if state.seen(v.id, opts.retry_skipped))
+            log.success(
+                f"  ✓ подтянуто вакансий: {len(vacancies)}, с кнопкой «Откликнуться»: {can_respond}, "
+                f"обработаны в прошлых запусках: {done_before}"
+            )
 
-        skipped_on_page = sum(stats.skipped.values()) - skipped_before
-        if skipped_on_page >= len(on_page) * 0.8 and not filters_warned:
-            filters_warned = True  # одного раза за запуск достаточно
-            log.warning(f"  ! на этой странице фильтры отсеяли {skipped_on_page} из {len(on_page)} вакансий — "
-                        "если откликов мало, проверьте [filters] (особенно «только со словами»)")
-        has_next, why = next_page_info(page, page_num)
-        if not has_next:
-            log.info(f"  выдача закончилась: {why}")
+            skipped_before = sum(stats.skipped.values())
+            on_page = {v.id for v in vacancies}
+            batch = vacancies
+            for rescan in range(RESCANS + 1):
+                for i, vac in enumerate(batch, 1):
+                    if not handle(vac, f"[стр. {page_num + 1}, {i}/{len(batch)}{'+' if rescan else ''}]", url):
+                        return False
+                # После перезагрузки выдачи hh заново сортирует «подходящие к резюме»: часть вакансий уезжает
+                # на другие страницы, а на эту приезжают новые. Их проходим сразу, не дожидаясь следующего запуска.
+                if opts.dry_run or rescan == RESCANS or not responder.on_search_page():
+                    break
+                wait_all_cards(page)
+                batch = [v for v in collect_vacancies(page) if v.id not in on_page]
+                on_page.update(v.id for v in batch)
+                fresh = [v for v in batch if v.can_respond and not state.seen(v.id, opts.retry_skipped)]
+                if not fresh:
+                    break
+                log.info("")
+                log.info(f"  hh пересортировал выдачу: на этой странице появилось ещё {len(fresh)} новых вакансий — прохожу их")
+
+            skipped_on_page = sum(stats.skipped.values()) - skipped_before
+            if skipped_on_page >= len(on_page) * 0.8 and not filters_warned:
+                filters_warned = True  # одного раза за запуск достаточно
+                log.warning(f"  ! на этой странице фильтры отсеяли {skipped_on_page} из {len(on_page)} вакансий — "
+                            "если откликов мало, проверьте [filters] (особенно «только со словами»)")
+            has_next, why = next_page_info(page, page_num)
+            if not has_next:
+                log.info(f"  выдача закончилась: {why}")
+                return True
+            log.info(f"  дальше: {why}")
+            _sleep(limits.page_delay_min, limits.page_delay_max, "перед следующей страницей выдачи")
+
+        log.info(f"Пройдено максимальное число страниц ([limits] max_pages = {limits.max_pages})")
+        return True
+
+    for number, (label, search_url) in enumerate(searches, 1):
+        if len(searches) > 1:
+            log.info("")
+            log.info(f"══════════ Поиск {number} из {len(searches)}: {label} ══════════")
+        if not walk(search_url, opts.start_page if number == 1 else 0):
             return
-        log.info(f"  дальше: {why}")
-        _sleep(limits.page_delay_min, limits.page_delay_max, "перед следующей страницей выдачи")
-
-    log.info(f"Пройдено максимальное число страниц ([limits] max_pages = {limits.max_pages})")
+        if number < len(searches):
+            _sleep(limits.page_delay_min, limits.page_delay_max, "перед следующим запросом")
 
 
 def log_summary(stats: Stats, elapsed: float) -> None:

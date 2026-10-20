@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import re
+import shutil
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import hh_filters
+from .config_file import toml_value, write_values
 from .hh_filters import HhFilters
 
 
@@ -28,6 +29,10 @@ class Limits:
     action_delay_min: float = 0.6  # пауза между кликами внутри одной вакансии
     action_delay_max: float = 1.6
     max_consecutive_errors: int = 5  # подряд идущих ошибок до аварийной остановки
+    # не больше стольких откликов в одну компанию за per_company_days дней (0 — без ограничения): крупная
+    # компания с десятком похожих вакансий не получит десяток одинаковых откликов
+    per_company: int = 0
+    per_company_days: int = 30
 
 
 SEARCH_MODES = ("resume", "query")
@@ -39,9 +44,22 @@ class Search:
     # resume — вакансии по ссылке search_url (обычно «подходящие к резюме»);
     # query  — общий поиск hh по тексту query
     mode: str = "resume"
-    query: str = ""  # как в строке поиска hh, например: python разработчик
+    # как в строке поиска hh, например: python разработчик. Несколько запросов — по одному на строку:
+    # за запуск пройдём их по очереди (общий лимит откликов), одинаковые вакансии не повторяются
+    query: str = ""
     area: str = ""  # регион hh: 1 — Москва, 2 — Санкт-Петербург, 113 — вся Россия; пусто — как в профиле hh
     title_only: bool = False  # искать запрос только в названии вакансии
+
+    @property
+    def queries(self) -> list[str]:
+        """Запросы по одному на строку, без пустых и повторов."""
+        seen, result = set(), []
+        for line in self.query.splitlines():
+            line = line.strip()
+            if line and line.lower() not in seen:
+                seen.add(line.lower())
+                result.append(line)
+        return result
 
 
 @dataclass
@@ -196,6 +214,38 @@ class Logs:
     keep_days: int = 14  # снимки старше стольких дней удаляются при запуске; 0 — хранить всё
 
 
+WEEKDAYS = {"1": "Пн", "2": "Вт", "3": "Ср", "4": "Чт", "5": "Пт", "6": "Сб", "7": "Вс"}
+
+
+@dataclass
+class Schedule:
+    # Отклики по расписанию, пока открыто приложение (для консольных скриптов — Планировщик задач Windows
+    # или cron, см. README). Время — по часам компьютера.
+    enabled: bool = False
+    times: list[str] = field(default_factory=lambda: ["10:00"])  # во сколько запускать: "10:00", "15:30"
+    days: list[str] = field(default_factory=lambda: ["1", "2", "3", "4", "5"])  # 1 — понедельник … 7 — воскресенье
+    chats_after: bool = False  # после откликов прочитать отказы в чатах (и ответить ботам, если включён ИИ)
+
+    def slots(self) -> list[tuple[int, int]]:
+        """Время запусков (часы, минуты) по порядку. Неверную запись не пропускает validate_config."""
+        return sorted({_parse_time(t) for t in self.times})
+
+
+def _parse_time(text: str) -> tuple[int, int]:
+    m = re.fullmatch(r"\s*(\d{1,2})[:.](\d{2})\s*", text)
+    if not m or int(m[1]) > 23 or int(m[2]) > 59:
+        raise ConfigError(f"[schedule] times: «{text}» — нужно время вида 09:30")
+    return int(m[1]), int(m[2])
+
+
+@dataclass
+class StatsSettings:
+    # [stats] — вкладка «Статистика»: только счётчики по дням (сколько отправлено, пропущено, отказов…),
+    # без названий вакансий и компаний; файл data/stats.json
+    disabled: bool = False  # true — не вести статистику: ничего не записывается
+    keep_days: int = 365  # дни старше удаляются сами; 0 — хранить всё
+
+
 @dataclass
 class Notify:
     # уведомление по итогам запуска (откликов отправлено, пропущено, ошибок). Включается только с вашего
@@ -225,6 +275,8 @@ class Config:
     hh_filters: HhFilters = field(default_factory=HhFilters)
     logs: Logs = field(default_factory=Logs)
     notify: Notify = field(default_factory=Notify)
+    schedule: Schedule = field(default_factory=Schedule)
+    stats: StatsSettings = field(default_factory=StatsSettings)
 
     @property
     def resume_id(self) -> str | None:
@@ -236,41 +288,78 @@ class Config:
         return parse_qs(urlparse(self.search_url).query).get("resume", [None])[0]
 
 
-def save_config(cfg: Config, path: Path) -> None:
-    """Сохраняет настройки в TOML (используется приложением; комментарии не сохраняются)."""
-    lines = [
-        "# Настройки HH-Auto-Response. Файл записан приложением; описание параметров — в config.example.toml",
-        "",
-    ]
-    top = {"search_url": cfg.search_url, "resume_url": cfg.resume_url,
-           "skip_on_resume_mismatch": cfg.skip_on_resume_mismatch}
-    lines += [f"{key} = {_toml_value(value)}" for key, value in top.items()]
+TOP_KEYS = ("search_url", "resume_url", "skip_on_resume_mismatch")
+
+
+def config_values(cfg: Config) -> dict[str, dict]:
+    """Настройки как {раздел: {параметр: значение}}, "" — параметры до первого раздела."""
+    values: dict[str, dict] = {"": {key: getattr(cfg, key) for key in TOP_KEYS}}
     for f in fields(cfg):
         section = getattr(cfg, f.name)
-        if not hasattr(section, "__dataclass_fields__"):
+        if hasattr(section, "__dataclass_fields__"):
+            values[f.name] = {sf.name: getattr(section, sf.name) for sf in fields(section)}
+    return values
+
+
+def _full_text(values: dict[str, dict]) -> str:
+    """Файл целиком, без комментариев — запасной путь, если править старый файл по строкам не вышло."""
+    lines = ["# Настройки HH-Auto-Response; описание параметров — в config.example.toml", ""]
+    lines += [f"{key} = {toml_value(value)}" for key, value in values.get("", {}).items()]
+    for section, keys in values.items():
+        if section:
+            lines += ["", f"[{section}]"] + [f"{key} = {toml_value(value)}" for key, value in keys.items()]
+    return "\n".join(lines) + "\n"
+
+
+def save_config(cfg: Config, path: Path) -> None:
+    """Сохраняет настройки, не трогая остального в файле: меняются только строки с другим значением,
+    комментарии и порядок остаются, недостающие параметры дописываются в свой раздел."""
+    from .paths import bundled
+
+    write_values(path, config_values(cfg), example=bundled("config.example.toml"), fallback=_full_text)
+
+
+def upgrade_config(path: Path) -> list[str]:
+    """После обновления программы: дописать в config.toml параметры, которых в нём ещё нет (со значениями
+    по умолчанию и пояснениями), ничего не меняя в остальном. Старый файл — в config.toml.bak.
+    Возвращает добавленные «раздел.параметр»; файл с ошибкой синтаксиса не трогает."""
+    if not path.exists():
+        return []
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
+        return []
+    defaults = config_values(Config(search_url=""))
+    old_filters = raw.get("filters", {})
+    missing: dict[str, dict] = {}
+    remove = []
+    for section, keys in defaults.items():
+        table = raw if section == "" else raw.get(section, {})
+        if not isinstance(table, dict):
             continue
-        lines += ["", f"[{f.name}]"]
-        lines += [f"{sf.name} = {_toml_value(getattr(section, sf.name))}" for sf in fields(section)]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for key, value in keys.items():
+            if key in table:
+                continue
+            if section == "hh_filters" and key in ("experience", "work_format") and key in old_filters:
+                value = old_filters[key]  # до 1.0.4 эти фильтры лежали в [filters] — переносим значение
+                remove.append(("filters", key))
+            missing.setdefault(section, {})[key] = value
+    if not missing:
+        return []
+    from .paths import bundled
+
+    shutil.copyfile(path, path.with_name(path.name + ".bak"))
+    return write_values(path, missing, example=bundled("config.example.toml"), remove=remove)
 
 
-def _toml_value(value) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
-    # JSON-строка — валидная базовая строка TOML (те же экранирования \" \\ \n \uXXXX)
-    return json.dumps(str(value), ensure_ascii=False)
-
-
-def _section(cls, data: dict, name: str):
+def _section(cls, data: dict, name: str, ignored: list[str] | None = None):
+    """Раздел настроек. Незнакомые параметры (от другой версии программы, опечатки) не мешают запуску —
+    они остаются в файле, а в ignored попадает их список для предупреждения."""
     known = {f.name for f in fields(cls)}
-    unknown = set(data) - known
-    if unknown:
-        raise ConfigError(f"[{name}]: неизвестные параметры {', '.join(sorted(unknown))}")
-    return cls(**data)
+    unknown = sorted(set(data) - known)
+    if unknown and ignored is not None:
+        ignored += [f"[{name}] {key}" for key in unknown]
+    return cls(**{key: value for key, value in data.items() if key in known})
 
 
 def _legacy_filters(raw: dict) -> dict:
@@ -296,7 +385,7 @@ def validate_search_url(search_url: str) -> None:
 def validate_search_source(cfg: Config) -> None:
     """Есть ли откуда брать вакансии: ссылка (mode = resume) или текст запроса (mode = query)."""
     if cfg.search.mode == "query":
-        if not cfg.search.query.strip():
+        if not cfg.search.queries:
             raise ConfigError("[search] mode = query, но запрос (query) пустой")
     else:
         validate_search_url(cfg.search_url)
@@ -307,32 +396,41 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
     if not path.exists():
         raise ConfigError(f"не найден {path}. Скопируйте туда config.example.toml и укажите ссылку поиска "
                           "(или настройте всё в приложении: python scripts/gui.py).")
+    try:  # новая версия программы — новые параметры дописываются в файл, остальное не трогается
+        added = upgrade_config(path)
+    except OSError:  # файл только для чтения (например, в Docker) — работаем со значениями по умолчанию
+        added = []
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: ошибка синтаксиса TOML: {e}") from e
 
+    ignored: list[str] = []
+    section = lambda cls, name, data=None: _section(cls, raw.pop(name, {}) if data is None else data, name, ignored)
     cfg = Config(
         search_url=raw.pop("search_url", "").strip(),
         resume_url=raw.pop("resume_url", "").strip(),
         skip_on_resume_mismatch=raw.pop("skip_on_resume_mismatch", True),
-        search=_section(Search, raw.pop("search", {}), "search"),
-        limits=_section(Limits, raw.pop("limits", {}), "limits"),
-        filters=_section(Filters, _legacy_filters(raw), "filters"),
-        letter=_section(Letter, raw.pop("letter", {}), "letter"),
-        questions=_section(Questions, raw.pop("questions", {}), "questions"),
-        relocation=_section(Relocation, raw.pop("relocation", {}), "relocation"),
-        chats=_section(Chats, raw.pop("chats", {}), "chats"),
-        ai=_section(Ai, raw.pop("ai", {}), "ai"),
-        ai_filter=_section(AiFilter, raw.pop("ai_filter", {}), "ai_filter"),
-        browser=_section(Browser, raw.pop("browser", {}), "browser"),
-        geo=_section(Geo, raw.pop("geo", {}), "geo"),
-        hh_filters=hh_filters.normalize(_section(HhFilters, raw.pop("hh_filters", {}), "hh_filters")),
-        logs=_section(Logs, raw.pop("logs", {}), "logs"),
-        notify=_section(Notify, raw.pop("notify", {}), "notify"),
+        search=section(Search, "search"),
+        limits=section(Limits, "limits"),
+        filters=section(Filters, "filters", _legacy_filters(raw)),
+        letter=section(Letter, "letter"),
+        questions=section(Questions, "questions"),
+        relocation=section(Relocation, "relocation"),
+        chats=section(Chats, "chats"),
+        ai=section(Ai, "ai"),
+        ai_filter=section(AiFilter, "ai_filter"),
+        browser=section(Browser, "browser"),
+        geo=section(Geo, "geo"),
+        hh_filters=hh_filters.normalize(section(HhFilters, "hh_filters")),
+        logs=section(Logs, "logs"),
+        notify=section(Notify, "notify"),
+        schedule=section(Schedule, "schedule"),
+        stats=section(StatsSettings, "stats"),
     )
-    if raw:
-        raise ConfigError(f"неизвестные параметры в config: {', '.join(sorted(raw))}")
+    ignored += sorted(raw)  # незнакомые разделы и параметры верхнего уровня
+    cfg.ignored = ignored  # для предупреждения в логе: файл не ломается, но опечатку стоит увидеть
+    cfg.added = added
     if check_search_url:
         validate_search_source(cfg)
     validate_config(cfg)
@@ -365,4 +463,17 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError("[ai_filter] max_snippet_chars не может быть отрицательным")
     if cfg.logs.keep_days < 0:
         raise ConfigError("[logs] keep_days не может быть меньше 0 (0 — хранить снимки всегда)")
+    if cfg.stats.keep_days < 0:
+        raise ConfigError("[stats] keep_days не может быть меньше 0 (0 — хранить статистику всегда)")
+    if cfg.limits.per_company < 0:
+        raise ConfigError("[limits] per_company не может быть меньше 0 (0 — без ограничения)")
+    if cfg.limits.per_company and cfg.limits.per_company_days < 1:
+        raise ConfigError("[limits] per_company_days — хотя бы 1 день")
+    for t in cfg.schedule.times:
+        _parse_time(t)
+    bad_days = [d for d in cfg.schedule.days if d not in WEEKDAYS]
+    if bad_days:
+        raise ConfigError(f"[schedule] days: «{bad_days[0]}» — дни недели числами: 1 — понедельник … 7 — воскресенье")
+    if cfg.schedule.enabled and not (cfg.schedule.times and cfg.schedule.days):
+        raise ConfigError("[schedule] включено, но не выбрано время или дни недели")
     cfg.geo.playwright_proxy()  # проверка формата прокси заранее
