@@ -555,16 +555,128 @@ def frozen(widget: tkinter.Misc, flush: bool = False):
 
 # ───────────────────── смена темы за один кадр ─────────────────────
 
+class _Snapshot:
+    """Картинка окна поверх него самого (только Windows): пока под ней перекрашиваются сотни элементов,
+    видна старая картинка, а не промежуточные кадры с чёрными и белыми углами. Отдельное окно без рамки,
+    не забирает фокус и пропускает щелчки мыши; снимок — только этого окна (PrintWindow), не экрана."""
+
+    def __init__(self, root: tkinter.Misc, alpha: int):
+        import ctypes
+        from ctypes import wintypes
+
+        self._ok = False
+        u, g = ctypes.windll.user32, ctypes.windll.gdi32
+        self.u, self.g, self.ct = u, g, ctypes
+        H, I = wintypes.HANDLE, ctypes.c_int
+        for fn, args, res in (
+            (u.GetParent, [H], H), (u.GetDC, [H], H), (u.ReleaseDC, [H, H], I),
+            (u.GetClientRect, [H, ctypes.POINTER(wintypes.RECT)], wintypes.BOOL),
+            (u.ClientToScreen, [H, ctypes.POINTER(wintypes.POINT)], wintypes.BOOL),
+            (u.PrintWindow, [H, H, wintypes.UINT], wintypes.BOOL),
+            (u.CreateWindowExW, [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, I, I, I, I,
+                                 H, H, H, ctypes.c_void_p], H),
+            (u.UpdateLayeredWindow, [H, H, ctypes.c_void_p, ctypes.c_void_p, H, ctypes.c_void_p, wintypes.DWORD,
+                                     ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
+            (u.ShowWindow, [H, I], wintypes.BOOL), (u.DestroyWindow, [H], wintypes.BOOL),
+            (u.SetWindowRgn, [H, H, wintypes.BOOL], I),
+            (g.CreateCompatibleDC, [H], H), (g.CreateCompatibleBitmap, [H, I, I], H),
+            (g.SelectObject, [H, H], H), (g.DeleteObject, [H], wintypes.BOOL), (g.DeleteDC, [H], wintypes.BOOL),
+            (g.CreateRoundRectRgn, [I, I, I, I, I, I], H),
+        ):
+            fn.argtypes, fn.restype = args, res
+
+        class BLEND(ctypes.Structure):
+            _fields_ = [("op", ctypes.c_ubyte), ("flags", ctypes.c_ubyte), ("alpha", ctypes.c_ubyte),
+                        ("format", ctypes.c_ubyte)]
+
+        self.BLEND = BLEND
+        self.frame = u.GetParent(root.winfo_id())  # настоящее окно Windows вокруг Tk-окна
+        rect, origin = wintypes.RECT(), wintypes.POINT(0, 0)
+        u.GetClientRect(self.frame, ctypes.byref(rect))
+        u.ClientToScreen(self.frame, ctypes.byref(origin))
+        self.size = (rect.right - rect.left, rect.bottom - rect.top)
+        self.origin = (origin.x, origin.y)
+        width, height = self.size
+        if width <= 0 or height <= 0:
+            return
+        screen = u.GetDC(None)
+        self.mem = g.CreateCompatibleDC(screen)
+        self.bitmap = g.CreateCompatibleBitmap(screen, width, height)
+        self.old = g.SelectObject(self.mem, self.bitmap)
+        self.hwnd = None
+        try:
+            if not u.PrintWindow(self.frame, self.mem, 0x1 | 0x2):  # PW_CLIENTONLY | PW_RENDERFULLCONTENT
+                return
+            # WS_EX_LAYERED | WS_EX_TRANSPARENT (щелчки — сквозь) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE; WS_POPUP;
+            # владелец — наше окно: снимок всегда над ним и только над ним
+            self.hwnd = u.CreateWindowExW(0x80000 | 0x20 | 0x80 | 0x8000000, "Static", None, 0x80000000,
+                                          origin.x, origin.y, width, height, self.frame, None, None, None)
+            if not self.hwnd:
+                return
+            if sys.getwindowsversion().build >= 22000 and root.state() != "zoomed":
+                # у Windows 11 нижние углы окна скруглены — у снимка тоже, иначе мелькнут квадратные уголки
+                radius = round(8 * root.winfo_fpixels("1i") / 96) * 2
+                u.SetWindowRgn(self.hwnd, g.CreateRoundRectRgn(0, -radius, width + 1, height + 1, radius, radius),
+                               False)
+            blend = BLEND(0, 0, alpha, 0)
+            position, size, source = wintypes.POINT(*self.origin), wintypes.SIZE(width, height), wintypes.POINT(0, 0)
+            if not u.UpdateLayeredWindow(self.hwnd, screen, ctypes.byref(position), ctypes.byref(size), self.mem,
+                                         ctypes.byref(source), 0, ctypes.byref(blend), 0x2):  # ULW_ALPHA
+                return
+            u.ShowWindow(self.hwnd, 4)  # SW_SHOWNOACTIVATE — фокус остаётся у окна
+            self._ok = True
+        finally:
+            u.ReleaseDC(None, screen)
+            if not self._ok:
+                self.close()
+
+    def __bool__(self) -> bool:
+        return self._ok
+
+    def set_alpha(self, alpha: int) -> None:
+        if self.hwnd:
+            blend = self.BLEND(0, 0, max(0, min(255, alpha)), 0)
+            self.u.UpdateLayeredWindow(self.hwnd, None, None, None, None, None, 0, self.ct.byref(blend), 0x2)
+
+    def close(self) -> None:
+        if getattr(self, "hwnd", None):
+            self.u.DestroyWindow(self.hwnd)
+            self.hwnd = None
+        if getattr(self, "mem", None):
+            self.g.SelectObject(self.mem, self.old)
+            self.g.DeleteObject(self.bitmap)
+            self.g.DeleteDC(self.mem)
+            self.mem = None
+        self._ok = False
+
+
+def _dwm_flush() -> None:
+    """Дождаться, пока Windows покажет на экране то, что уже нарисовано (один кадр)."""
+    try:
+        import ctypes
+
+        ctypes.windll.dwmapi.DwmFlush()
+    except (OSError, AttributeError):
+        pass
+
+
 class theme_switch:
-    """Светлая ↔ тёмная без подвисания. customtkinter перекрашивает все ~500 элементов разом, и 90% из них —
-    на скрытых страницах и вкладках (0,3–0,45 с). Здесь видимое перекрашивается сразу и показывается одним
-    кадром, а скрытое — понемногу в фоне (окно отвечает). Если скрытую страницу открыли раньше, чем фон
-    дошёл до неё, она докрашивается перед показом (ensure)."""
+    """Светлая ↔ тёмная плавно и без подвисания. customtkinter перекрашивает все ~500 элементов разом, и 90% из
+    них — на скрытых страницах и вкладках (0,3–0,45 с), а Windows показывает перерисовку по кускам: вокруг
+    скруглённых карточек мелькают чёрные и белые углы. Здесь поверх окна кладётся его снимок, видимое
+    перекрашивается под ним, и снимок плавно растворяется (FADE) — старая тема перетекает в новую. Скрытое
+    докрашивается понемногу в фоне, когда переход закончился; если скрытую страницу открыли раньше, она
+    докрашивается перед показом (ensure)."""
 
     _root: tkinter.Misc | None = None
     _pending: list = []
     _job = None
+    _overlay: "_Snapshot | None" = None
+    _fade_job = None
+    _timer = False  # точный таймер включён на время фоновой докраски
     BUDGET = 0.012  # сек на порцию фоновой перекраски — меньше кадра
+    FADE = 0.22  # сек на переход
+    PEAK = 255  # непрозрачность снимка в начале перехода (проверки ставят 0 — снимок не виден)
 
     @classmethod
     def install(cls, root: tkinter.Misc) -> None:
@@ -593,15 +705,69 @@ class theme_switch:
             alive = root is not None and bool(root.winfo_exists())
         except tkinter.TclError:
             alive = False
+        cls._end_fade()  # прошлый переход ещё идёт — завершаем, снимаем окно уже в нынешнем виде
+        overlay = cls._snapshot(root) if alive else None
         if alive:
-            with frozen(root, flush=True):  # всё видимое меняется на экране разом
+            with frozen(root, flush=True):  # под снимком: всё видимое перекрашивается и дорисовывается
                 for callback in visible:
                     cls._call(callback, mode)
         else:
             for callback in visible:
                 cls._call(callback, mode)
         cls._pending = hidden
-        cls._schedule()
+        if overlay:
+            _dwm_flush()  # новая тема уже на экране под снимком — можно растворять
+            cls._overlay = overlay
+            precise_timer.acquire()
+            cls._fade(overlay, __import__("time").perf_counter())
+        else:
+            cls._schedule()
+
+    @classmethod
+    def _snapshot(cls, root) -> "_Snapshot | None":
+        if sys.platform != "win32" or cls.FADE <= 0:
+            return None
+        try:
+            if not root.winfo_viewable() or root.state() in ("iconic", "withdrawn"):
+                return None
+            overlay = _Snapshot(root, cls.PEAK)
+        except Exception:  # нет снимка — просто перекрашиваем, как раньше
+            return None
+        if not overlay:
+            return None
+        _dwm_flush()  # снимок уже на экране — под ним можно менять что угодно
+        return overlay
+
+    @classmethod
+    def _fade(cls, overlay: "_Snapshot", started: float) -> None:
+        import time
+
+        cls._fade_job = None
+        progress = (time.perf_counter() - started) / cls.FADE
+        if progress >= 1 or cls._overlay is not overlay:
+            cls._end_fade()
+            return
+        eased = progress * progress * (3 - 2 * progress)  # плавно в начале и в конце
+        overlay.set_alpha(round(cls.PEAK * (1 - eased)))
+        try:
+            cls._fade_job = cls._root.after(8, cls._fade, overlay, started)
+        except (tkinter.TclError, AttributeError):
+            cls._end_fade()
+
+    @classmethod
+    def _end_fade(cls) -> None:
+        if cls._overlay is None:
+            return
+        overlay, cls._overlay = cls._overlay, None
+        if cls._fade_job is not None:
+            try:
+                cls._root.after_cancel(cls._fade_job)
+            except (tkinter.TclError, AttributeError):
+                pass
+            cls._fade_job = None
+        overlay.close()
+        precise_timer.release()
+        cls._schedule()  # скрытые страницы — уже после перехода, чтобы он шёл ровно
 
     @staticmethod
     def _call(callback, mode: str) -> None:
@@ -612,11 +778,18 @@ class theme_switch:
 
     @classmethod
     def _schedule(cls) -> None:
-        if cls._pending and cls._job is None and cls._root is not None:
+        if cls._pending and cls._job is None and cls._root is not None and cls._overlay is None:
+            if not cls._timer:  # без точного таймера after(1) срабатывает раз в 15,6 мс — фон шёл бы втрое дольше
+                cls._timer = True
+                precise_timer.acquire()
             try:
                 cls._job = cls._root.after(1, cls._drain)
+                return
             except tkinter.TclError:
                 cls._pending = []
+        if not cls._pending and cls._timer:
+            cls._timer = False
+            precise_timer.release()
 
     @classmethod
     def _drain(cls) -> None:
