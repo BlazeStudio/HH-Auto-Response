@@ -176,6 +176,9 @@ class Browser:
     profile_dir: str = "browser-profile"
     slow_mo: int = 0
     login_timeout: int = 600  # сколько ждать ручного входа, сек
+    # Windows: окно браузера работает за краем экрана — не мешает, а что он делает, видно в приложении
+    # (превью слева). Для входа в hh и капчи окно показывается само; «Показать браузер» — в любой момент
+    hide_window: bool = True
 
 
 @dataclass

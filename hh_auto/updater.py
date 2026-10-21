@@ -151,9 +151,14 @@ def update_dir() -> Path:
 
 
 def download(release: Release, progress: Callable[[int, int], None] | None = None, timeout: float = 30) -> Path:
-    """Скачать архив, сверить контрольную сумму, распаковать. Возвращает новую версию (папку или .app)."""
-    folder = update_dir()
-    _remove(folder)
+    """Скачать архив, сверить контрольную сумму, распаковать. Возвращает новую версию (папку или .app).
+
+    Каждая загрузка — в свою новую папку update/<версия>-<время>. Раньше это была всегда update/new, и если
+    в ней что-то было занято (антивирус проверял свежие файлы, ещё работал установщик прошлого обновления
+    или второй копии программы), распаковка поверх падала с «Permission denied»."""
+    base = update_dir()
+    _remove_leftovers(base)  # прошлые загрузки — что получится; занятое уберётся в другой раз
+    folder = base / f"{release.version}-{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
     folder.mkdir(parents=True, exist_ok=True)
     archive = folder / release.asset
     digest = hashlib.sha256()
@@ -178,8 +183,19 @@ def download(release: Release, progress: Callable[[int, int], None] | None = Non
     if digest.hexdigest() != expected:
         raise UpdateError("архив скачался с ошибкой (не сходится контрольная сумма) — попробуйте ещё раз")
     unpacked = folder / "new"
-    _extract(archive, unpacked)
-    archive.unlink(missing_ok=True)
+    for attempt in range(3):  # антивирус может на секунду занять только что распакованный файл
+        try:
+            _extract(archive, unpacked)
+            break
+        except UpdateError:
+            if attempt == 2:
+                raise
+            time.sleep(1.5)
+            unpacked = folder / f"new{attempt + 2}"  # не поверх занятого — в соседнюю папку
+    try:
+        archive.unlink(missing_ok=True)
+    except OSError:
+        pass
     root = unpacked / (f"{APP_NAME}.app" if sys.platform == "darwin" else APP_NAME)
     if not executable(root).exists():
         raise UpdateError(f"в архиве {release.asset} нет приложения")
@@ -200,6 +216,10 @@ def _extract(archive: Path, dest: Path) -> None:
         else:
             with zipfile.ZipFile(archive) as zf:
                 zf.extractall(dest)
+    except PermissionError as e:
+        raise UpdateError(f"не удалось распаковать обновление: файл занят другой программой ({e.filename}). "
+                          "Чаще всего это антивирус проверяет новые файлы или открыта вторая копия программы — "
+                          "закройте её и нажмите «Обновить» ещё раз") from e
     except (OSError, tarfile.TarError, zipfile.BadZipFile, subprocess.CalledProcessError) as e:
         raise UpdateError(f"не удалось распаковать обновление: {e}") from e
 
@@ -272,6 +292,16 @@ def _long(path: Path) -> str:
     return "\\\\?\\" + text if sys.platform == "win32" and not text.startswith("\\\\") else text
 
 
+def _remove_leftovers(base: Path) -> None:
+    """Убрать прошлые загрузки обновлений; занятые (установщик ещё работает) оставить — уберутся потом."""
+    try:
+        items = list(base.iterdir())
+    except OSError:
+        return
+    for item in items:
+        _remove(item)
+
+
 def _remove(path: Path) -> None:
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(_long(path), ignore_errors=True)
@@ -332,7 +362,7 @@ def cleanup() -> None:
     """Убрать остатки прошлого обновления: распакованный архив и отложенные старые файлы."""
     if not is_frozen():
         return
-    _remove(update_dir())
+    _remove_leftovers(update_dir())
     target = install_dir()
     folder = target.parent if sys.platform == "darwin" else target
     try:
