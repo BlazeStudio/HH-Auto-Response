@@ -2491,6 +2491,11 @@ class App(ctk.CTk):
             self._browser_check = time.monotonic()
             self._watch_browser()
         self._poll_count += 1
+        if self.mini is not None and not self.mini.winfo_exists():  # мини-окно пропало — вернуть окно программы
+            self.mini = None
+            if self.mini_mode:
+                self.mini_mode = False
+                self._reveal()
         if (self.mini_mode and self.mini is not None and self._poll_count % 3 == 0  # мини-окну хватает 3 раз в с
                 and not self.mini.minimized()):
             self.mini.refresh()
@@ -2629,9 +2634,10 @@ class App(ctk.CTk):
         self.after(4000, lambda: self.running_kind or self._set_status("●  Готово", MUTED))
 
     def on_close(self) -> None:
-        if self.mini_mode:
-            self.from_mini()
+        """Крестик окна программы или «Закрыть окно» у мини-окна на панели задач."""
         if self.worker and self.worker.is_alive():
+            if self.mini_mode:  # вопрос «остановить?» — в окне программы
+                self.from_mini()
             if not messagebox.askyesno(APP_NAME, "Идёт работа. Остановить и закрыть приложение?\n\nТекущий "
                                                  "шаг доделается, итоги сохранятся.", yes="Остановить и закрыть",
                                        no="Продолжить работу", kind="warning"):

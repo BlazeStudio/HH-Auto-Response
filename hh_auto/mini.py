@@ -100,6 +100,9 @@ class MiniWindow(ctk.CTkToplevel):
         self.overrideredirect(True)  # без рамки Windows — своё оформление
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.0)
+        # «Закрыть окно» у кнопки на панели задач — закрыть программу (раньше закрывалось одно мини-окно,
+        # а программа оставалась работать без окон и падала, обращаясь к нему)
+        self.protocol("WM_DELETE_WINDOW", app.on_close)
         self.configure(fg_color=CARD_BG)
         self.visible = False
         self._drag: tuple[int, int, int, int] | None = None
