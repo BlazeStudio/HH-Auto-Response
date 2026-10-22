@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import threading
 import time
 from pathlib import Path
@@ -66,7 +67,10 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
                     locale=cfg.geo.locale,
                     timezone_id=cfg.geo.timezone,
                     proxy=cfg.geo.playwright_proxy(),
-                    viewport={"width": 1440, "height": 900},
+                    # спрятанное окно: страница — по настоящему размеру окна. С заданным размером страницы (1440×900)
+                    # окно, выехавшее на экран с другим размером и масштабом монитора, показывало белую пустоту
+                    viewport=None if hides_window(cfg) else {"width": 1440, "height": 900},
+                    no_viewport=hides_window(cfg),
                     args=window_args(cfg),
                 )
             except PlaywrightError as e:
@@ -108,7 +112,9 @@ def _bundled_chromium(pw: Playwright) -> bool:
 def window_args(cfg: Config) -> list[str]:
     """Аргументы запуска: спрятанное окно — сразу за краем экрана (без мелькания при старте)."""
     if hides_window(cfg):
-        return [f"--window-position={browser_window.HIDDEN_AT},{browser_window.HIDDEN_AT}"]
+        width, height = browser_window.WORK_SIZE
+        return [f"--window-position={browser_window.HIDDEN_AT},{browser_window.HIDDEN_AT}",
+                f"--window-size={width},{height}"]
     return []
 
 
@@ -120,6 +126,7 @@ class _Watch:
     """Пока идёт работа: окно браузера закрыли — остановить её; приложению — кадры для превью."""
 
     page: Page | None = None
+    cdp = None  # своя связь с вкладкой — для кадров превью
     closing = False  # браузер закрывает сама программа — это не «закрыли окно»
     next_pulse = 0.0
     next_frame = 0.0
@@ -147,6 +154,12 @@ def detach() -> None:
     """Работа закончилась: браузер сейчас закроет сама программа."""
     _Watch.closing = True
     _Watch.page = None
+    if _Watch.cdp is not None:
+        try:
+            _Watch.cdp.detach()
+        except Exception:
+            pass
+        _Watch.cdp = None
     control.set_idle(None)
 
 
@@ -156,10 +169,14 @@ def _idle() -> None:
     if page is None:
         return
     now = time.monotonic()
-    if frame_sink is not None and now >= _Watch.next_frame:
+    # Кадр — только пока окно спрятано. Окно на экране (капча, вход, «Показать») человек видит сам, а снимок
+    # видимого окна заставлял его моргать раз в полторы секунды и сбивал ввод капчи
+    if frame_sink is not None and now >= _Watch.next_frame and browser_window.is_hidden():
         _Watch.next_frame = _Watch.next_pulse = now + FRAME_EVERY
         try:  # кадр — заодно и проверка, что браузер жив
-            frame_sink(page.screenshot(type="jpeg", quality=60, scale="css", timeout=3000))
+            frame = _capture(page)
+            if frame:
+                frame_sink(frame)
         except PlaywrightError as e:
             _note_closed(e)
         return
@@ -169,6 +186,23 @@ def _idle() -> None:
             page.evaluate("0")  # без обращения к браузеру событие «окно закрыли» до программы не доходит
         except PlaywrightError as e:
             _note_closed(e)
+
+
+def _capture(page: Page) -> bytes:
+    """Кадр вкладки напрямую из браузера: без вмешательства в страницу (page.screenshot на это время прячет
+    курсор ввода, вставляя в страницу свой стиль) и сразу уменьшенный — ~10 КБ."""
+    if _Watch.cdp is None:
+        _Watch.cdp = page.context.new_cdp_session(page)
+    view = _Watch.cdp.send("Page.getLayoutMetrics")["cssVisualViewport"]
+    width, height = view["clientWidth"], view["clientHeight"]
+    if width < 10 or height < 10:
+        return b""
+    data = _Watch.cdp.send("Page.captureScreenshot", {
+        "format": "jpeg", "quality": 60, "optimizeForSpeed": True,
+        "clip": {"x": view["pageX"], "y": view["pageY"], "width": width, "height": height,
+                 "scale": min(1.0, 520 / width)},
+    })
+    return base64.b64decode(data["data"])
 
 
 def _note_closed(error: Exception) -> None:

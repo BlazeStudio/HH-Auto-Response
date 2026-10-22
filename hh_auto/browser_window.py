@@ -12,6 +12,7 @@ import sys
 import threading
 
 HIDDEN_AT = -32000  # там окно не видно ни на одном мониторе
+WORK_SIZE = (1460, 1000)  # размер окна при запуске (в точках) — страница ~1440 шириной, как раньше
 _lock = threading.Lock()
 _cached: int | None = None
 
