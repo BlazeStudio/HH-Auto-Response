@@ -253,8 +253,41 @@ def _chart(d, image, box, w, color) -> None:  # столбики — стати�
         d.rounded_rectangle((left, y1 - size * height, left + size * 0.22, y1), radius=w * 0.45, fill=color)
 
 
+def _mini(d, image, box, w, color) -> None:  # окно и маленькое окошко в углу — «в уголок»
+    x0, y0, x1, y1 = box
+    size = x1 - x0
+    d.rounded_rectangle((x0, y0 + size * 0.08, x1, y1 - size * 0.08), radius=size * 0.12, outline=color, width=w)
+    d.rounded_rectangle((x0 + size * 0.48, y0 + size * 0.48, x1 - size * 0.16, y1 - size * 0.22),
+                        radius=size * 0.06, fill=color)
+
+
+def _expand(d, image, box, w, color) -> None:  # стрелки наружу — «развернуть окно»
+    x0, y0, x1, y1 = box
+    size = x1 - x0
+    arm = size * 0.34
+    for (cx, cy, sx, sy) in ((x0, y0, 1, 1), (x1, y1, -1, -1)):
+        d.line((cx + sx * arm, cy, cx, cy, cx, cy + sy * arm), fill=color, width=w, joint="curve")
+        d.line((cx, cy, cx + sx * size * 0.42, cy + sy * size * 0.42), fill=color, width=w)
+
+
+def _eye(d, image, box, w, color) -> None:  # глаз — «показать браузер»
+    x0, y0, x1, y1 = box
+    size = x1 - x0
+    import math
+
+    cy = (y0 + y1) / 2
+    lid = size * 0.34  # насколько «открыт» глаз
+    steps = [i / 24 for i in range(25)]
+    top = [(x0 + t * size, cy - lid * math.sin(math.pi * t)) for t in steps]
+    bottom = [(x0 + t * size, cy + lid * math.sin(math.pi * t)) for t in steps]
+    d.line(top, fill=color, width=w, joint="curve")
+    d.line(bottom, fill=color, width=w, joint="curve")
+    r = size * 0.15
+    d.ellipse(((x0 + x1) / 2 - r, cy - r, (x0 + x1) / 2 + r, cy + r), fill=color)
+
+
 _MENU = {"send": _send, "chat": _chat, "sparkle": _sparkle, "gear": _gear, "journal": _journal, "clock": _clock,
-         "chart": _chart}
+         "chart": _chart, "mini": _mini, "expand": _expand, "eye": _eye}
 
 
 def icon(name: str, size: int = 18, color: str | tuple[str, str] = "#FFFFFF") -> ctk.CTkImage:

@@ -12,10 +12,11 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from .auth import ensure_logged_in
+from . import browser
 from .browser import FatalError, check_region, launch
 from .chats import ChatStats, log_chat_summary, read_rejections
 from .config import Config
-from .control import StopRequested
+from .control import BrowserClosed, StopRequested
 from .logger import log
 from .resume import verify_resume
 from .search import describe_search
@@ -160,6 +161,7 @@ def _with_browser(cfg: Config, root: Path, work) -> int:
         try:
             context = launch(pw, cfg)
             page = context.pages[0] if context.pages else context.new_page()
+            browser.attach(page)  # закрыли окно браузера — работа остановится сразу, а не по таймауту
             log.info("")
             check_region(page, cfg)
             log.info("")
@@ -168,6 +170,9 @@ def _with_browser(cfg: Config, root: Path, work) -> int:
             return EXIT_OK
         except KeyboardInterrupt:
             log.warning("Остановлено пользователем (Ctrl+C)")
+            return EXIT_STOPPED
+        except BrowserClosed as e:
+            log.warning(f"Остановка: {e} — работа прервана")
             return EXIT_STOPPED
         except StopRequested:
             log.warning("Остановлено пользователем")
@@ -178,12 +183,14 @@ def _with_browser(cfg: Config, root: Path, work) -> int:
         except PlaywrightError as e:
             first_line = (str(e).splitlines() or [""])[0]
             if "closed" in first_line.lower():
-                log.error("Остановка: окно браузера закрыто")
+                log.warning("Остановка: окно браузера закрыто — работа прервана")
+                return EXIT_STOPPED
             else:
                 log.error(f"Остановка: ошибка браузера: {first_line}")
                 log.debug("трассировка:", exc_info=True)
             return EXIT_FATAL
         finally:
+            browser.detach()
             if context is not None:
                 try:
                     context.close()

@@ -14,7 +14,7 @@ from playwright.sync_api import Page
 
 from . import control
 from . import selectors as S
-from .browser import FatalError, wait_captcha
+from .browser import FatalError, hide_after_user, show_for_user, wait_captcha
 from .config import Config
 from .logger import log
 
@@ -59,6 +59,7 @@ def ensure_logged_in(page: Page, cfg: Config) -> None:
     log.warning("  ! вход не выполнен. Войдите в аккаунт соискателя ВРУЧНУЮ в открывшемся окне браузера")
     log.warning(f"    (телефон или почта → код из SMS/письма). Скрипт ждёт до {minutes} мин и продолжит сам.")
     page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    was_hidden = show_for_user(page)  # окно спрятано — для входа показываем
 
     deadline = time.monotonic() + cfg.browser.login_timeout
     next_reminder = time.monotonic() + 30
@@ -69,6 +70,7 @@ def ensure_logged_in(page: Page, cfg: Config) -> None:
             control.sleep(2)  # даём hh закончить редиректы после входа
             if is_logged_in(page):
                 log.success("  ✓ вход выполнен, сессия сохранена — в следующий раз входить не придётся")
+                hide_after_user(was_hidden)
                 return
             log.warning("  ! похоже, вход ещё не завершён — продолжаю ждать")
         if time.monotonic() >= next_reminder:

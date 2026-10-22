@@ -39,7 +39,8 @@ from .stats import METRICS, SKIP_KINDS, StatsStore, buckets, totals
 from .logger import SUCCESS, log, setup_logging
 from .paths import app_root, bundled, is_frozen
 from .runner import RunOptions, Stats
-from . import updater
+from . import browser, browser_window, updater
+from .mini import BrowserPreview, MiniWindow
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
 from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, SelectableText, TextLabel, flush_paint, frozen, install_editing,
                       precise_timer, set_titlebar_dark, theme_switch)
@@ -424,6 +425,12 @@ def _stop_button(master, command):
     return button
 
 
+def _mini_button(master, app: "App") -> ctk.CTkButton:
+    """«В уголок»: окно программы прячется, остаётся мини-окно в углу экрана (Ctrl+M)."""
+    return _secondary_button(master, " В уголок", app.to_mini, width=130, image=icon("mini", 16, TEXT),
+                             compound="left")
+
+
 def set_stop_enabled(button: ctk.CTkButton, enabled: bool) -> None:
     button.configure(state="normal" if enabled else "disabled", fg_color=RED if enabled else BORDER,
                      text_color="white" if enabled else MUTED, text_color_disabled=MUTED)
@@ -491,6 +498,7 @@ class ResponsesPage(Page):
         self.dry_btn.pack(side="left", padx=10)
         self.stop_btn = _stop_button(controls, app.stop)
         self.stop_btn.pack(side="left")
+        _mini_button(controls, app).pack(side="right")
         self._set_progress(0)
 
     def refresh_config(self, cfg: Config) -> None:
@@ -527,8 +535,9 @@ class ResponsesPage(Page):
         self._set_progress(min(stats.applied / limit, 1) if limit else 0)
 
     def _set_progress(self, value: float) -> None:
-        if value == self.progress.get() and value:
+        if value == getattr(self, "_progress_value", None):  # то же значение — не перерисовываем (8 раз в секунду)
             return
+        self._progress_value = value
         # на нуле скругление рисует зелёную точку — красим заполнение в цвет дорожки
         self.progress.configure(progress_color=GREEN if value > 0 else self.progress.cget("fg_color"))
         self.progress.set(value)
@@ -561,6 +570,7 @@ class ChatsPage(Page):
         self.dry_btn.pack(side="left", padx=10)
         self.stop_btn = _stop_button(controls, app.stop)
         self.stop_btn.pack(side="left")
+        _mini_button(controls, app).pack(side="right")
         self.ai_state = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w")
         self.ai_state.pack(fill="x", pady=(10, 0))
 
@@ -925,6 +935,9 @@ SETTINGS = [
     ]),
     ("Браузер и сеть", [
         ("browser", "channel", "Браузер", "choice", ""),
+        ("browser", "hide_window", "Прятать окно браузера (Windows)", "bool",
+         "Браузер работает за краем экрана и не мешает, а что он делает — видно в превью в меню слева. "
+         "Для входа в hh и капчи окно покажется само; «Показать» — в любой момент. Действует со следующего запуска"),
         ("geo", "proxy", "Российский прокси (если вы не в РФ или с VPN)", "str",
          "Формат: http://user:pass@host:port. Пусто — прямое подключение"),
         ("geo", "check_ip", "Показывать страну IP перед стартом", "bool", ""),
@@ -1173,6 +1186,13 @@ class SettingsPage(Page):
                           height=32).pack(side="left", padx=12)
         SelectableText(row, "Новая версия скачивается и ставится по кнопке в меню слева, настройки остаются",
                        color=MUTED, size=12, width_px=420).pack(side="left", fill="x", expand=True)
+        row = PlainFrame(danger)
+        row.pack(fill="x", padx=16, pady=(0, 14))
+        self.mini_switch = ctk.CTkSwitch(row, text="Сворачивать в мини-окно в углу экрана, если идёт работа",
+                                         command=lambda: app.save_prefs(mini_on_minimize=bool(self.mini_switch.get())))
+        if app.prefs.get("mini_on_minimize", True):
+            self.mini_switch.select()
+        self.mini_switch.pack(side="left")
         self.current_tab = ""
         saved = app.prefs.get("settings_tab")
         self.show_tab(saved if saved in self.tabs else SETTINGS_TABS[0][0])
@@ -1869,6 +1889,7 @@ class App(ctk.CTk):
         self.prefs = self._load_prefs()
         ctk.set_appearance_mode(self.prefs.get("appearance", "system"))
         ctk.set_default_color_theme("blue")
+        _quiet_timers()
         super().__init__(fg_color=MAIN_BG)
         theme_switch.install(self)  # смена темы одним кадром, скрытые страницы — в фоне
         install_editing(self)  # Ctrl+C/V/X/A/Z в любой раскладке, отмена в полях, меню правой кнопки
@@ -1889,6 +1910,13 @@ class App(ctk.CTk):
         self.chat_stats = ChatStats()
         self.run_limit = 0
         self.closing = False
+        self.mini: MiniWindow | None = None  # одно на сеанс: создаётся заранее, потом только показывается
+        self.mini_mode = False  # сейчас вместо окна программы — мини-окно
+        self._frames_wanted = True  # кадры браузера кому-то видны (окно программы или мини-окно)
+        self._poll_count = 0
+        self.last_frame: bytes | None = None  # последний кадр браузера (для превью и мини-окна)
+        self._browser_check = 0.0  # когда в последний раз смотрели на окно браузера
+        self._crash_shown = False
         self.waiting_captcha = False  # hh показал капчу, работа ждёт человека
         self.update_release: updater.Release | None = None  # найденная новая версия
         self.update_root: Path | None = None  # скачанная и распакованная новая версия
@@ -1907,6 +1935,11 @@ class App(ctk.CTk):
         self.reload_config()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(120, self._poll)
+        browser.frame_sink = lambda jpeg: self.events.put(("frame", jpeg))  # кадры браузера для превью
+        browser.frame_wanted = lambda: self._frames_wanted  # окно свёрнуто — кадры не снимаем зря
+        self.after(2500, self._ensure_mini)  # мини-окно — заранее, пока программа простаивает
+        self.bind("<Unmap>", self._on_unmap, add="+")
+        self.bind_all("<Control-KeyPress>", self._ctrl_key, add="+")
         self.pages["responses"].update_totals(self.summary)
         try:
             validate_search_source(self.cfg)
@@ -1945,6 +1978,8 @@ class App(ctk.CTk):
 
         spacer = ctk.CTkFrame(bar, fg_color="transparent")
         spacer.pack(fill="both", expand=True)
+        # что сейчас в окне браузера (сам браузер спрятан за краем экрана) — появляется с первым кадром
+        self.preview = BrowserPreview(bar, self)
         # «Автозапуск сегодня в 15:00» — видно с любой страницы; щелчок — к настройкам расписания
         self.schedule_label = ctk.CTkLabel(bar, text="", image=icon("clock", 14, MUTED), compound="left",
                                            text_color=MUTED, anchor="w", cursor="hand2", font=ctk.CTkFont(size=12))
@@ -2407,10 +2442,12 @@ class App(ctk.CTk):
         threading.Thread(target=lambda: notify.desktop(APP_NAME, summary), daemon=True).start()
 
     def _poll(self) -> None:
-        """Раз в 120 мс забирает записи лога и события из рабочего потока."""
+        """Раз в 120 мс (без работы — раз в 250 мс) забирает записи лога и события из рабочего потока."""
+        handled = 0
         try:
             for _ in range(400):
                 event = self.events.get_nowait()
+                handled += 1
                 if event[0] == "log":
                     _, levelno, text = event
                     self.console.add(levelno, text)
@@ -2431,6 +2468,8 @@ class App(ctk.CTk):
                     self.pages["settings"]._vacancy_filter_tested(event[1], event[2])
                 elif event[0] == "done":
                     self._finish(event[1], event[2])
+                elif event[0] == "frame":
+                    self._on_frame(event[1])
                 elif event[0] == "update_found":
                     self._on_update_found(*event[1:])
                 elif event[0] == "update_progress":
@@ -2448,14 +2487,157 @@ class App(ctk.CTk):
             minutes, seconds = divmod(int(time.monotonic() - self.started_at), 60)
             what = "решите капчу в окне браузера • " if self.waiting_captcha else "идёт "
             self.status_detail.configure(text=f"{what}{minutes:02d}:{seconds:02d}")
-        self.after(120, self._poll)
+        if self.running_kind and time.monotonic() - self._browser_check > 0.4:
+            self._browser_check = time.monotonic()
+            self._watch_browser()
+        self._poll_count += 1
+        if self.mini is not None and not self.mini.winfo_exists():  # мини-окно пропало — вернуть окно программы
+            self.mini = None
+            if self.mini_mode:
+                self.mini_mode = False
+                self._reveal()
+        if (self.mini_mode and self.mini is not None and self._poll_count % 3 == 0  # мини-окну хватает 3 раз в с
+                and not self.mini.minimized()):
+            self.mini.refresh()
+        self._frames_wanted = (self.mini.visible and not self.mini.minimized()) if self.mini_mode and self.mini \
+            else self.state() == "normal"
+        self.after(120 if self.running_kind or handled else 250, self._poll)  # без работы — реже, незаметно
+
+    # ---------- окно браузера и мини-окно ----------
+
+    def _hwnd(self) -> int | None:
+        try:
+            return int(self.wm_frame(), 16)
+        except (tkinter.TclError, ValueError):
+            return None
+
+    def _on_frame(self, jpeg: bytes) -> None:
+        self.last_frame = jpeg
+        if not self.preview.winfo_manager():
+            self.preview.pack(fill="x", padx=22, pady=(0, 14), before=self.status)
+        self.preview.set_frame(jpeg)
+        if self.mini is not None:
+            self.mini.set_frame(jpeg)
+
+    def _watch_browser(self) -> None:
+        """Во время работы: спрятанное окно браузера открыли значком на панели задач — вывести на экран."""
+        if browser_window.opened_by_user():
+            browser_window.show(near=self._hwnd())
+        hwnd = browser_window.find()
+        self.preview.set_state(browser_window.is_hidden(hwnd) if hwnd else None)
+
+    def show_browser(self) -> None:
+        if browser_window.find():
+            browser_window.show(near=self._hwnd())
+            self.preview.set_state(False)
+        else:
+            self.toast("Браузер сейчас не открыт")
+
+    def toggle_browser(self) -> None:
+        hwnd = browser_window.find()
+        if not hwnd:
+            self.toast("Браузер сейчас не открыт")
+            return
+        if browser_window.is_hidden(hwnd):
+            browser_window.show(near=self._hwnd())
+        else:
+            browser_window.hide()
+        self.preview.set_state(browser_window.is_hidden(hwnd))
+
+    FULL_ALPHA = 0.999  # непрозрачность окна после плавного появления (1.0 Tk перерисовал бы окно ещё раз)
+    REVEAL_STEPS = 9  # шаги появления окна по 14 мс
+
+    def _ensure_mini(self) -> MiniWindow:
+        if self.mini is None or not self.mini.winfo_exists():
+            self.mini = MiniWindow(self)
+        return self.mini
+
+    def to_mini(self) -> None:
+        """Окно программы прячется, в углу экрана — мини-окно с состоянием работы."""
+        if self.mini_mode:
+            return
+        self.mini_mode = True
+        mini = self._ensure_mini()
+        if self.last_frame and mini._photo is None:
+            mini.set_frame(self.last_frame)
+        mini.show()
+        self.withdraw()
+
+    def from_mini(self) -> None:
+        """Обратно в окно программы: мини-окно растворяется, окно программы плавно проявляется."""
+        self.mini_mode = False
+        if self.mini is not None and self.mini.visible:
+            self.mini.hide()
+        self._reveal()
+
+    def _reveal(self) -> None:
+        """Показать окно программы невидимым, дать ему дорисоваться целиком и только потом плавно проявить —
+        иначе сотни элементов появлялись на глазах по кускам («пролагивает» при разворачивании)."""
+        try:
+            self.attributes("-alpha", 0.0)
+        except tkinter.TclError:
+            pass
+        self.deiconify()
+        if self.state() != "normal":  # после «свернуть → мини-окно» Windows помнит окно свёрнутым
+            self.state("normal")
+        self.update_idletasks()
+        flush_paint(self)
+        self.lift()
+        self.focus_force()
+        target = self.FULL_ALPHA
+
+        def step(i: int) -> None:
+            t = i / self.REVEAL_STEPS
+            try:
+                self.attributes("-alpha", target * t * t * (3 - 2 * t))
+            except tkinter.TclError:
+                return
+            if i < self.REVEAL_STEPS:
+                self.after(14, step, i + 1)
+
+        step(1)
+
+    def _on_unmap(self, event) -> None:
+        """Свернули окно, пока идёт работа — вместо панели задач мини-окно в углу (если так настроено)."""
+        if (event.widget is self and not self.mini_mode and self.running_kind
+                and self.prefs.get("mini_on_minimize", True) and self.state() == "iconic"):
+            self.after(10, self._minimize_to_mini)
+
+    def _minimize_to_mini(self) -> None:
+        """Свёрнутое окно Windows держит в стороне (-32000); если спрятать его прямо таким, при разворачивании
+        Windows считает, что окно переезжает на монитор с другим масштабом, и растягивает рамку в 2,5 раза —
+        «после разворачивания всё багается». Поэтому сначала невидимо возвращаем обычное окно, потом прячем."""
+        if self.mini_mode or self.state() != "iconic":
+            return
+        try:
+            self.attributes("-alpha", 0.0)
+        except tkinter.TclError:
+            pass
+        self.state("normal")
+        self.update_idletasks()
+        self.to_mini()
+
+    def _ctrl_key(self, event) -> None:
+        if event.keycode == 77 or (event.keysym or "").lower() in ("m", "cyrillic_softsign"):  # Ctrl+M (Ctrl+Ь)
+            self.from_mini() if self.mini_mode else self.to_mini()
+
+    def report_callback_exception(self, exc, value, tb) -> None:
+        """Ошибка в окне программы: в logs/crash.log, человеку — одно сообщение за сеанс; работа продолжается."""
+        path = record_crash(self.root_dir, "ошибка в окне программы", exc, value, tb)
+        if not self._crash_shown:
+            self._crash_shown = True
+            messagebox.showerror(APP_NAME, f"В окне программы произошла ошибка: {value}\n\nРабота продолжается. "
+                                           f"Подробности — в {path}; если повторится, пришлите этот файл.")
 
     def toast(self, text: str) -> None:
         self._set_status(f"●  {text}", GREEN)
         self.after(4000, lambda: self.running_kind or self._set_status("●  Готово", MUTED))
 
     def on_close(self) -> None:
+        """Крестик окна программы или «Закрыть окно» у мини-окна на панели задач."""
         if self.worker and self.worker.is_alive():
+            if self.mini_mode:  # вопрос «остановить?» — в окне программы
+                self.from_mini()
             if not messagebox.askyesno(APP_NAME, "Идёт работа. Остановить и закрыть приложение?\n\nТекущий "
                                                  "шаг доделается, итоги сохранятся.", yes="Остановить и закрыть",
                                        no="Продолжить работу", kind="warning"):
@@ -2577,5 +2759,63 @@ def main() -> None:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("HH-Auto-Response")
         except Exception:
             pass
-    app = App()
+    try:
+        app = App()
+    except Exception:  # окно не открылось (например, «... does not exist») — объяснить и сохранить подробности
+        path = record_crash(app_root(), "программа не запустилась", *sys.exc_info())
+        _native_error(f"Программа не запустилась: {sys.exc_info()[1]}\n\nЗапустите её ещё раз. Если повторится — "
+                      f"пришлите файл {path}")
+        sys.exit(1)
     app.mainloop()
+
+
+def _quiet_timers() -> None:
+    """Таймеры customtkinter будят программу десятки раз в секунду, даже когда она ничего не делает:
+    смена темы Windows — 33 раза в секунду, масштаб монитора — 10, полосы прокрутки всех многострочных полей,
+    даже спрятанных, — по 5 на каждое. Реже — незаметно для глаза, а процессор простаивает."""
+    from customtkinter.windows.widgets.appearance_mode.appearance_mode_tracker import AppearanceModeTracker
+    from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
+
+    AppearanceModeTracker.update_loop_interval = 250
+    ScalingTracker.update_loop_interval = 300
+    if getattr(ctk.CTkTextbox, "_hh_quiet", False):
+        return
+    original = ctk.CTkTextbox._check_if_scrollbars_needed
+
+    def check(self, event=None, continue_loop: bool = False):
+        if continue_loop and event is None:
+            try:
+                hidden = not self.winfo_ismapped()
+            except tkinter.TclError:
+                return
+            if hidden:  # спрятанному полю полосы прокрутки не нужны — проверим, когда покажут
+                self.after(self._scrollbar_update_time, lambda: self._check_if_scrollbars_needed(continue_loop=True))
+                return
+        original(self, event, continue_loop)
+
+    ctk.CTkTextbox._check_if_scrollbars_needed = check
+    ctk.CTkTextbox._hh_quiet = True
+
+
+def record_crash(root: Path, title: str, exc, value, tb) -> Path:
+    """Сбой — в logs/crash.log (дописывается): когда, версия, что случилось, полная трассировка."""
+    path = root / "logs" / "crash.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} {APP_NAME} {APP_VERSION}: {title}\n")
+            file.write("".join(traceback.format_exception(exc, value, tb)) + "\n")
+    except OSError:
+        pass
+    return path
+
+
+def _native_error(text: str) -> None:
+    """Сообщение без Tk (он мог и не запуститься)."""
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.user32.MessageBoxW(None, text, APP_NAME, 0x10)
+            return
+        except Exception:
+            pass
+    print(text, file=sys.stderr)

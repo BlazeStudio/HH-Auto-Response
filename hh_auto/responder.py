@@ -97,6 +97,9 @@ class _Outcome(Enum):
     NOTHING = "ничего не произошло"
 
 
+GENERATE_GIVE_UP = 2  # столько раз подряд «Сгенерировать» не дал письма — больше в этом запуске не жмём
+
+
 class Responder:
     def __init__(self, page: Page, cfg: Config, snapshots_dir: Path, resume_title: str | None,
                  ai: AiClient | None = None, resume_text: str = ""):
@@ -109,6 +112,7 @@ class Responder:
         self.resume_text = resume_text
         self._search_url = ""
         self.captchas = 0  # сколько раз за запуск hh просил капчу
+        self.generate_failures = 0  # сколько раз подряд «Сгенерировать» hh не дал письма
 
     def apply(self, vac: Vacancy) -> Result:
         """Откликается на вакансию; непредвиденные исключения превращает в Result(FAILED).
@@ -639,16 +643,24 @@ class Responder:
         if before:
             log.debug(f"  в поле письма уже есть текст ({len(before)} симв.)")
         generate = scope.locator(S.GENERATE_LETTER).or_(scope.get_by_role("button", name="Сгенерировать")).first
-        if generate.count():
+        if self.generate_failures >= GENERATE_GIVE_UP:
+            log.info("  генерация hh в этом запуске не работает — письмо без неё")
+        elif generate.count():
             self._pause()
             log.info("  → нажимаю «Сгенерировать» и жду текст письма…")
             generate.click()
             text = self._wait_generated(textarea, before)
             if text:
+                self.generate_failures = 0
                 log.success(f"  ✓ текст письма готов ({len(text)} симв.): «{_preview(text)}»")
                 log.debug(f"  полный текст письма:\n{text}")
                 return True
+            self.generate_failures += 1
             log.warning(f"  ! письмо не появилось за {self.cfg.letter.generate_timeout:.0f} с")
+            if self.generate_failures == GENERATE_GIVE_UP:
+                log.warning(f"  ! генерация hh не дала письма {GENERATE_GIVE_UP} раза подряд — дальше в этом запуске "
+                            "«Сгенерировать» не нажимаю (по минуте на вакансию), письмо — "
+                            + ("нейросетью" if self.ai is not None else "запасным текстом"))
         else:
             log.warning("  ! кнопки «Сгенерировать» нет (проверьте подписку)")
 
@@ -675,7 +687,8 @@ class Responder:
             log.warning(f"  ! письмо от нейросети слишком короткое ({len(text)} симв.)")
             return False
         self._pause()
-        textarea.fill(text)
+        if not self._put_letter(textarea, text):
+            return False
         log.success(f"  ✓ письмо от ИИ готово за {time.monotonic() - started:.1f} с ({len(text)} симв.): «{_preview(text)}»")
         log.debug(f"  полный текст письма:\n{text}")
         return True
@@ -686,10 +699,31 @@ class Responder:
             return False
         text = template.strip().replace("{vacancy}", vac.title).replace("{company}", vac.company)
         self._pause()
-        textarea.fill(text)
+        if not self._put_letter(textarea, text):
+            return False
         log.info(f"  → вставил {what} ({len(text)} симв.): «{_preview(text)}»")
         log.debug(f"  полный текст письма:\n{text}")
         return True
+
+    def _put_letter(self, textarea: Locator, text: str, wait: float = 10) -> bool:
+        """Вписать письмо в поле. Пока hh «генерирует» письмо, поле заблокировано: раньше fill ждал 20 с
+        и вакансия записывалась ошибкой (хотя при быстром отклике отклик уже ушёл). Ждём, пока поле освободится,
+        но недолго; не освободилось — письмо не вставляем, вакансия обрабатывается дальше как без письма."""
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                if textarea.is_enabled() and textarea.is_editable():
+                    textarea.fill(text, timeout=10_000)
+                    return True
+            except PlaywrightError as e:
+                if "closed" in str(e).lower():
+                    raise
+                log.debug(f"  поле письма не заполнилось: {(str(e).splitlines() or [''])[0][:120]}")
+            if time.monotonic() > deadline:
+                log.warning("  ! поле письма заблокировано (hh так и не закончил «генерировать» письмо) — "
+                            "письмо не вставлено")
+                return False
+            control.sleep(0.5)
 
     def _wait_generated(self, textarea: Locator, before: str) -> str:
         """Ждёт, пока текст в поле появится и перестанет меняться."""
