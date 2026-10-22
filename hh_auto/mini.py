@@ -81,9 +81,12 @@ class BrowserPreview(ctk.CTkFrame):
 
 
 class MiniWindow(ctk.CTkToplevel):
-    """Мини-окно в углу экрана, поверх остальных окон."""
+    """Мини-окно в углу экрана, поверх остальных окон. Одно на весь сеанс: создаётся заранее и только
+    показывается и прячется (раньше создавалось заново при каждом «В уголок» — это и было «долго
+    открывается», а обращение к уже закрытому окну роняло программу). Два вида: карточка (превью,
+    счётчики, кнопки) и «пилюля» — одна строка «● 22 / 200»."""
 
-    SIZE = (380, 0)  # высота — по содержимому
+    SIZE = (380, 0)  # ширина карточки; высота — по содержимому
     PREVIEW = (128, 80)
     ALPHA = 0.97  # проверки ставят 0 — окно не видно
     MARGIN = 16
@@ -94,21 +97,27 @@ class MiniWindow(ctk.CTkToplevel):
         self.withdraw()
         self.overrideredirect(True)  # без рамки Windows — своё оформление
         self.attributes("-topmost", True)
+        self.attributes("-alpha", 0.0)
         self.configure(fg_color=CARD_BG)
-        self._drag: tuple[int, int] | None = None
+        self.visible = False
+        self.compact = bool(app.prefs.get("mini_compact"))
+        self._drag: tuple[int, int, int, int] | None = None
         self._photo = None
         self._fade_job = None
+        self._placed = False
 
-        body = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=0, border_width=1, border_color=BORDER)
-        body.pack(fill="both", expand=True)
-        head = PlainFrame(body)
+        # ---- карточка ----
+        self.card = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=0, border_width=1, border_color=BORDER)
+        head = PlainFrame(self.card)
         head.pack(fill="x", padx=12, pady=(8, 0))
         title = TextLabel(head, "HH-Auto-Response", color=ACCENT, size=12, weight="bold")
         title.pack(side="left")
         ctk.CTkButton(head, text="", image=icon("expand", 14, TEXT), width=28, height=24, corner_radius=6,
                       fg_color="transparent", hover_color=ACCENT_SOFT, command=app.from_mini).pack(side="right")
-
-        row = PlainFrame(body)
+        ctk.CTkButton(head, text="—", width=28, height=24, corner_radius=6, fg_color="transparent",
+                      hover_color=ACCENT_SOFT, text_color=TEXT, font=ctk.CTkFont(size=13, weight="bold"),
+                      command=lambda: self.set_compact(True)).pack(side="right", padx=(0, 2))
+        row = PlainFrame(self.card)
         row.pack(fill="x", padx=12, pady=(6, 0))
         self.preview = ctk.CTkLabel(row, text="нет кадра", text_color=MUTED, width=self.PREVIEW[0],
                                     height=self.PREVIEW[1], fg_color=MAIN_BG, corner_radius=6, cursor="hand2",
@@ -125,11 +134,10 @@ class MiniWindow(ctk.CTkToplevel):
         self.counts2.pack(anchor="w")
         self.current = TextLabel(column, "", color=MUTED, size=11, wraplength=self.SIZE[0] - self.PREVIEW[0] - 40)
         self.current.pack(anchor="w", pady=(2, 0))
-
-        self.progress = ctk.CTkProgressBar(body, height=5, corner_radius=3, progress_color=GREEN)
+        self.progress = ctk.CTkProgressBar(self.card, height=5, corner_radius=3, progress_color=GREEN)
         self.progress.set(0)
         self.progress.pack(fill="x", padx=12, pady=(8, 0))
-        buttons = PlainFrame(body)
+        buttons = PlainFrame(self.card)
         buttons.pack(fill="x", padx=12, pady=(8, 10))
         self.action = ctk.CTkButton(buttons, text="", height=28, width=128, corner_radius=8,
                                     font=ctk.CTkFont(size=12, weight="bold"), command=self._action)
@@ -141,33 +149,79 @@ class MiniWindow(ctk.CTkToplevel):
                                          command=app.toggle_browser)
         self.browser_btn.pack(side="left", padx=8)
 
-        for widget in (body, head, title, row, column, self.status, self.counts, self.counts2, self.current, buttons):
+        # ---- «пилюля» ----
+        self.pill = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=0, border_width=1, border_color=BORDER)
+        line = PlainFrame(self.pill)
+        line.pack(fill="x", padx=(12, 6), pady=6)
+        self.pill_dot = TextLabel(line, "●", size=13)
+        self.pill_dot.pack(side="left")
+        self.pill_text = TextLabel(line, "", size=12, weight="bold", cursor="hand2")
+        self.pill_text.pack(side="left", padx=(6, 10))
+        ctk.CTkButton(line, text="", image=icon("expand", 13, TEXT), width=26, height=22, corner_radius=6,
+                      fg_color="transparent", hover_color=ACCENT_SOFT, command=app.from_mini).pack(side="right")
+
+        for widget in (self.card, head, title, row, column, self.status, self.counts, self.counts2, self.current,
+                       buttons, self.pill, line, self.pill_dot, self.pill_text):
             widget.bind("<ButtonPress-1>", self._press, add="+")
             widget.bind("<B1-Motion>", self._move, add="+")
             widget.bind("<ButtonRelease-1>", self._release, add="+")
         self.bind("<Enter>", lambda _e: self._set_alpha(1.0 if self.ALPHA else 0))
         self.bind("<Leave>", lambda _e: self._set_alpha(self.ALPHA))
+        (self.pill if self.compact else self.card).pack(fill="both", expand=True)
 
-    # ---------- появление и место ----------
+    # ---------- показать и спрятать ----------
 
-    def appear(self) -> None:
-        self.refresh()
+    def show(self) -> None:
+        self.refresh(force=True)
         self.update_idletasks()
-        scale = ctk.ScalingTracker.get_window_scaling(self)
-        width, height = round(self.SIZE[0] * scale), max(round(self.SIZE[1] * scale), self.winfo_reqheight())
-        x, y = self._position(width, height)
-        tkinter.Toplevel.geometry(self, f"{width}x{height}+{x}+{y}")
-        self.attributes("-alpha", 0.0)
+        if not self._placed:
+            width, height = self._size()
+            x, y = self._position(width, height)
+            tkinter.Toplevel.geometry(self, f"{width}x{height}+{x}+{y}")
+            self._placed = True
+        self.visible = True
         self.deiconify()
         self._round_corners()
-        self._fade(0.0, self.ALPHA, on_done=None)
+        self._fade(self._alpha(), self.ALPHA, on_done=None)
+
+    def hide(self) -> None:
+        self.visible = False
+
+        def gone() -> None:
+            if not self.visible:  # пока растворялось, могли снова показать
+                self.withdraw()
+
+        self._fade(self._alpha(), 0.0, on_done=gone)
+
+    def _size(self) -> tuple[int, int]:
+        scale = ctk.ScalingTracker.get_window_scaling(self)
+        if self.compact:
+            return self.pill.winfo_reqwidth() + 2, self.pill.winfo_reqheight()
+        return round(self.SIZE[0] * scale), max(round(self.SIZE[1] * scale), self.card.winfo_reqheight())
+
+    def set_compact(self, compact: bool) -> None:
+        """Карточка ↔ «пилюля»; правый нижний угол окна остаётся на месте."""
+        if compact == self.compact:
+            return
+        right, bottom = self.winfo_x() + self.winfo_width(), self.winfo_y() + self.winfo_height()
+        self.compact = compact
+        self.app.save_prefs(mini_compact=compact)
+        (self.card if compact else self.pill).pack_forget()
+        (self.pill if compact else self.card).pack(fill="both", expand=True)
+        if not compact and self.app.last_frame:  # пока была «пилюля», кадры сюда не шли
+            self.set_frame(self.app.last_frame)
+        self.refresh(force=True)
+        self.update_idletasks()
+        width, height = self._size()
+        tkinter.Toplevel.geometry(self, f"{width}x{height}+{right - width}+{bottom - height}")
+        self._save_position()
 
     def _position(self, width: int, height: int) -> tuple[int, int]:
-        saved = self.app.prefs.get("mini_pos")
+        saved = self.app.prefs.get("mini_corner")  # правый нижний угол окна — его место не зависит от вида
         if isinstance(saved, list) and len(saved) == 2:
-            x, y = int(saved[0]), int(saved[1])
-            if -width < x < self.winfo_screenwidth() and 0 <= y < self.winfo_screenheight():
-                return x, y
+            right, bottom = int(saved[0]), int(saved[1])
+            if 0 < right <= self.winfo_screenwidth() + width and 0 < bottom <= self.winfo_screenheight() + height:
+                return right - width, bottom - height
         if browser_window.supported():  # правый нижний угол рабочей области монитора, где окно программы
             near = int(self.app.wm_frame(), 16)
             left, top, right, bottom = browser_window._work_area(near)
@@ -175,6 +229,9 @@ class MiniWindow(ctk.CTkToplevel):
             left, top, right, bottom = 0, 0, self.winfo_screenwidth(), self.winfo_screenheight() - 48
         margin = round(self.MARGIN * ctk.ScalingTracker.get_window_scaling(self))
         return right - width - margin, bottom - height - margin
+
+    def _save_position(self) -> None:
+        self.app.save_prefs(mini_corner=[self.winfo_x() + self.winfo_width(), self.winfo_y() + self.winfo_height()])
 
     def _round_corners(self) -> None:
         """Windows 11: скруглённые углы и тень, как у обычных окон."""
@@ -189,9 +246,6 @@ class MiniWindow(ctk.CTkToplevel):
         except Exception:
             pass
 
-    def vanish(self) -> None:
-        self._fade(self._alpha(), 0.0, on_done=self.destroy)
-
     def _alpha(self) -> float:
         try:
             return float(self.attributes("-alpha"))
@@ -199,13 +253,13 @@ class MiniWindow(ctk.CTkToplevel):
             return 0.0
 
     def _set_alpha(self, value: float) -> None:
-        if self._fade_job is None:
+        if self._fade_job is None and self.visible:
             try:
                 self.attributes("-alpha", value)
             except tkinter.TclError:
                 pass
 
-    def _fade(self, start: float, end: float, on_done, steps: int = 9) -> None:
+    def _fade(self, start: float, end: float, on_done, steps: int = 8) -> None:
         if self._fade_job is not None:
             self.after_cancel(self._fade_job)
             self._fade_job = None
@@ -213,9 +267,8 @@ class MiniWindow(ctk.CTkToplevel):
         def step(i: int) -> None:
             self._fade_job = None
             t = i / steps
-            value = start + (end - start) * (t * t * (3 - 2 * t))
             try:
-                self.attributes("-alpha", value)
+                self.attributes("-alpha", start + (end - start) * (t * t * (3 - 2 * t)))
             except tkinter.TclError:
                 return
             if i < steps:
@@ -225,19 +278,24 @@ class MiniWindow(ctk.CTkToplevel):
 
         step(0)
 
-    # ---------- перетаскивание ----------
+    # ---------- перетаскивание и щелчок ----------
 
     def _press(self, event) -> None:
-        self._drag = (event.x_root - self.winfo_x(), event.y_root - self.winfo_y())
+        self._drag = (event.x_root - self.winfo_x(), event.y_root - self.winfo_y(), event.x_root, event.y_root)
 
     def _move(self, event) -> None:
         if self._drag is not None:
             tkinter.Toplevel.geometry(self, f"+{event.x_root - self._drag[0]}+{event.y_root - self._drag[1]}")
 
-    def _release(self, _event) -> None:
-        if self._drag is not None:
-            self._drag = None
-            self.app.save_prefs(mini_pos=[self.winfo_x(), self.winfo_y()])
+    def _release(self, event) -> None:
+        if self._drag is None:
+            return
+        moved = abs(event.x_root - self._drag[2]) + abs(event.y_root - self._drag[3]) > 4 if event else True
+        self._drag = None
+        if moved:
+            self._save_position()
+        elif self.compact:  # щелчок по «пилюле» — снова карточка
+            self.set_compact(False)
 
     # ---------- содержимое ----------
 
@@ -256,8 +314,10 @@ class MiniWindow(ctk.CTkToplevel):
         self._photo = ctk.CTkImage(light_image=picture, dark_image=picture, size=self.PREVIEW)
         self.preview.configure(image=self._photo, text="")
 
-    def refresh(self) -> None:
-        """Состояние из окна программы (раз в 120 мс): меняется только то, что изменилось."""
+    def refresh(self, force: bool = False) -> None:
+        """Состояние из окна программы: меняется только то, что изменилось."""
+        if not (self.visible or force) or not self.winfo_exists():
+            return
         app = self.app
         status = app.status.cget("text").replace("●", "").strip() or "Готово"
         color = app.status.cget("text_color")
@@ -268,22 +328,33 @@ class MiniWindow(ctk.CTkToplevel):
             counts2 = f"пропущено {sum(stats.skipped.values())}" + (f" · ошибок {stats.failed}" if stats.failed else "")
             current = app.pages["responses"].current.cget("text")
             progress = min(stats.applied / app.run_limit, 1) if app.run_limit else 0
+            pill = f"{stats.applied} / {app.run_limit}"
         elif app.running_kind == "chats":
             chats = app.chat_stats
-            counts = f"Отказов прочитано {chats.opened}"
-            counts2 = f"ответов ИИ {chats.answered}"
+            counts, counts2 = f"Отказов прочитано {chats.opened}", f"ответов ИИ {chats.answered}"
             current, progress = detail, 0
+            pill = f"Чаты · {chats.opened}"
         else:
-            counts = f"Сегодня откликов: {app.summary.today.applied}"
-            counts2 = detail
+            counts, counts2 = f"Сегодня откликов: {app.summary.today.applied}", detail
             current, progress = app.pages["responses"].current.cget("text"), 0
+            pill = status
+        if app.waiting_captcha:
+            pill = "Нужна капча"
         current = current if len(current) <= 70 else current[:69] + "…"  # не больше двух строк
-        for label, text in ((self.status, status), (self.counts, counts), (self.counts2, counts2),
-                            (self.current, current)):
+        labels = ((self.pill_text, pill),) if self.compact else (
+            (self.status, status), (self.counts, counts), (self.counts2, counts2), (self.current, current))
+        for label, text in labels:
             if label.cget("text") != text:
                 label.configure(text=text)
-        if self.status._color != color:
-            self.status.set(color=color)
+        for label in ((self.pill_dot,) if self.compact else (self.status,)):
+            if label._color != color:
+                label.set(color=color)
+        if self.compact:
+            width, height = self._size()
+            if abs(width - self.winfo_width()) > 2 and self._placed:  # «пилюля» — по ширине текста, угол на месте
+                right, bottom = self.winfo_x() + self.winfo_width(), self.winfo_y() + self.winfo_height()
+                tkinter.Toplevel.geometry(self, f"{width}x{height}+{right - width}+{bottom - height}")
+            return
         if abs(self.progress.get() - progress) > 0.001:
             self.progress.set(progress)
         running = bool(app.running_kind)

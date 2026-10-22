@@ -10,11 +10,14 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 
 HIDDEN_AT = -32000  # там окно не видно ни на одном мониторе
 WORK_SIZE = (1460, 1000)  # размер окна при запуске (в точках) — страница ~1440 шириной, как раньше
 _lock = threading.Lock()
 _cached: int | None = None
+_missing_until = 0.0  # окна нет — не ищем заново до этого времени: перебор процессов Windows ~17 мс
+MISSING_TTL = 2.0
 
 if sys.platform == "win32":
     import ctypes
@@ -103,15 +106,18 @@ def _ours(hwnd: int, pids: set[int]) -> bool:
 
 def find(refresh: bool = False) -> int | None:
     """Главное окно браузера, запущенного программой (или None)."""
-    global _cached
+    global _cached, _missing_until
     if not supported():
         return None
     with _lock:
         if _cached and not refresh and _u.IsWindow(_cached) and _u.IsWindowVisible(_cached):
             return _cached
+        if not refresh and time.monotonic() < _missing_until:
+            return None
         pids = _descendants(os.getpid())
         if not pids:
             _cached = None
+            _missing_until = time.monotonic() + MISSING_TTL
             return None
         best: list[tuple[int, int]] = []
 
@@ -123,6 +129,8 @@ def find(refresh: bool = False) -> int | None:
 
         _u.EnumWindows(_ENUM(visit), 0)
         _cached = max(best)[1] if best else None
+        if _cached is None:
+            _missing_until = time.monotonic() + MISSING_TTL
         return _cached
 
 

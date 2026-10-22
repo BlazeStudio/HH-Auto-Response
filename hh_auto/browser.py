@@ -36,10 +36,12 @@ class CaptchaShown(Exception):
 CAPTCHA_WAIT = 30 * 60  # сколько ждать, пока человек решит капчу
 _cfg: Config | None = None  # настройки текущего запуска: окно браузера и уведомления — для капчи
 
-# Кадры для превью в приложении: frame_sink(jpeg) — задаёт приложение (в консоли не задан — кадров нет)
+# Кадры для превью в приложении: frame_sink(jpeg) — задаёт приложение (в консоли не задан — кадров нет);
+# frame_wanted() — видит ли их сейчас кто-нибудь (окно программы свёрнуто — не снимаем зря)
 frame_sink = None
+frame_wanted = None
 FRAME_EVERY = 1.5  # сек между кадрами превью
-PULSE_EVERY = 1.0  # сек между проверками «браузер ещё открыт»
+PULSE_EVERY = 0.5  # сек между проверками «браузер ещё открыт» (~1 мс каждая)
 
 
 def launch(pw: Playwright, cfg: Config) -> BrowserContext:
@@ -57,6 +59,8 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
             continue
         profile = Path(cfg.browser.profile_dir) / (channel or "chromium")
         log.info(f"Запускаю браузер: {name}, профиль: {profile}")
+        if hides_window(cfg):
+            _forget_window_placement(profile)
         for attempt in range(1, PROFILE_BUSY_ATTEMPTS + 1):
             try:
                 context = pw.chromium.launch_persistent_context(
@@ -87,12 +91,31 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
             context.set_default_timeout(20_000)
             log.success(f"  ✓ браузер запущен ({name})")
             _watch_close(context)
+            if hides_window(cfg) and browser_window.find(refresh=True) and not browser_window.is_hidden():
+                browser_window.hide()  # Chrome всё же открыл окно на экране — убираем за край
             return context
     raise FatalError("не удалось запустить браузер. " + ("; ".join(errors) if errors else
                      "Установите Google Chrome или Microsoft Edge"))
 
 
 PROFILE_BUSY_ATTEMPTS = 4
+
+
+def _forget_window_placement(profile: Path) -> None:
+    """Chrome запоминает в профиле, где было окно (например, на экране — после капчи), и открывается там же,
+    не глядя на «за краем экрана». Стираем это место в профиле программы — окно откроется спрятанным."""
+    import json
+
+    path = profile / "Default" / "Preferences"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("browser", {}).pop("window_placement", None) is None:
+            return
+        tmp = path.with_name("Preferences.hh-tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(path)
+    except (OSError, ValueError, AttributeError):
+        pass  # нет профиля или файл другой — тогда окно уберёт hide() после запуска
 
 
 def _profile_busy(error: str) -> bool:
@@ -171,21 +194,25 @@ def _idle() -> None:
     now = time.monotonic()
     # Кадр — только пока окно спрятано. Окно на экране (капча, вход, «Показать») человек видит сам, а снимок
     # видимого окна заставлял его моргать раз в полторы секунды и сбивал ввод капчи
-    if frame_sink is not None and now >= _Watch.next_frame and browser_window.is_hidden():
-        _Watch.next_frame = _Watch.next_pulse = now + FRAME_EVERY
-        try:  # кадр — заодно и проверка, что браузер жив
-            frame = _capture(page)
-            if frame:
-                frame_sink(frame)
-        except PlaywrightError as e:
-            _note_closed(e)
+    frame = (frame_sink is not None and now >= _Watch.next_frame and (frame_wanted is None or frame_wanted())
+             and browser_window.is_hidden())
+    if not frame and now < _Watch.next_pulse:
         return
-    if now >= _Watch.next_pulse:
-        _Watch.next_pulse = now + PULSE_EVERY
-        try:
-            page.evaluate("0")  # без обращения к браузеру событие «окно закрыли» до программы не доходит
-        except PlaywrightError as e:
-            _note_closed(e)
+    _Watch.next_pulse = now + PULSE_EVERY
+    try:
+        page.evaluate("0")  # жив ли браузер: без обращения к нему событие «окно закрыли» до программы не доходит
+    except PlaywrightError as e:
+        _note_closed(e)
+        return
+    if not frame or page.is_closed() or control.stop_requested():
+        return  # снимок закрытой вкладки ждал бы ответа, пока браузер не завершится совсем (до 15 с)
+    _Watch.next_frame = now + FRAME_EVERY
+    try:
+        picture = _capture(page)
+        if picture:
+            frame_sink(picture)
+    except PlaywrightError as e:
+        _note_closed(e)
 
 
 def _capture(page: Page) -> bytes:
