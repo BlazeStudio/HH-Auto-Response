@@ -2491,9 +2491,10 @@ class App(ctk.CTk):
             self._browser_check = time.monotonic()
             self._watch_browser()
         self._poll_count += 1
-        if self.mini_mode and self.mini is not None and self._poll_count % 3 == 0:  # мини-окну хватает 3 раз в с
+        if (self.mini_mode and self.mini is not None and self._poll_count % 3 == 0  # мини-окну хватает 3 раз в с
+                and not self.mini.minimized()):
             self.mini.refresh()
-        self._frames_wanted = (self.mini.visible and not self.mini.compact) if self.mini_mode and self.mini \
+        self._frames_wanted = (self.mini.visible and not self.mini.minimized()) if self.mini_mode and self.mini \
             else self.state() == "normal"
         self.after(120 if self.running_kind or handled else 250, self._poll)  # без работы — реже, незаметно
 
@@ -2510,7 +2511,7 @@ class App(ctk.CTk):
         if not self.preview.winfo_manager():
             self.preview.pack(fill="x", padx=22, pady=(0, 14), before=self.status)
         self.preview.set_frame(jpeg)
-        if self.mini is not None and not self.mini.compact:
+        if self.mini is not None:
             self.mini.set_frame(jpeg)
 
     def _watch_browser(self) -> None:
