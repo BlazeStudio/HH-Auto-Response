@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import gc
 import time
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from . import browser
 from .browser import FatalError, check_region, launch
 from .chats import ChatStats, log_chat_summary, read_rejections
 from .config import Config
+from . import control
 from .control import BrowserClosed, StopRequested
 from .logger import log
 from .resume import verify_resume
@@ -155,6 +157,32 @@ def run_chats(cfg: Config, dry_run: bool, root: Path, stats: ChatStats, log_path
 
 
 def _with_browser(cfg: Config, root: Path, work) -> int:
+    try:
+        return _browser_session(cfg, root, work)
+    except Exception:
+        if not control.user_stopped():
+            raise
+        # «Остановить» завершило зависший браузер — драйвер Playwright при выходе уже не отвечает
+        log.debug("после остановки:", exc_info=True)
+        return EXIT_STOPPED
+    finally:
+        _after_browser()
+
+
+def _after_browser() -> None:
+    """После работы — освободить память сразу: процессы браузера и драйвера этого запуска, если какие-то
+    не закрылись, завершить; модель Ollama, которую загружали мы, выгрузить (иначе Ollama держит её ещё
+    5 минут — 5–6 ГБ). Следующий запуск загрузит модель заново за секунды."""
+    left = browser.finish_processes()
+    if left:
+        log.debug(f"после закрытия браузера оставалось процессов: {left} — завершены")
+    from .ai import release_models
+
+    release_models()
+    gc.collect()
+
+
+def _browser_session(cfg: Config, root: Path, work) -> int:
     cfg.browser.profile_dir = str(root / cfg.browser.profile_dir)
     with sync_playwright() as pw:
         context = None
@@ -172,7 +200,7 @@ def _with_browser(cfg: Config, root: Path, work) -> int:
             log.warning("Остановлено пользователем (Ctrl+C)")
             return EXIT_STOPPED
         except BrowserClosed as e:
-            log.warning(f"Остановка: {e} — работа прервана")
+            log.warning("Остановлено пользователем" if control.user_stopped() else f"Остановка: {e} — работа прервана")
             return EXIT_STOPPED
         except StopRequested:
             log.warning("Остановлено пользователем")
@@ -183,12 +211,20 @@ def _with_browser(cfg: Config, root: Path, work) -> int:
         except PlaywrightError as e:
             first_line = (str(e).splitlines() or [""])[0]
             if "closed" in first_line.lower():
-                log.warning("Остановка: окно браузера закрыто — работа прервана")
+                log.warning("Остановлено пользователем" if control.user_stopped()
+                            else "Остановка: окно браузера закрыто — работа прервана")
                 return EXIT_STOPPED
             else:
                 log.error(f"Остановка: ошибка браузера: {first_line}")
                 log.debug("трассировка:", exc_info=True)
             return EXIT_FATAL
+        except Exception:
+            if not control.user_stopped():
+                raise
+            # браузер не закрывался, и «Остановить» завершило его процессы — связь с драйвером оборвалась
+            log.warning("Остановлено пользователем")
+            log.debug("трассировка:", exc_info=True)
+            return EXIT_STOPPED
         finally:
             browser.detach()
             if context is not None:

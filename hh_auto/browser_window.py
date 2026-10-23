@@ -58,6 +58,10 @@ if sys.platform == "win32":
     _u.MonitorFromPoint.restype = wintypes.HANDLE
     _u.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
     _u.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MonitorInfo)]
+    _u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    _k.OpenProcess.restype = wintypes.HANDLE
+    _k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _k.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 
 
 def supported() -> bool:
@@ -182,6 +186,56 @@ def show(near: int | None = None, activate: bool = True, rect: tuple[int, int, i
     if activate:
         _u.SetForegroundWindow(hwnd)
     return True
+
+
+def processes() -> dict[int, str]:
+    """Процессы, запущенные программой сейчас (драйвер Playwright, браузер и его части): pid → имя файла."""
+    if not supported():
+        return {}
+    ours = _descendants(os.getpid())
+    return {pid: name for pid, name in _process_names().items() if pid in ours
+            and name.lower() in ("chrome.exe", "msedge.exe", "node.exe", "chrome-headless-shell.exe")}
+
+
+def still_running(recorded: dict[int, str]) -> list[int]:
+    """Какие из запомненных процессов ещё живы (тот же pid и то же имя — не чужой процесс с тем же номером)."""
+    if not recorded or not supported():
+        return []
+    names = _process_names()
+    return [pid for pid, name in recorded.items() if names.get(pid, "").lower() == name.lower()]
+
+
+def terminate(pids: list[int]) -> None:
+    for pid in pids:
+        handle = _k.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+        if handle:
+            _k.TerminateProcess(handle, 1)
+            _k.CloseHandle(handle)
+
+
+def close() -> bool:
+    """Закрыть окно браузера, как крестиком (для «Остановить», если шаг затянулся)."""
+    hwnd = find(refresh=True)
+    if not hwnd:
+        return False
+    return bool(_u.PostMessageW(hwnd, 0x0010, 0, 0))  # WM_CLOSE
+
+
+def _process_names() -> dict[int, str]:
+    snapshot = _k.CreateToolhelp32Snapshot(0x2, 0)
+    if not snapshot or snapshot == wintypes.HANDLE(-1).value:
+        return {}
+    names: dict[int, str] = {}
+    try:
+        entry = _Entry()
+        entry.dwSize = ctypes.sizeof(_Entry)
+        ok = _k.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            names[entry.th32ProcessID] = entry.szExeFile
+            ok = _k.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        _k.CloseHandle(snapshot)
+    return names
 
 
 def opened_by_user() -> bool:

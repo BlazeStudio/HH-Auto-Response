@@ -149,6 +149,7 @@ class _Watch:
     """Пока идёт работа: окно браузера закрыли — остановить её; приложению — кадры для превью."""
 
     page: Page | None = None
+    processes: dict = {}  # pid → имя: браузер и драйвер Playwright этого запуска
     cdp = None  # своя связь с вкладкой — для кадров превью
     closing = False  # браузер закрывает сама программа — это не «закрыли окно»
     next_pulse = 0.0
@@ -157,7 +158,22 @@ class _Watch:
 
 def _watch_close(context: BrowserContext) -> None:
     _Watch.closing = False
-    context.on("close", lambda *_args: None if _Watch.closing else control.browser_closed("окно браузера закрыто"))
+    context.on("close", lambda *_args: None if _Watch.closing else control.browser_closed(_close_reason()))
+    _Watch.processes = browser_window.processes()  # браузер и драйвер этого запуска — на случай, если не закроются
+
+
+def _close_reason(what: str = "окно браузера закрыто") -> str:
+    return "остановлено пользователем" if control.user_stopped() else what
+
+
+def finish_processes() -> int:
+    """После закрытия: процессы браузера и драйвера этого запуска, которые почему-то остались, — завершить
+    (иначе они держат память до перезагрузки). Возвращает, сколько пришлось завершить."""
+    left = browser_window.still_running(_Watch.processes)
+    _Watch.processes = {}
+    if left:
+        browser_window.terminate(left)
+    return len(left)
 
 
 def attach(page: Page) -> None:
@@ -167,7 +183,7 @@ def attach(page: Page) -> None:
     def closed(*_args) -> None:
         if not _Watch.closing:  # окно закрыли целиком — сначала закрывается вкладка, других уже нет
             others = [p for p in page.context.pages if p is not page and not p.is_closed()]
-            control.browser_closed("вкладку с hh закрыли" if others else "окно браузера закрыто")
+            control.browser_closed(_close_reason("вкладку с hh закрыли" if others else "окно браузера закрыто"))
 
     page.on("close", closed)
     control.set_idle(_idle)
