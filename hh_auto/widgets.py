@@ -107,6 +107,19 @@ class TextLabel(_Light, tkinter.Label):
         tkinter.Label.configure(self, text=self.cget("text") if text is None else text,
                                 fg=self._apply_appearance_mode(self._color))
 
+    def resize(self, size: int | None = None, wraplength: int | None = None) -> None:
+        """Другой размер шрифта или ширина переноса (как у CTkFont и wraplength — до масштаба экрана)."""
+        size = self._size if size is None else size
+        wraplength = self._wrap if wraplength is None else wraplength
+        if (size, wraplength) != (self._size, self._wrap):
+            self._size, self._wrap = size, wraplength
+            self._restyle()
+
+    def text_width(self, text: str, size: int | None = None) -> int:
+        """Ширина текста в пикселях этим шрифтом (size — другой размер шрифта)."""
+        font = (_family(), -round((self._size if size is None else size) * self._get_widget_scaling()), self._weight)
+        return int(self.tk.call("font", "measure", font, text))
+
     def destroy(self):
         self._destroy_light()
         tkinter.Label.destroy(self)
@@ -145,6 +158,9 @@ class SelectableText(_Light, tkinter.Text):
         self._text = text
         self._init_light()
         self.bind("<Configure>", lambda _e: self._fit())
+        # ширина могла смениться, пока текст был не на экране (окно ещё не показано, страница скрыта), — тогда
+        # строки считались по width_px, и последняя пряталась («…дальше всё» без «автоматически»)
+        self.bind("<Map>", lambda _e: self._fit(), add="+")
         self.bind("<Button-1>", lambda _e: self.focus_set(), add="+")  # иначе Ctrl+C уйдёт в другое поле
         self.bind("<Command-KeyPress>" if sys.platform == "darwin" else "<Control-KeyPress>", self._on_ctrl)
         self.bind("<MouseWheel>", self._wheel)

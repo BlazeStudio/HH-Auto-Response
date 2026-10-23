@@ -21,6 +21,7 @@ APP_NAME = "HH-Auto-Response"
 ACCENT = ("#2563EB", "#3B82F6")
 ACCENT_HOVER = ("#1D4ED8", "#2563EB")
 ACCENT_SOFT = ("#DBEAFE", "#1E3A5F")
+LINK = ("#4F6FB0", "#6F8FC6")  # ссылка в меню — приглушённый синий, при наведении — ACCENT
 SIDEBAR_BG = ("#EDF0F5", "#131519")
 MAIN_BG = ("#F6F7FB", "#1A1C21")
 CARD_BG = ("#FFFFFF", "#23262D")

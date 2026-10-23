@@ -44,8 +44,8 @@ from .mini import BrowserPreview, MiniWindow
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
 from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, SelectableText, TextLabel, flush_paint, frozen, install_editing,
                       precise_timer, set_titlebar_dark, theme_switch)
-from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, MAIN_BG,
-                    MUTED, RED, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon, sharp_windows_icon)
+from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, LINK,
+                    MAIN_BG, MUTED, RED, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon, sharp_windows_icon)
 
 APP_VERSION = __version__
 GITHUB_URL = "https://github.com/BlazeStudio/hh-auto-response"
@@ -243,16 +243,35 @@ class ScrollFrame(ctk.CTkScrollableFrame):
 
 
 class StatCard(Card):
+    """Подпись и число. В узком окне подпись переносится по словам, а число мельчает и помещается целиком
+    (раньше обрезалось с обеих сторон: «тказов на 100 отклико», «200  (83%»)."""
+
+    VALUE_SIZES = (30, 26, 22, 19, 16)
+
     def __init__(self, master, title: str, color):
         super().__init__(master)
-        ctk.CTkLabel(self, text=title, text_color=MUTED, font=ctk.CTkFont(size=13)).pack(anchor="w", padx=16, pady=(12, 0))
-        self.value = ctk.CTkLabel(self, text="0", text_color=color, font=ctk.CTkFont(size=30, weight="bold"))
-        self.value.pack(anchor="w", padx=16, pady=(0, 12))
+        # width=1: ширину задаёт карточка, а не длина текста
+        self.title = TextLabel(self, title, color=MUTED, size=13, width=1)
+        self.title.pack(fill="x", padx=16, pady=(12, 0))
+        self.value = TextLabel(self, "0", color=color, size=30, weight="bold", width=1)
+        self.value.pack(fill="x", padx=16, pady=(0, 12))
+        self.bind("<Configure>", lambda _e: self._fit(), add="+")
 
     def set(self, value) -> None:
         text = str(value)
         if self.value.cget("text") != text:
             self.value.configure(text=text)
+            self._fit()
+
+    def _fit(self) -> None:
+        scale = self._get_widget_scaling()
+        room = self.winfo_width() - round(32 * scale)
+        if room <= 0:
+            return
+        self.title.resize(wraplength=room / scale)
+        text = self.value.cget("text")
+        self.value.resize(size=next((size for size in self.VALUE_SIZES if self.value.text_width(text, size) <= room),
+                                    self.VALUE_SIZES[-1]))
 
 
 class LogView(ctk.CTkTextbox):
@@ -468,7 +487,7 @@ class ResponsesPage(Page):
         }
         for i, card in enumerate(self.cards.values()):
             cards.grid_columnconfigure(i, weight=1, uniform="cards")
-            card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
+            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))  # одной высоты, даже если подпись в две строки
 
         # прогресс: дорожка того же цвета, пока откликов нет, — без «точки» на нуле
         self.progress = ctk.CTkProgressBar(self, height=8, progress_color=GREEN)
@@ -560,7 +579,7 @@ class ChatsPage(Page):
         }
         for i, card in enumerate(self.cards.values()):
             cards.grid_columnconfigure(i, weight=1, uniform="cards")
-            card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
+            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))  # одной высоты, даже если подпись в две строки
 
         controls = ctk.CTkFrame(self, fg_color="transparent")
         controls.pack(fill="x", pady=(16, 0))
@@ -1480,8 +1499,11 @@ class JournalsPage(Page):
             ctk.CTkButton(actions, text=text, command=command, height=30, corner_radius=10, fg_color="transparent",
                           border_width=1, border_color=RED, text_color=RED, hover_color=ACCENT_SOFT).pack(
                 side="left", padx=(8, 0))
-        self.usage = ctk.CTkLabel(actions, text="", text_color=MUTED)
-        self.usage.pack(side="right")
+        # «логи: 1,8 МБ • снимки: 18 МБ» — справа от кнопок, а если окно узкое — строкой ниже (раньше обрезалось)
+        self.actions = actions
+        self.usage = TextLabel(self, "", color=MUTED, bg=MAIN_BG)
+        self._usage_inline: bool | None = None
+        actions.bind("<Configure>", lambda _e: self._fit_usage(), add="+")
         self.current: Path | None = None
 
         body = ctk.CTkFrame(self, fg_color="transparent")
@@ -1545,6 +1567,22 @@ class JournalsPage(Page):
         size = lambda paths: sum(f.stat().st_size for f in paths if f.is_file()) / 1024 / 1024  # noqa: E731
         self.usage.configure(text=f"логи: {size(logs.glob('*.log')):.1f} МБ   •   снимки: "
                                   f"{size((logs / 'snapshots').glob('*')):.1f} МБ")
+        self._fit_usage()
+
+    def _fit_usage(self) -> None:
+        width = self.actions.winfo_width()
+        if width <= 1:  # ещё не показана
+            return
+        buttons = [w for w in self.actions.pack_slaves() if w is not self.usage]
+        gaps = round((8 * len(buttons) + 16) * self._get_widget_scaling())
+        inline = width >= sum(w.winfo_reqwidth() for w in buttons) + self.usage.winfo_reqwidth() + gaps
+        if inline == self._usage_inline:
+            return
+        self._usage_inline = inline
+        if inline:
+            self.usage.pack(in_=self.actions, side="right", pady=0)
+        else:
+            self.usage.pack(in_=self, after=self.actions, anchor="w", pady=(0, 10))
 
     def delete_current(self) -> None:
         path = self.current
@@ -1784,7 +1822,7 @@ class StatsPage(Page):
         }
         for i, card in enumerate(self.cards.values()):
             cards.grid_columnconfigure(i, weight=1, uniform="stats")
-            card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
+            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))  # одной высоты, даже если подпись в две строки
 
         self.scroll = ScrollFrame(self, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True)
@@ -1957,9 +1995,13 @@ class App(ctk.CTk):
     def _build_sidebar(self) -> None:
         bar = ctk.CTkFrame(self, width=230, corner_radius=0, fg_color=SIDEBAR_BG)
         bar.grid(row=0, column=0, sticky="nsw")
-        bar.grid_propagate(False)
+        # ширина меню не зависит от надписей: длинное состояние («Браузер сейчас не открыт») раньше раздвигало
+        # меню и сдвигало всю страницу
+        bar.pack_propagate(False)
+        self.sidebar = bar
+        # справа без отступа: название (~196 точек) не помещалось в 230 − 2×22 и обрезалось с обеих сторон
         ctk.CTkLabel(bar, text=APP_NAME, font=ctk.CTkFont(size=21, weight="bold"), text_color=ACCENT).pack(
-            anchor="w", padx=22, pady=(26, 0))
+            anchor="w", padx=(22, 0), pady=(26, 0))
         ctk.CTkLabel(bar, text="автоотклики на hh.ru", text_color=MUTED).pack(anchor="w", padx=22, pady=(0, 22))
 
         self.nav: dict[str, ctk.CTkButton] = {}
@@ -1976,43 +2018,70 @@ class App(ctk.CTk):
             button.pack(fill="x", padx=12, pady=2)
             self.nav[key] = button
 
-        spacer = ctk.CTkFrame(bar, fg_color="transparent")
-        spacer.pack(fill="both", expand=True)
-        # что сейчас в окне браузера (сам браузер спрятан за краем экрана) — появляется с первым кадром
+        # Низ меню — состояние, оформление, обновление, версия — прижат к низу и важнее превью: в невысоком
+        # окне прячется превью, а не версия со ссылкой (раньше между меню и низом стояла пустая рамка, которая
+        # просила 200 точек высоты и выталкивала низ за край окна)
+        foot = ctk.CTkFrame(bar, fg_color="transparent")
+        foot.pack(side="bottom", fill="x")
+        self.sidebar_foot = foot
+        # что сейчас в окне браузера (сам браузер спрятан за краем экрана) — с первым кадром, над низом меню
         self.preview = BrowserPreview(bar, self)
         # «Автозапуск сегодня в 15:00» — видно с любой страницы; щелчок — к настройкам расписания
-        self.schedule_label = ctk.CTkLabel(bar, text="", image=icon("clock", 14, MUTED), compound="left",
+        self.schedule_label = ctk.CTkLabel(foot, text="", image=icon("clock", 14, MUTED), compound="left",
                                            text_color=MUTED, anchor="w", cursor="hand2", font=ctk.CTkFont(size=12))
         self.schedule_label.bind("<Button-1>", lambda _e: self._open_schedule_settings())
 
-        self.status = ctk.CTkLabel(bar, text="●  Готово", text_color=MUTED, anchor="w",
-                                   font=ctk.CTkFont(size=14, weight="bold"))
+        # длинное состояние переносится на вторую строку, а не уходит за край
+        self.status = ctk.CTkLabel(foot, text="●  Готово", text_color=MUTED, anchor="w", justify="left",
+                                   wraplength=186, font=ctk.CTkFont(size=14, weight="bold"))
         self.status.pack(fill="x", padx=22)
-        self.status_detail = ctk.CTkLabel(bar, text="", text_color=MUTED, anchor="w", font=ctk.CTkFont(size=12))
+        self.status_detail = ctk.CTkLabel(foot, text="", text_color=MUTED, anchor="w", justify="left",
+                                          wraplength=186, font=ctk.CTkFont(size=12))
         self.status_detail.pack(fill="x", padx=22, pady=(0, 16))
 
-        ctk.CTkLabel(bar, text="Оформление", text_color=MUTED, anchor="w").pack(fill="x", padx=22)
+        ctk.CTkLabel(foot, text="Оформление", text_color=MUTED, anchor="w").pack(fill="x", padx=22)
         current = next((k for k, v in APPEARANCE.items() if v == self.prefs.get("appearance", "system")),
                        "Как в системе")
-        mode = ctk.CTkOptionMenu(bar, values=list(APPEARANCE), command=self._set_appearance)
+        mode = ctk.CTkOptionMenu(foot, values=list(APPEARANCE), command=self._set_appearance)
         mode.set(current)
         mode.pack(fill="x", padx=22, pady=(4, 10))
         # появляется, когда на GitHub вышла новая версия
         self._icon_download = icon("download", 16)  # свой значок: «⬇» есть не в каждом шрифте
         self._icon_restart = icon("restart", 16)
-        self.update_btn = ctk.CTkButton(bar, text="", image=self._icon_download, compound="left", height=36,
+        self.update_btn = ctk.CTkButton(foot, text="", image=self._icon_download, compound="left", height=36,
                                         corner_radius=10, fg_color=GREEN, hover_color=GREEN_HOVER,
                                         text_color="#FFFFFF", text_color_disabled="#FFFFFF",
                                         font=ctk.CTkFont(size=13, weight="bold"), command=self._update_clicked)
-        self.update_progress = ctk.CTkProgressBar(bar, height=4, corner_radius=2, progress_color=GREEN)
-        about = ctk.CTkFrame(bar, fg_color="transparent")
+        self.update_progress = ctk.CTkProgressBar(foot, height=4, corner_radius=2, progress_color=GREEN)
+        about = ctk.CTkFrame(foot, fg_color="transparent")
         about.pack(fill="x", padx=22, pady=(0, 16))
         self._about = about
         ctk.CTkLabel(about, text=f"версия {APP_VERSION}", text_color=MUTED, font=ctk.CTkFont(size=11)).pack(side="left")
-        github = ctk.CTkLabel(about, text="GitHub ↗", text_color=ACCENT, cursor="hand2",
+        github = ctk.CTkLabel(about, text="GitHub ↗", text_color=LINK, cursor="hand2",
                               font=ctk.CTkFont(size=11, underline=True))
         github.pack(side="left", padx=(10, 0))
         github.bind("<Button-1>", lambda _e: webbrowser.open(GITHUB_URL))
+        github.bind("<Enter>", lambda _e: github.configure(text_color=ACCENT))
+        github.bind("<Leave>", lambda _e: github.configure(text_color=LINK))
+        for widget in (bar, foot):
+            widget.bind("<Configure>", lambda _e: self.after_idle(self._fit_sidebar), add="+")
+
+    def _fit_sidebar(self) -> None:
+        """Превью браузера — между пунктами меню и низом, только если помещается целиком: в невысоком окне
+        оно прячется (кадры по-прежнему в мини-окне), а состояние, оформление и версия остаются на месте."""
+        if self.last_frame is None:  # кадров ещё не было — превью не нужно
+            return
+        try:
+            last = self.nav["journals"]
+            room = self.sidebar.winfo_height() - last.winfo_y() - last.winfo_height() -                 self.sidebar_foot.winfo_reqheight()
+            need = self.preview.winfo_reqheight() + round(30 * ctk.ScalingTracker.get_widget_scaling(self))
+        except tkinter.TclError:
+            return
+        fits = room >= need  # 14 — отступ под превью, остальное — хотя бы небольшой просвет над ним
+        if fits and not self.preview.winfo_manager():
+            self.preview.pack(side="bottom", fill="x", padx=22, pady=(0, 14))
+        elif not fits and self.preview.winfo_manager():
+            self.preview.pack_forget()
 
     def _build_main(self) -> None:
         main = ctk.CTkFrame(self, fg_color="transparent")
@@ -2532,9 +2601,9 @@ class App(ctk.CTk):
 
     def _on_frame(self, jpeg: bytes) -> None:
         self.last_frame = jpeg
-        if not self.preview.winfo_manager():
-            self.preview.pack(fill="x", padx=22, pady=(0, 14), before=self.status)
         self.preview.set_frame(jpeg)
+        if not self.preview.winfo_manager():
+            self._fit_sidebar()
         if self.mini is not None:
             self.mini.set_frame(jpeg)
 
@@ -2550,12 +2619,12 @@ class App(ctk.CTk):
             browser_window.show(near=self._hwnd())
             self.preview.set_state(False)
         else:
-            self.toast("Браузер сейчас не открыт")
+            self.toast("Браузер не открыт")
 
     def toggle_browser(self) -> None:
         hwnd = browser_window.find()
         if not hwnd:
-            self.toast("Браузер сейчас не открыт")
+            self.toast("Браузер не открыт")
             return
         if browser_window.is_hidden(hwnd):
             browser_window.show(near=self._hwnd())
