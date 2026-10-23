@@ -19,6 +19,7 @@ import time
 from typing import Callable
 
 _stop = threading.Event()
+_user = threading.Event()  # «Остановить» нажал человек (а не браузер закрылся сам)
 _closed = threading.Event()
 _closed_reason = ""
 _idle: Callable[[], None] | None = None
@@ -35,7 +36,12 @@ class BrowserClosed(StopRequested):
 
 
 def request_stop() -> None:
+    _user.set()
     _stop.set()
+
+
+def user_stopped() -> bool:
+    return _user.is_set()
 
 
 def browser_closed(reason: str = "окно браузера закрыто") -> None:
@@ -48,6 +54,7 @@ def browser_closed(reason: str = "окно браузера закрыто") -> 
 
 def reset() -> None:
     _stop.clear()
+    _user.clear()
     _closed.clear()
 
 

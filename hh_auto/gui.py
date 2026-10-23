@@ -2364,12 +2364,31 @@ class App(ctk.CTk):
         self.worker = threading.Thread(target=work, name="worker", daemon=True)
         self.worker.start()
 
+    STOP_CLOSE_AFTER = 6.0  # с: шаг не закончился — закрыть окно браузера (его ожидания оборвутся сразу)
+    STOP_KILL_AFTER = 8.0  # с: и это не помогло — завершить процессы браузера и драйвера этого запуска
+
     def stop(self) -> None:
+        """«Остановить»: работа заканчивается в ближайшей паузе. Если шаг затянулся (страница грузится до 45 с,
+        hh не отвечает) — закрываем браузер, а если и он завис — завершаем его процессы. Раньше ждали шага
+        до конца, и казалось, что всё зависло."""
         if self.worker and self.worker.is_alive():
             control.request_stop()
             self._set_status("●  Останавливаюсь…", AMBER, "дождитесь завершения шага")
             for page in (self.pages["responses"], self.pages["chats"]):
                 set_stop_enabled(page.stop_btn, False)
+            worker = self.worker
+            self.after(round(self.STOP_CLOSE_AFTER * 1000), self._stop_escalate, worker, 1)
+
+    def _stop_escalate(self, worker: threading.Thread, stage: int) -> None:
+        if worker is not self.worker or not worker.is_alive():
+            return  # уже остановилось (или это прошлый запуск)
+        if stage == 1:
+            browser_window.close()
+            self._set_status("●  Останавливаюсь…", AMBER, "шаг затянулся — закрываю браузер")
+            self.after(round(self.STOP_KILL_AFTER * 1000), self._stop_escalate, worker, 2)
+        else:
+            browser.finish_processes()
+            self._set_status("●  Останавливаюсь…", AMBER, "браузер не закрывался — завершил его")
 
     def _set_running(self, running: bool) -> None:
         self.pages["responses"].set_running(running)

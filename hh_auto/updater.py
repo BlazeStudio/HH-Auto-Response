@@ -157,9 +157,12 @@ def download(release: Release, progress: Callable[[int, int], None] | None = Non
     в ней что-то было занято (антивирус проверял свежие файлы, ещё работал установщик прошлого обновления
     или второй копии программы), распаковка поверх падала с «Permission denied»."""
     base = update_dir()
-    _remove_leftovers(base)  # прошлые загрузки — что получится; занятое уберётся в другой раз
     folder = base / f"{release.version}-{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
-    folder.mkdir(parents=True, exist_ok=True)
+    with _folders_lock:
+        _our_folders.clear()  # защищена только последняя загрузка; прежние этого же запуска — убрать
+        _our_folders.add(folder.resolve())  # фоновая чистка (cleanup) эту папку не тронет
+        _remove_leftovers(base)  # прошлые загрузки — что получится; занятое уберётся в другой раз
+        folder.mkdir(parents=True, exist_ok=True)
     archive = folder / release.asset
     digest = hashlib.sha256()
     try:
@@ -292,13 +295,25 @@ def _long(path: Path) -> str:
     return "\\\\?\\" + text if sys.platform == "win32" and not text.startswith("\\\\") else text
 
 
+# Загрузки этого запуска программы: фоновая чистка через 20 с после старта удаляла и их — если «Обновить»
+# нажали сразу, архив исчезал прямо во время распаковки («в архиве … нет приложения»; со второго раза — ок)
+_our_folders: set[Path] = set()
+_folders_lock = threading.Lock()
+
+
 def _remove_leftovers(base: Path) -> None:
-    """Убрать прошлые загрузки обновлений; занятые (установщик ещё работает) оставить — уберутся потом."""
+    """Убрать прошлые загрузки обновлений; занятые (установщик ещё работает) оставить — уберутся потом,
+    загрузки этого запуска (идёт или готова к установке) — не трогать."""
     try:
         items = list(base.iterdir())
     except OSError:
         return
     for item in items:
+        try:
+            if item.resolve() in _our_folders:
+                continue
+        except OSError:
+            continue
         _remove(item)
 
 
@@ -362,7 +377,8 @@ def cleanup() -> None:
     """Убрать остатки прошлого обновления: распакованный архив и отложенные старые файлы."""
     if not is_frozen():
         return
-    _remove_leftovers(update_dir())
+    with _folders_lock:
+        _remove_leftovers(update_dir())
     target = install_dir()
     folder = target.parent if sys.platform == "darwin" else target
     try:

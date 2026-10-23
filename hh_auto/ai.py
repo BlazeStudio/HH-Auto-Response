@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -179,12 +180,9 @@ _ollama_proc: subprocess.Popen | None = None  # Ollama, которую запу�
 _ollama_models: set[tuple[str, str]] = set()  # (адрес, модель), которые мы загружали в память
 
 
-def shutdown_ollama() -> None:
-    """При выходе: выгрузить наши модели из видеопамяти и остановить Ollama, если её запускали мы.
-
-    Ollama, которую запустил сам пользователь, продолжает работать — из неё только выгружаются наши модели.
-    """
-    global _ollama_proc
+def release_models() -> None:
+    """Выгрузить из памяти модели, которые загружали мы (Ollama сама держит их ещё 5 минут после последнего
+    запроса — 5–6 ГБ видеопамяти или памяти). Зовём после каждого запуска: следующий загрузит заново за секунды."""
     for root, model in list(_ollama_models):
         try:
             body = json.dumps({"model": model, "keep_alive": 0}).encode()
@@ -195,6 +193,15 @@ def shutdown_ollama() -> None:
         except (urllib.error.URLError, OSError, ValueError):
             pass
     _ollama_models.clear()
+
+
+def shutdown_ollama() -> None:
+    """При выходе: выгрузить наши модели из видеопамяти и остановить Ollama, если её запускали мы.
+
+    Ollama, которую запустил сам пользователь, продолжает работать — из неё только выгружаются наши модели.
+    """
+    global _ollama_proc
+    release_models()
     proc, _ollama_proc = _ollama_proc, None
     if proc is None or proc.poll() is not None:
         return
@@ -206,6 +213,33 @@ def shutdown_ollama() -> None:
 
 
 atexit.register(shutdown_ollama)
+
+
+def _read_interruptible(request: urllib.request.Request, timeout: float) -> bytes:
+    """Запрос к нейросети. В рабочем потоке приложения ответ ждём так, чтобы «Остановить» срабатывало сразу,
+    а не через минуту-три, когда модель договорит (сам запрос дорабатывает в фоне и выбрасывается)."""
+    if threading.current_thread().name != "worker":
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    from . import control
+
+    box: dict = {}
+
+    def run() -> None:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                box["data"] = response.read()
+        except BaseException as e:  # noqa: BLE001 — передаём в рабочий поток как есть
+            box["error"] = e
+
+    thread = threading.Thread(target=run, name="ai-request", daemon=True)
+    thread.start()
+    while thread.is_alive():
+        control.check()  # «Остановить» — не ждём ответа модели
+        thread.join(0.2)
+    if "error" in box:
+        raise box["error"]
+    return box["data"]
 
 
 def is_local_url(url: str) -> bool:
@@ -606,8 +640,7 @@ class AiClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(f"{self.base_url}/chat/completions", data=body, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=self.cfg.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            data = json.loads(_read_interruptible(request, self.cfg.timeout).decode("utf-8"))
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:300]
             if e.code == 404 and "page not found" in detail.lower():  # адрес не того API, а не нехватка модели
