@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import gc
 import time
+from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from .auth import ensure_logged_in
+from .auth import ensure_logged_in, is_logged_in
 from . import browser
 from .browser import FatalError, check_region, launch
 from .chats import ChatStats, log_chat_summary, read_rejections
@@ -20,6 +21,7 @@ from .config import Config
 from . import control
 from .control import BrowserClosed, StopRequested
 from .logger import log
+from . import raising
 from .resume import verify_resume
 from .search import describe_search
 from .runner import RunOptions, Stats, log_summary, run
@@ -156,9 +158,11 @@ def run_chats(cfg: Config, dry_run: bool, root: Path, stats: ChatStats, log_path
     return code
 
 
-def _with_browser(cfg: Config, root: Path, work) -> int:
+def _with_browser(cfg: Config, root: Path, work, auto_raise: bool = True, login: bool = True) -> int:
+    """auto_raise — заодно поднять резюме, если пора; login — нет входа: показать окно входа и ждать
+    (False — сразу закончить с ошибкой: так работают фоновые запуски, чтобы окно не выскакивало само)."""
     try:
-        return _browser_session(cfg, root, work)
+        return _browser_session(cfg, root, work, auto_raise, login)
     except Exception:
         if not control.user_stopped():
             raise
@@ -182,7 +186,7 @@ def _after_browser() -> None:
     gc.collect()
 
 
-def _browser_session(cfg: Config, root: Path, work) -> int:
+def _browser_session(cfg: Config, root: Path, work, auto_raise: bool, login: bool) -> int:
     cfg.browser.profile_dir = str(root / cfg.browser.profile_dir)
     with sync_playwright() as pw:
         context = None
@@ -193,7 +197,12 @@ def _browser_session(cfg: Config, root: Path, work) -> int:
             log.info("")
             check_region(page, cfg)
             log.info("")
-            ensure_logged_in(page, cfg)
+            if login:
+                ensure_logged_in(page, cfg)
+            elif not is_logged_in(page):
+                raise FatalError("нет входа в hh — запустите «Отклики» или «Чаты» и войдите в открывшемся окне")
+            if auto_raise:
+                _raise_if_due(page, cfg, root)
             work(page)
             return EXIT_OK
         except KeyboardInterrupt:
@@ -207,6 +216,7 @@ def _browser_session(cfg: Config, root: Path, work) -> int:
             return EXIT_STOPPED
         except FatalError as e:
             log.error(f"Остановка: {e}")
+            browser.last_error = str(e)
             return EXIT_FATAL
         except PlaywrightError as e:
             first_line = (str(e).splitlines() or [""])[0]
@@ -232,6 +242,56 @@ def _browser_session(cfg: Config, root: Path, work) -> int:
                     context.close()
                 except Exception:
                     pass
+
+
+def _raise_if_due(page, cfg: Config, root: Path) -> None:
+    """Браузер уже открыт и вход есть — заодно поднять резюме, если подошло время ([raising]). Сбой подъёма
+    основную работу не останавливает."""
+    try:
+        if raising.raise_due(page, cfg, root) is not None:
+            log.info("")
+    except Exception as e:  # noqa: BLE001 — «Остановить» (StopRequested) сюда не попадает
+        log.warning(f"  ! поднять резюме не получилось: {(str(e).splitlines() or [''])[0]}")
+        log.debug("трассировка:", exc_info=True)
+
+
+def run_raise(cfg: Config, root: Path, log_path: Path, result: dict | None = None, login: bool = True) -> int:
+    """Только поднять резюме: по таймеру в приложении или из консоли (scripts/raise_resume.py). Если ещё рано —
+    браузер не открываем. result["raise"] — итог (RaiseResult) для окна приложения; login=False — без входа
+    в hh не ждать его, а закончить (фоновый запуск в приложении)."""
+    log_config_notes(cfg)
+    due = raising.next_due(root, cfg)
+    if due is None:
+        log.warning("поднятие резюме выключено: [raising] enabled = false")
+        return EXIT_OK
+    if due > datetime.now():
+        log.info(f"поднимать резюме ещё рано — следующее в {due:%H:%M} ({due:%d.%m})")
+        return EXIT_OK
+
+    def work(page):
+        outcome = raising.raise_due(page, cfg, root)
+        if result is not None:
+            result["raise"] = outcome
+        if outcome is not None and outcome.failed and not (outcome.raised or outcome.early):
+            raise FatalError("резюме поднять не получилось — подробности выше")
+
+    browser.last_error = ""
+    code = _with_browser(cfg, root, work, auto_raise=False, login=login)
+    if result is not None and code == EXIT_FATAL:
+        result["error"] = browser.last_error  # «нет входа в hh …» — для меню слева
+    _prune_logs(root / "logs", "raise_", keep=30)
+    log.info(f"подробный лог: {log_path}")
+    return code
+
+
+def _prune_logs(folder: Path, prefix: str, keep: int) -> None:
+    """Журналы подъёма резюме пишутся каждые 4 часа — храним последние keep, чтобы не заслоняли остальные."""
+    logs = sorted(folder.glob(f"{prefix}*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in logs[keep:]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 def run_login(cfg: Config, root: Path, log_path: Path) -> int:

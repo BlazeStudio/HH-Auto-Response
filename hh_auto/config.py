@@ -234,6 +234,13 @@ class Schedule:
         return sorted({_parse_time(t) for t in self.times})
 
 
+@dataclass
+class Raising:
+    # Поднятие резюме в поиске hh — бесплатно, раз в 4 часа, как кнопка «Поднять в поиске» на «Мои резюме»
+    enabled: bool = False
+    all_resumes: bool = False  # false — только резюме из resume_url / resume= в ссылке поиска (нет его — все)
+
+
 def _parse_time(text: str) -> tuple[int, int]:
     m = re.fullmatch(r"\s*(\d{1,2})[:.](\d{2})\s*", text)
     if not m or int(m[1]) > 23 or int(m[2]) > 59:
@@ -279,6 +286,7 @@ class Config:
     logs: Logs = field(default_factory=Logs)
     notify: Notify = field(default_factory=Notify)
     schedule: Schedule = field(default_factory=Schedule)
+    raising: Raising = field(default_factory=Raising)
     stats: StatsSettings = field(default_factory=StatsSettings)
 
     @property
@@ -429,6 +437,7 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         logs=section(Logs, "logs"),
         notify=section(Notify, "notify"),
         schedule=section(Schedule, "schedule"),
+        raising=section(Raising, "raising"),
         stats=section(StatsSettings, "stats"),
     )
     ignored += sorted(raw)  # незнакомые разделы и параметры верхнего уровня

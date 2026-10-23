@@ -3,7 +3,9 @@
 #   login              открыть браузер для первого входа в hh (смотреть по VNC через SSH-туннель)
 #   responses [опции]  один запуск откликов (опции как у scripts/responses.py: --dry-run, --limit 5 …)
 #   chats [опции]      один запуск чатов (опции как у scripts/chats.py)
-#   loop               отклики и чаты по кругу раз в INTERVAL_HOURS часов (по умолчанию 6)
+#   raise [--force]    поднять резюме в поиске, если пора ([raising] в config.toml)
+#   loop               отклики и чаты по кругу раз в INTERVAL_HOURS часов (по умолчанию 6), а между ними
+#                      раз в час — подъём резюме, если он включён и пора
 #   любая другая команда выполняется как есть (например, bash)
 set -euo pipefail
 
@@ -48,6 +50,9 @@ case "$cmd" in
   chats)
     exec python /app/scripts/chats.py "$@"
     ;;
+  raise)
+    exec python /app/scripts/raise_resume.py "$@"
+    ;;
   loop)
     hours="${INTERVAL_HOURS:-6}"
     [ "${VNC_ALWAYS:-0}" = "1" ] && start_vnc
@@ -59,7 +64,11 @@ case "$cmd" in
         python /app/scripts/chats.py || echo "чаты завершились с кодом $?"
       fi
       echo "━━━ следующий запуск через ${hours} ч"
-      sleep "$((hours * 3600))"
+      for _ in $(seq "$hours"); do
+        sleep 3600
+        # резюме — раз в 4 часа ([raising]); выключено или рано — скрипт сразу выходит, браузер не открывается
+        python /app/scripts/raise_resume.py || echo "подъём резюме завершился с кодом $?"
+      done
     done
     ;;
   *)

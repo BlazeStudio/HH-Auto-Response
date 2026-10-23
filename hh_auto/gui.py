@@ -25,7 +25,7 @@ import tkinter
 import customtkinter as ctk
 
 from . import __version__, control
-from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_chats, run_responses
+from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_chats, run_raise, run_responses
 from .chats import ChatStats
 from . import hh_filters as hhf
 from .hh_dicts import INDUSTRIES, INDUSTRY_NAMES, PROFESSIONAL_ROLE_CATEGORIES, PROFESSIONAL_ROLES
@@ -39,7 +39,7 @@ from .stats import METRICS, SKIP_KINDS, StatsStore, buckets, totals
 from .logger import SUCCESS, log, setup_logging
 from .paths import app_root, bundled, is_frozen
 from .runner import RunOptions, Stats
-from . import browser, browser_window, updater
+from . import browser, browser_window, raising, updater
 from .mini import BrowserPreview, MiniWindow
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
 from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, SelectableText, TextLabel, flush_paint, frozen, install_editing,
@@ -930,6 +930,14 @@ SETTINGS = [
         ("schedule", "chats_after", "После откликов прочитать отказы в чатах", "bool",
          "И ответить ботам hh, если включены «ИИ-ответы в чатах»"),
     ]),
+    ("Поднятие резюме", [
+        ("raising", "enabled", "Поднимать резюме в поиске каждые 4 часа", "bool",
+         "Бесплатно, как кнопка «Поднять в поиске» на hh: свежее резюме работодатели видят выше. Пока приложение "
+         "открыто (можно свернуть), браузер раз в 4 часа на несколько секунд откроется в фоне; если в это время "
+         "идут отклики или чаты — поднимется в их начале. Тот же вход, что для откликов: логин и пароль не нужны"),
+        ("raising", "all_resumes", "Поднимать все мои резюме", "bool",
+         "Выключено — только резюме из ссылки поиска (resume=) или «Ссылки на резюме»; если её нет — все"),
+    ]),
     ("Уведомления по итогам", [
         ("notify", "desktop", "Показывать уведомление на компьютере, когда запуск закончился", "bool",
          "Отправлено, пропущено, ошибки. Приложение спросит разрешение после первого запуска"),
@@ -972,7 +980,7 @@ SETTINGS_TABS = [
     ("Фильтры hh", ("Фильтры hh",)),
     ("Отклики", ("Лимиты и паузы", "Сопроводительное письмо", "Вопросы работодателя", "Вакансии в другом регионе")),
     ("Нейросеть", ("ИИ-ответы в чатах", "ИИ-фильтр вакансий")),
-    ("Расписание", ("Расписание запусков", "Уведомления по итогам")),
+    ("Расписание", ("Расписание запусков", "Поднятие резюме", "Уведомления по итогам")),
     ("Прочее", ("Логи и место на диске", "Статистика", "Браузер и сеть", "Данные приложения")),
 ]
 # Варианты для полей с несколькими галочками: значение в config → подпись
@@ -1175,6 +1183,13 @@ class SettingsPage(Page):
                 self.filter_test_btn.pack(side="left")
                 SelectableText(row, "Отправит нейросети тестовую вакансию и покажет, что она решила",
                                color=MUTED, size=12, width_px=420).pack(side="left", fill="x", expand=True, padx=12)
+            if section_title == "Поднятие резюме":
+                row = PlainFrame(card)
+                row.pack(fill="x", padx=16, pady=(8, 0))
+                _secondary_button(row, "Поднять сейчас", lambda: self.app.start_raise(manual=True), width=170,
+                                  height=32).pack(side="left")
+                self.raise_info = SelectableText(row, "", color=MUTED, size=12, width_px=520)
+                self.raise_info.pack(side="left", fill="x", expand=True, padx=12)
             if section_title == "Уведомления по итогам":
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
@@ -1469,6 +1484,12 @@ class SettingsPage(Page):
         else:
             messagebox.showerror(APP_NAME, text.replace("Не получилось: ", "Нейросеть не ответила\n\n", 1))
 
+    def show_raise_info(self, text: str) -> None:
+        """«Последний раз поднято … Следующее — …» у кнопки «Поднять сейчас»."""
+        info = getattr(self, "raise_info", None)
+        if info is not None and info._text != text:
+            info.set(text)
+
     @staticmethod
     def _label(section: str, key: str) -> str:
         for _, items in SETTINGS:
@@ -1535,7 +1556,7 @@ class JournalsPage(Page):
             return
         items = []
         for path in logs[:200]:
-            kind = "Чаты" if path.name.startswith("chats_") else "Отклики"
+            kind = {"chats": "Чаты", "raise": "Подъём", "resume": "Резюме"}.get(path.name.split("_")[0], "Отклики")
             when = datetime.fromtimestamp(path.stat().st_mtime).strftime("%d.%m %H:%M")
             items.append((path, f"{kind}   {when}"))
         current = self.current if self.current in logs else logs[0]
@@ -1960,6 +1981,8 @@ class App(ctk.CTk):
         self.update_root: Path | None = None  # скачанная и распакованная новая версия
         self.update_busy = False
         self.chain_chats = False  # после откликов по расписанию — прочитать чаты
+        self.raise_result: dict = {}  # итог подъёма резюме из рабочего потока
+        self._raise_after = time.time() + 30  # подъём резюме по таймеру — не в первые секунды после запуска
         self.schedule_since = datetime.now()  # время до этой минуты по расписанию уже не запускаем
         self.cfg = self.read_config_file(check_search_url=False)
         self.xlsx_path = self.root_dir / "logs" / "responses.xlsx"
@@ -1975,7 +1998,9 @@ class App(ctk.CTk):
         self.after(120, self._poll)
         browser.frame_sink = lambda jpeg: self.events.put(("frame", jpeg))  # кадры браузера для превью
         browser.frame_wanted = lambda: self._frames_wanted  # окно свёрнуто — кадры не снимаем зря
-        self.after(2500, self._ensure_mini)  # мини-окно — заранее, пока программа простаивает
+        # мини-окно — заранее, пока программа простаивает. Только если его ещё не было: пропавшее мини-окно
+        # пересоздавать молча нельзя — _poll должен заметить пропажу и вернуть окно программы
+        self.after(2500, lambda: self.mini is None and self._ensure_mini())
         self.bind("<Unmap>", self._on_unmap, add="+")
         self.bind_all("<Control-KeyPress>", self._ctrl_key, add="+")
         self.pages["responses"].update_totals(self.summary)
@@ -2030,6 +2055,10 @@ class App(ctk.CTk):
         self.schedule_label = ctk.CTkLabel(foot, text="", image=icon("clock", 14, MUTED), compound="left",
                                            text_color=MUTED, anchor="w", cursor="hand2", font=ctk.CTkFont(size=12))
         self.schedule_label.bind("<Button-1>", lambda _e: self._open_schedule_settings())
+        # «Подъём резюме сегодня в 19:46» ([raising]); щелчок — к настройкам
+        self.raise_label = ctk.CTkLabel(foot, text="", image=icon("up", 14, MUTED), compound="left",
+                                        text_color=MUTED, anchor="w", cursor="hand2", font=ctk.CTkFont(size=12))
+        self.raise_label.bind("<Button-1>", lambda _e: self._open_schedule_settings())
 
         # длинное состояние переносится на вторую строку, а не уходит за край
         self.status = ctk.CTkLabel(foot, text="●  Готово", text_color=MUTED, anchor="w", justify="left",
@@ -2303,14 +2332,18 @@ class App(ctk.CTk):
         """Раз в 15 секунд: не пора ли запустить отклики по расписанию ([schedule])."""
         self.after(15_000, self._schedule_tick)
         self._show_next_run()
-        if not self.cfg.schedule.enabled or self.closing:
-            return
-        due = self._due_slot(datetime.now())
-        if due is None or (self.worker and self.worker.is_alive()):
+        if self.closing or self.worker and self.worker.is_alive():
             return  # идёт работа — запустим, когда она закончится
-        self.schedule_since = due
-        self.toast("Запуск по расписанию")
-        self.start_responses(False, scheduled=True)
+        due = self._due_slot(datetime.now()) if self.cfg.schedule.enabled else None
+        if due is not None:
+            self.schedule_since = due
+            self.toast("Запуск по расписанию")
+            self.start_responses(False, scheduled=True)
+            return
+        if self.cfg.raising.enabled and time.time() >= self._raise_after:
+            due = raising.next_due(self.root_dir, self.cfg)
+            if due is not None and due <= datetime.now():
+                self.start_raise()
 
     def _due_slot(self, now: datetime) -> datetime | None:
         """Самое позднее время по расписанию между schedule_since и сейчас (не старше SCHEDULE_CATCH_UP)."""
@@ -2351,13 +2384,44 @@ class App(ctk.CTk):
                     when = ("сегодня" if days == 0 else "завтра" if days == 1
                             else WEEKDAYS[str(moment.isoweekday())].lower())
                     text = f"Автозапуск {when} в {moment:%H:%M}"
-        if text and self.schedule_label.cget("text") != f" {text}":
-            self.schedule_label.configure(text=f" {text}")
-        if bool(text) != bool(self.schedule_label.winfo_manager()):
+        now = datetime.now()
+        self._show_line(self.schedule_label, text)
+        self._show_line(self.raise_label, self._raise_text(now))
+        self.pages["settings"].show_raise_info(self._raise_info(now))
+
+    def _show_line(self, label: ctk.CTkLabel, text: str) -> None:
+        """Строка над состоянием в меню слева (автозапуск, подъём резюме): пусто — строки нет."""
+        if text and label.cget("text") != f" {text}":
+            label.configure(text=f" {text}")
+        if bool(text) != bool(label.winfo_manager()):
             if text:
-                self.schedule_label.pack(fill="x", padx=22, pady=(0, 12), before=self.status)
+                label.pack(fill="x", padx=22, pady=(0, 8), before=self.status)
             else:
-                self.schedule_label.pack_forget()
+                label.pack_forget()
+
+    def _raise_text(self, now: datetime) -> str:
+        due = raising.next_due(self.root_dir, self.cfg)
+        if due is None:
+            return ""
+        if self.running_kind == "raise":
+            return "Поднимаю резюме…"
+        if due <= now:
+            return "Подъём резюме — после этой работы" if self.worker and self.worker.is_alive() else \
+                "Подъём резюме — сейчас"
+        days = (due.date() - now.date()).days
+        when = "сегодня" if days == 0 else "завтра" if days == 1 else f"{due:%d.%m}"
+        return f"Подъём резюме {when} в {due:%H:%M}"
+
+    def _raise_info(self, now: datetime) -> str:
+        """Подпись у «Поднять сейчас» в настройках: когда поднималось и когда следующее."""
+        last = raising.last_raised(self.root_dir)
+        text = f"Последний раз поднято {last:%d.%m в %H:%M}." if last else "Ещё не поднималось."
+        due = raising.next_due(self.root_dir, self.cfg)
+        if due is not None:
+            text += " Следующее — " + ("сейчас" if due <= now else f"{due:%d.%m в %H:%M}") + "."
+        else:
+            text += " Само не поднимается — включите галочку выше. «Поднять сейчас» работает и без неё."
+        return text
 
     def _open_schedule_settings(self) -> None:
         self.show_page("settings")
@@ -2398,6 +2462,30 @@ class App(ctk.CTk):
         self._start("chats", "Чаты", "chats",
                     lambda log_path: run_chats(cfg, dry_run, self.root_dir, self.chat_stats, log_path))
 
+    RAISE_RETRY = 1800  # с: подъём резюме не удался (нет входа, сбой) — следующая попытка не раньше
+
+    def start_raise(self, manual: bool = False) -> None:
+        """Поднять резюме: само по таймеру ([raising]) или «Поднять сейчас» в настройках. Само — без окна
+        входа: нет входа в hh — подождём, пока вы запустите отклики или чаты."""
+        if self.worker and self.worker.is_alive():
+            if manual:
+                messagebox.showinfo(APP_NAME, "Сейчас идёт другая работа\n\nНажмите, когда она закончится: "
+                                              "одновременно браузер работать не может.")
+            return
+        try:
+            cfg = self.read_config_file(check_search_url=False)
+        except ConfigError as e:
+            if manual:
+                messagebox.showwarning(APP_NAME, f"Проверьте настройки: {e}")
+            return
+        if manual:
+            cfg.raising.enabled = True
+            raising.forget_due(self.root_dir)
+        self.raise_result = {}
+        self._start("raise", "Поднятие резюме", "raise",
+                    lambda log_path: run_raise(cfg, self.root_dir, log_path, self.raise_result, login=manual),
+                    clear=False)
+
     def _config_for_run(self, need_search_url: bool = True) -> Config | None:
         try:
             return self.read_config_file(check_search_url=need_search_url)
@@ -2406,13 +2494,16 @@ class App(ctk.CTk):
             self.show_page("settings")
             return None
 
-    def _start(self, kind: str, title: str, log_name: str, job) -> None:
+    def _start(self, kind: str, title: str, log_name: str, job, clear: bool = True) -> None:
+        """clear=False — журнал выполнения не очищать (короткий фоновый подъём резюме не стирает итоги
+        прошлого запуска откликов)."""
         if self.worker and self.worker.is_alive():
             return
         control.reset()
         self.running_kind = kind
         self.started_at = time.monotonic()
-        self.console.clear()
+        if clear:
+            self.console.clear()
         self._set_running(True)
         self._set_status(f"●  {title}", ACCENT, "запуск…")
 
@@ -2478,6 +2569,13 @@ class App(ctk.CTk):
         if kind == "responses":
             summary = f"отправлено {self.stats.applied}, пропущено {sum(self.stats.skipped.values())}, " \
                       f"ошибок {self.stats.failed}"
+        elif kind == "raise":
+            outcome = (self.raise_result or {}).get("raise")
+            error = (self.raise_result or {}).get("error")
+            summary = outcome.summary() if outcome is not None else (
+                "поднимать ещё рано" if code == EXIT_OK else error or "подробности — в «Журналах»")
+            if code != EXIT_OK:  # нет входа или сбой — не пытаться каждые 15 секунд
+                self._raise_after = time.time() + self.RAISE_RETRY
         elif kind == "resume":
             summary = "резюме загружено" if code == EXIT_OK else "резюме не загружено — см. «Журналы»"
             self.pages["ai"].invalidate()
@@ -2490,9 +2588,14 @@ class App(ctk.CTk):
             self._set_status("●  Готово", GREEN, f"{summary} • {minutes} мин {seconds} с")
         elif code == EXIT_STOPPED:
             self._set_status("●  Остановлено", AMBER, summary)
+        elif kind == "raise":  # фоновый подъём: причина видна сразу («нет входа в hh …»)
+            self._set_status("●  Резюме не поднято", AMBER, summary)
         else:
             self._set_status("●  Остановлено с ошибкой", RED, "подробности в журнале")
-        self.pages["responses"].current.configure(text=f"Последний запуск: {summary}")
+        if kind != "raise":
+            self.pages["responses"].current.configure(text=f"Последний запуск: {summary}")
+        # следом за работой может быть запуск чатов по расписанию — подъём резюме его не опередит
+        self._raise_after = max(self._raise_after, time.time() + 10)
         if self.pages["stats"].winfo_ismapped():  # статистику смотрят прямо сейчас — с итогами этого запуска
             self.pages["stats"].refresh()
         if self.closing:
@@ -2534,6 +2637,10 @@ class App(ctk.CTk):
         handled = 0
         try:
             for _ in range(400):
+                if self.destroyed:
+                    # окно закрыл обработчик события («Перезапустить и обновить» → новая версия): дальше
+                    # ни событий, ни виджетов — раньше здесь была ошибка «application has been destroyed»
+                    return
                 event = self.events.get_nowait()
                 handled += 1
                 if event[0] == "log":
@@ -2566,6 +2673,8 @@ class App(ctk.CTk):
                     self._on_update_ready(*event[1:])
         except queue.Empty:
             pass
+        if self.destroyed:
+            return
         if self.running_kind == "responses":
             self.pages["responses"].update_stats(self.stats, self.run_limit)
             self.pages["responses"].update_totals(self.summary, self.stats.applied)
@@ -2720,6 +2829,12 @@ class App(ctk.CTk):
     def toast(self, text: str) -> None:
         self._set_status(f"●  {text}", GREEN)
         self.after(4000, lambda: self.running_kind or self._set_status("●  Готово", MUTED))
+
+    destroyed = False  # окно программы закрыто (destroy): таймерам и обработчикам больше нечего обновлять
+
+    def destroy(self) -> None:
+        self.destroyed = True
+        super().destroy()
 
     def on_close(self) -> None:
         """Крестик окна программы или «Закрыть окно» у мини-окна на панели задач."""
