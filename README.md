@@ -6,7 +6,7 @@
 
 Автоотклики на hh.ru: письмо под вакансию, ответы на анкеты, разбор чатов с отказами
 
-[![version](https://img.shields.io/badge/version-1.0.9--beta-2563EB)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.0.10--beta-2563EB)](CHANGELOG.md)
 [![platforms](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Docker-0078D6)](#установка)
 [![python](https://img.shields.io/badge/python-3.11%2B-3776AB)](#из-исходников)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-6B7280)](LICENSE.md)
