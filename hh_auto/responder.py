@@ -113,12 +113,14 @@ class Responder:
         self._search_url = ""
         self.captchas = 0  # сколько раз за запуск hh просил капчу
         self.generate_failures = 0  # сколько раз подряд «Сгенерировать» hh не дал письма
+        self.letter_kind = "none"  # какое письмо ушло с последним откликом: hh, ai, template, fallback, none
 
     def apply(self, vac: Vacancy) -> Result:
         """Откликается на вакансию; непредвиденные исключения превращает в Result(FAILED).
 
         Капча вместо отклика — не ошибка: ждём, пока человек её решит, и повторяем ту же вакансию."""
         after_captcha = False
+        self.letter_kind = "none"
         for _ in range(CAPTCHA_ATTEMPTS):
             try:
                 result = self._apply(vac)
@@ -328,6 +330,10 @@ class Responder:
         for i, question in enumerate(questions, 1):
             log.info(f"    {i}. {question}")
 
+        if self.cfg.questions.skip_all:
+            return self._skip_questions("вопросы работодателя при отклике ([questions] skip_all)", questions=questions)
+        if self.cfg.questions.skip_tests and self._is_test():
+            return self._skip_questions("тест: вопросы с вариантами ответа ([questions] skip_tests)", questions=questions)
         if self._visible(self.page.locator(S.HIDDEN_RESUME_WARNING)):
             return self._skip_questions("hh требует сделать резюме видимым всем работодателям")
         if not self._resume_matches(self.page):
@@ -508,6 +514,11 @@ class Responder:
             open_url(self.page, self._search_url)
         self._close_dialogs()
 
+    def _is_test(self) -> bool:
+        """В анкете есть вопросы с вариантами ответа (флажки, переключатели) — это тест."""
+        choice = f'{S.QUESTION_BLOCK} input[type="checkbox"], {S.QUESTION_BLOCK} input[type="radio"]'
+        return self.page.locator(choice).count() > 0
+
     def _questions_shown(self) -> bool:
         return self._visible(self.page.locator(S.QUESTIONS))
 
@@ -634,11 +645,11 @@ class Responder:
     def _write_letter(self, scope: Locator | Page, textarea: Locator, vac: Vacancy) -> bool:
         """Заполняет поле письма: генерацией hh (generate), нейросетью (ai) или готовым текстом (template)."""
         if self.cfg.letter.mode == "template":
-            return self._fill_letter(textarea, self.cfg.letter.template_text, vac, "готовое письмо из настроек",
-                                     "[letter] template_text")
+            return self._letter_done("template", self._fill_letter(
+                textarea, self.cfg.letter.template_text, vac, "готовое письмо из настроек", "[letter] template_text"))
         if self.cfg.letter.mode == "ai":
-            return self._ai_letter(textarea, vac) or self._fill_letter(
-                textarea, self.cfg.letter.fallback_text, vac, "запасной текст письма", "[letter] fallback_text")
+            return self._letter_done("ai", self._ai_letter(textarea, vac)) or self._letter_done("fallback", self._fill_letter(
+                textarea, self.cfg.letter.fallback_text, vac, "запасной текст письма", "[letter] fallback_text"))
         before = textarea.input_value().strip()
         if before:
             log.debug(f"  в поле письма уже есть текст ({len(before)} симв.)")
@@ -654,7 +665,7 @@ class Responder:
                 self.generate_failures = 0
                 log.success(f"  ✓ текст письма готов ({len(text)} симв.): «{_preview(text)}»")
                 log.debug(f"  полный текст письма:\n{text}")
-                return True
+                return self._letter_done("hh", True)
             self.generate_failures += 1
             log.warning(f"  ! письмо не появилось за {self.cfg.letter.generate_timeout:.0f} с")
             if self.generate_failures == GENERATE_GIVE_UP:
@@ -665,9 +676,15 @@ class Responder:
             log.warning("  ! кнопки «Сгенерировать» нет (проверьте подписку)")
 
         if self.ai is not None and self._ai_letter(textarea, vac):  # без подписки письмо пишет нейросеть
-            return True
-        return self._fill_letter(textarea, self.cfg.letter.fallback_text, vac, "запасной текст письма",
-                                 "[letter] fallback_text")
+            return self._letter_done("ai", True)
+        return self._letter_done("fallback", self._fill_letter(textarea, self.cfg.letter.fallback_text, vac,
+                                                               "запасной текст письма", "[letter] fallback_text"))
+
+    def _letter_done(self, kind: str, ok: bool) -> bool:
+        """Запомнить, какое письмо ушло (для воронки на вкладке «Статистика»)."""
+        if ok:
+            self.letter_kind = kind
+        return ok
 
     def _ai_letter(self, textarea: Locator, vac: Vacancy) -> bool:
         """Письмо нейросетью по резюме, контексту и описанию вакансии."""
@@ -679,7 +696,7 @@ class Responder:
         started = time.monotonic()
         try:
             text = self.ai.write_letter(self.resume_text, self.cfg.ai.context, vac.title, vac.company, description,
-                                        self.cfg.letter.ai_max_chars)
+                                        self.cfg.letter.ai_max_chars, self.cfg.letter.experience_first)
         except AiError as e:
             log.warning(f"  ! нейросеть не написала письмо: {e}")
             return False

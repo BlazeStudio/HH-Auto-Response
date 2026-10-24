@@ -7,6 +7,9 @@
       - уведомление без вопроса («мы рассмотрим ваше резюме») → просто прочитано;
       - живой человек, приглашение, документы и т.п. → оставляем вам (список в итогах);
   • без ИИ остальные непрочитанные не трогаем — только выводим списком.
+Заодно по списку чатов узнаём, что стало с откликами (приглашение, отказ), — для воронки на вкладке
+«Статистика» и уведомления о приглашении (negotiations.py). Раз в сутки для воронки просматриваются
+и прочитанные чаты.
 """
 
 from __future__ import annotations
@@ -29,19 +32,35 @@ from .auth import hh_role, is_auth_url
 from .browser import FatalError, wait_captcha
 from .config import Config
 from .logger import log
+from .negotiations import Negotiations
 from .resume import fetch_resume_text
 
 _COLLECT_JS = """
 (s) => Array.from(document.querySelectorAll(s.cell)).map((cell) => {
   const text = (el) => (el?.textContent || '').replace(/\\s+/g, ' ').trim();
+  const last = cell.querySelector(s.last);
   return {
     id: cell.getAttribute('data-qa').replace('chatik-open-chat-', ''),
     title: text(cell.querySelector(s.title)),
     company: text(cell.querySelector(s.subtitle)),
-    last: text(cell.querySelector(s.last)),
+    last: text(last),
     unread: !!cell.querySelector(s.badge),
+    color: last ? String(last.className || '') : '',  // «Отказ» hh выделяет красным, приглашение — зелёным
   };
 })
+"""
+
+# Список чатов — в начало (после просмотра всех чатов для воронки)
+_SCROLL_TOP_JS = """
+(cellSelector) => {
+  let el = document.querySelector(cellSelector);
+  while (el && el !== document.body) {
+    const style = getComputedStyle(el);
+    if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight) break;
+    el = el.parentElement;
+  }
+  (el && el !== document.body ? el : document.scrollingElement).scrollTop = 0;
+}
 """
 
 # Прокручивает ближайший прокручиваемый контейнер списка чатов (список виртуальный:
@@ -135,6 +154,7 @@ class ChatStats:
     failed: int = 0
     rejections_read: int = 0  # отказы, прочитанные ещё до запуска
     other_unread: list[str] = field(default_factory=list)  # нужен ваш ответ
+    invitations: list[str] = field(default_factory=list)  # новые приглашения: «вакансия» — компания
 
 
 @dataclass
@@ -144,6 +164,7 @@ class _Chat:
     company: str
     last: str
     unread: bool
+    color: str = ""
 
 
 def read_rejections(
@@ -172,6 +193,11 @@ def read_rejections(
         log.warning("  ! список чатов не появился за 20 с (чатов нет или hh поменял вёрстку)")
         return stats
 
+    # статусы откликов для воронки и уведомление о приглашении
+    tracker = Negotiations(root) if root is not None and (cfg.stats.funnel or cfg.notify.invitations) else None
+    if tracker is not None and cfg.stats.funnel and tracker.full_sync_due():
+        _announce(cfg, _full_sync(page, tracker, rules), stats, quiet=dry_run)
+
     # С фильтром в списке только непрочитанные чаты. Если включить не вышло —
     # отличаем непрочитанные по счётчику сообщений у чата.
     only_unread = _enable_only_unread(page)
@@ -195,6 +221,8 @@ def read_rejections(
         if only_unread:  # в отфильтрованном списке непрочитанные все, даже без счётчика
             for chat in chats:
                 chat.unread = True
+        if tracker is not None:
+            _announce(cfg, tracker.update(chats, rules.rejection_text), stats, quiet=dry_run)
         for chat in chats:
             if chat.id in seen:
                 continue
@@ -232,6 +260,103 @@ def read_rejections(
         else:
             _handle_with_ai(page, target, cfg, ai, resume, stats, dry_run, answers_log)
     return stats
+
+
+def check_invitations(page: Page, cfg: Config, root: Path) -> list[str]:
+    """Фоновая проверка ([watch] invitations): нет ли в непрочитанных чатах приглашения. Чаты не открываются —
+    остаются непрочитанными, как были. Возвращает новые приглашения («вакансия» — компания)."""
+    rules = cfg.chats
+    stats = ChatStats()
+    tracker = Negotiations(root)
+    log.info("Чаты: нет ли приглашения")
+    page.goto(rules.url, wait_until="domcontentloaded")
+    wait_captcha(page)
+    if is_auth_url(page.url) or hh_role(page) == "anonymous":
+        raise FatalError("hh перекинул на страницу входа — сессия истекла, войдите заново")
+    try:
+        page.locator(f"{S.CHAT_CELL}, {S.CHAT_ONLY_UNREAD}").first.wait_for(state="attached", timeout=20_000)
+    except PlaywrightError:
+        log.warning("  ! список чатов не появился за 20 с (чатов нет или hh поменял вёрстку)")
+        return []
+    if cfg.stats.funnel and tracker.full_sync_due():
+        _announce(cfg, _full_sync(page, tracker, rules), stats)
+    only_unread = _enable_only_unread(page)
+    if only_unread:
+        try:
+            page.locator(S.CHAT_CELL).first.wait_for(timeout=5_000)
+        except PlaywrightError:
+            log.success("  ✓ непрочитанных чатов нет")
+            return stats.invitations
+    seen: set[str] = set()
+    for _ in range(100):
+        chats = [_Chat(**raw) for raw in page.evaluate(_COLLECT_JS, _selectors())]
+        if only_unread:
+            for chat in chats:
+                chat.unread = True
+        _announce(cfg, tracker.update([c for c in chats if c.id not in seen], rules.rejection_text), stats)
+        seen.update(c.id for c in chats)
+        if not page.evaluate(_SCROLL_JS, S.CHAT_CELL):
+            break
+        control.sleep(0.5)
+    if not stats.invitations:
+        log.info(f"  новых приглашений нет (непрочитанных чатов: {len(seen) if only_unread else 'см. список'})")
+    return stats.invitations
+
+
+def _announce(cfg: Config, fresh: list[dict], stats: ChatStats, quiet: bool = False) -> None:
+    """Новые приглашения: в журнал (окно приложения покажет их сразу) и в уведомления ([notify] invitations)."""
+    if not fresh:
+        return
+    for invitation in fresh:
+        text = f"«{invitation['title']}» — {invitation['company']}"
+        stats.invitations.append(text)
+        log.success(f"  ★ Приглашение: {text}")
+    if cfg.notify.invitations and not quiet and (cfg.notify.desktop or cfg.notify.telegram):
+        from . import notify
+
+        title = "HH-Auto-Response — приглашение" + (f" ({len(fresh)})" if len(fresh) > 1 else "")
+        notify.send(cfg.notify, title, "\n".join(stats.invitations[-len(fresh):]))
+
+
+def _full_sync(page: Page, tracker: Negotiations, rules) -> list[dict]:
+    """Раз в сутки — весь список чатов, и прочитанные: что стало с откликами (для воронки). Возвращает
+    приглашения из непрочитанных чатов, о которых ещё не сообщали."""
+    if _filter_checked(page) and not _disable_only_unread(page):
+        log.debug("  «Только непрочитанные» не снимается — воронка обновится по непрочитанным чатам")
+        return []
+    log.info("  смотрю статусы всех чатов — для воронки откликов (раз в сутки)")
+    seen: set[str] = set()
+    fresh: list[dict] = []
+    for _ in range(300):  # до нескольких тысяч чатов
+        chats = [_Chat(**raw) for raw in page.evaluate(_COLLECT_JS, _selectors())]
+        fresh += tracker.update([c for c in chats if c.id not in seen], rules.rejection_text)
+        seen.update(c.id for c in chats)
+        if not page.evaluate(_SCROLL_JS, S.CHAT_CELL):
+            break
+        control.sleep(0.4)
+    page.evaluate(_SCROLL_TOP_JS, S.CHAT_CELL)
+    tracker.mark_full_sync()
+    log.info(f"  просмотрено чатов: {len(seen)}")
+    return fresh
+
+
+def _disable_only_unread(page: Page) -> bool:
+    """Снимает «Только непрочитанные» — так же щелчком по подписи, как и включение. True — снят."""
+    label = page.get_by_text("Только непрочитанные", exact=True).first
+    _wait_list_settled(page)
+    for _attempt in range(3):
+        if not _filter_checked(page):
+            break
+        try:
+            label.click()
+        except PlaywrightError as e:
+            log.debug(f"  щелчок не прошёл: {(str(e).splitlines() or [''])[0]}")
+        for _ in range(20):
+            control.sleep(0.3)
+            if not _filter_checked(page):
+                break
+    control.sleep(1.0)  # список перезагружается
+    return not _filter_checked(page)
 
 
 def _make_ai(cfg: Config) -> AiClient | None:

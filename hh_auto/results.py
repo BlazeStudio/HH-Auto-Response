@@ -75,7 +75,8 @@ class ResultsBook:
 
     # ---------- запись ----------
 
-    def add(self, vac: Vacancy, result: Result) -> None:
+    def add(self, vac: Vacancy, result: Result, extra: dict | None = None) -> None:
+        """extra — для воронки: query (из какого поиска), letter_kind (какое письмо), match (% по навыкам)."""
         record = {
             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "run": self.run_id,
@@ -90,6 +91,7 @@ class ResultsBook:
             "answers": [list(pair) for pair in result.answers or []],
             "url": vac.url,
         }
+        record.update({k: v for k, v in (extra or {}).items() if v is not None})
         self.data_path.parent.mkdir(parents=True, exist_ok=True)
         with self.data_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
