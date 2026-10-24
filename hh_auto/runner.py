@@ -20,6 +20,7 @@ from .search import (Vacancy, collect_vacancies, describe_hh_filters, next_page_
                      results_page_url, search_urls, wait_all_cards)
 from .results import ResultsBook
 from .state import State, company_key
+from .vacancy_meta import SkillStats, skip_reason
 
 
 RESCANS = 2  # сколько раз дособрать вакансии, которые hh подвинул на текущую страницу
@@ -55,7 +56,11 @@ def run(
     snapshots_dir: Path,
     ai=None,
     resume_text: str = "",
+    searches: list[tuple[str, str]] | None = None,
+    skills: SkillStats | None = None,
 ) -> None:
+    """searches — свои выдачи (подпись, ссылка) вместо выдач из настроек (так проверяются «компании мечты»);
+    skills — куда считать ключевые навыки из выдачи (советы к резюме, [stats] skill_tips)."""
     limits = cfg.limits
     max_responses = opts.limit or limits.max_responses
     log.info("")
@@ -64,7 +69,7 @@ def run(
         f"  лимит на этот запуск: {max_responses} откликов, пауза между вакансиями "
         f"{limits.delay_min:g}–{limits.delay_max:g} с, страниц выдачи максимум {limits.max_pages}"
     )
-    searches = search_urls(cfg)
+    searches = searches or search_urls(cfg)
     log.info(f"  фильтры hh: {describe_hh_filters(searches[0][1])}")
     if limits.per_company:
         log.info(f"  в одну компанию — не больше {limits.per_company} откл. за {limits.per_company_days} дн. "
@@ -79,7 +84,7 @@ def run(
     handled: set[str] = set()  # вакансии этого запуска: в выдаче другого запроса их второй раз не смотрим
     planned: Counter = Counter()  # пробный прогон: «откликнулись бы» по компаниям — для лимита per_company
 
-    def handle(vac: Vacancy, tag: str, url: str) -> bool:
+    def handle(vac: Vacancy, tag: str, url: str, label: str) -> bool:
         """Одна вакансия: фильтры → отклик → итог. False — запуск пора заканчивать."""
         nonlocal errors_in_row
         if vac.id in handled:
@@ -118,6 +123,11 @@ def run(
                 stats.skipped["нет нужных слов ([filters] include_words)"] += 1
                 log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
                 return True
+        skip = skip_reason(vac.title, vac.snippet, vac.meta, cfg)  # уровень, данные hh, вопросы при отклике
+        if skip:
+            stats.skipped[skip[0]] += 1
+            log.info(f"{tag} «{vac.title}» — {skip[1]}, пропускаю")
+            return True
         if limits.per_company and vac.company:
             sent = state.company_applied(vac.company, limits.per_company_days) + planned[company_key(vac.company)]
             if sent >= limits.per_company:
@@ -148,7 +158,9 @@ def run(
 
         result = responder.apply(vac)
         if result.reason != MOVED:  # вакансию ещё не трогали — в таблицу её не пишем
-            results.add(vac, result)
+            # для воронки на вкладке «Статистика»: из какого поиска, какое письмо, совпадение по навыкам
+            results.add(vac, result, {"query": label, "letter_kind": responder.letter_kind if result.letter else "none",
+                                      "match": vac.meta.match if vac.meta else None})
         else:
             handled.discard(vac.id)  # hh увёз её на другую страницу — встретим там и обработаем
         if result.status is Status.APPLIED:
@@ -185,7 +197,7 @@ def run(
         _sleep(limits.delay_min, limits.delay_max, "перед следующей вакансией")
         return True
 
-    def walk(search_url: str, start_page: int) -> bool:
+    def walk(label: str, search_url: str, start_page: int) -> bool:
         """Одна выдача по страницам. False — запуск закончен (лимит откликов, лимит hh)."""
         nonlocal filters_warned
         for page_num in range(start_page, limits.max_pages):
@@ -196,6 +208,8 @@ def run(
             if not vacancies:
                 log.info("  вакансий на странице нет — выдача закончилась")
                 return True
+            if skills is not None:
+                skills.record([v.meta for v in vacancies if v.meta])
             can_respond = sum(v.can_respond for v in vacancies)
             done_before = sum(1 for v in vacancies if state.seen(v.id, opts.retry_skipped))
             log.success(
@@ -208,7 +222,7 @@ def run(
             batch = vacancies
             for rescan in range(RESCANS + 1):
                 for i, vac in enumerate(batch, 1):
-                    if not handle(vac, f"[стр. {page_num + 1}, {i}/{len(batch)}{'+' if rescan else ''}]", url):
+                    if not handle(vac, f"[стр. {page_num + 1}, {i}/{len(batch)}{'+' if rescan else ''}]", url, label):
                         return False
                 # После перезагрузки выдачи hh заново сортирует «подходящие к резюме»: часть вакансий уезжает
                 # на другие страницы, а на эту приезжают новые. Их проходим сразу, не дожидаясь следующего запуска.
@@ -242,7 +256,7 @@ def run(
         if len(searches) > 1:
             log.info("")
             log.info(f"══════════ Поиск {number} из {len(searches)}: {label} ══════════")
-        if not walk(search_url, opts.start_page if number == 1 else 0):
+        if not walk(label, search_url, opts.start_page if number == 1 else 0):
             return
         if number < len(searches):
             _sleep(limits.page_delay_min, limits.page_delay_max, "перед следующим запросом")

@@ -148,5 +148,6 @@ def write_sample_letter(pg: Playground) -> tuple[str, float]:
     """Песочница писем: письмо нейросети к примеру вакансии. Ничего не отправляется."""
     started = time.monotonic()
     title, company, description = SAMPLE_VACANCY
-    text = pg.client.write_letter(pg.resume, pg.cfg.ai.context, title, company, description, pg.cfg.letter.ai_max_chars)
+    text = pg.client.write_letter(pg.resume, pg.cfg.ai.context, title, company, description, pg.cfg.letter.ai_max_chars,
+                                  pg.cfg.letter.experience_first)
     return text, time.monotonic() - started

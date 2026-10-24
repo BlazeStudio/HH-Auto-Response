@@ -5,27 +5,33 @@
 
 from __future__ import annotations
 
+import copy
 import gc
 import time
+from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from .auth import ensure_logged_in
+from .auth import ensure_logged_in, is_logged_in
 from . import browser
 from .browser import FatalError, check_region, launch
-from .chats import ChatStats, log_chat_summary, read_rejections
+from .chats import ChatStats, check_invitations, log_chat_summary, read_rejections
 from .config import Config
 from . import control
 from .control import BrowserClosed, StopRequested
 from .logger import log
+from . import raising
 from .resume import verify_resume
 from .search import describe_search
 from .runner import RunOptions, Stats, log_summary, run
 from .results import ResultsBook, log_totals
 from .state import State
 from .stats import chats_counts, record as record_stats, responses_counts
+from .vacancy_meta import SkillStats
+from . import watch
 
 EXIT_OK, EXIT_FATAL, EXIT_STOPPED = 0, 1, 130
 
@@ -58,14 +64,7 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
     log_config_notes(cfg)
     log.info(f"поиск: {describe_search(cfg)}")
 
-    def work(page):
-        log.info("")
-        resume_title = verify_resume(page, cfg)
-        ai, resume_text = _form_ai(page, cfg, root)
-        run(page, cfg, opts, State(root / "data" / "state.json"), results, stats, resume_title, log_dir / "snapshots",
-            ai, resume_text)
-
-    code = _with_browser(cfg, root, work)
+    code = _with_browser(cfg, root, lambda page: _apply_work(page, cfg, opts, root, results, stats))
     log_summary(stats, time.monotonic() - started)
     if not opts.dry_run:  # вкладка «Статистика»: только числа за день
         record_stats(root, cfg, responses_counts(stats, time.monotonic() - started))
@@ -78,6 +77,40 @@ def run_responses(cfg: Config, opts: RunOptions, root: Path, stats: Stats, log_p
         log.info(f"таблица откликов (Excel): {results.xlsx_path}")
     log.info(f"подробный лог: {log_path}")
     return code
+
+
+def _apply_work(page, cfg: Config, opts: RunOptions, root: Path, results: ResultsBook, stats: Stats,
+                searches: list[tuple[str, str]] | None = None) -> None:
+    """Отклики в открытом браузере: проверка резюме, нейросеть, выдачи. searches — свои выдачи вместо
+    выдач из настроек («компании мечты»)."""
+    log.info("")
+    resume_title = verify_resume(page, cfg)
+    ai, resume_text = _form_ai(page, cfg, root)
+    if cfg.stats.skill_tips and not resume_text:
+        _refresh_resume(page, cfg, root)
+    run(page, cfg, opts, State(root / "data" / "state.json"), results, stats, resume_title, root / "logs" / "snapshots",
+        ai, resume_text, searches=searches, skills=SkillStats(root) if cfg.stats.skill_tips else None)
+
+
+RESUME_FRESH = timedelta(days=3)  # текст резюме для советов на вкладке «Статистика» обновляем не чаще
+
+
+def _refresh_resume(page, cfg: Config, root: Path) -> None:
+    """Советы к резюме сравнивают навыки из выдачи с текстом резюме — держим его свежим (раз в 3 дня),
+    даже если нейросеть выключена. Резюме неизвестно или не открылось — советы по прошлому тексту."""
+    from .resume import fetch_resume_text
+
+    path = root / "data" / "resume.txt"
+    try:
+        fresh = datetime.now() - datetime.fromtimestamp(path.stat().st_mtime) < RESUME_FRESH
+    except OSError:
+        fresh = False
+    if fresh or not cfg.resume_id:
+        return
+    try:
+        fetch_resume_text(page, cfg, path)
+    except Exception as e:  # noqa: BLE001 — советы не важнее откликов (StopRequested сюда не попадает)
+        log.debug(f"  резюме для советов не обновилось: {e}")
 
 
 def log_config_notes(cfg: Config) -> None:
@@ -156,9 +189,11 @@ def run_chats(cfg: Config, dry_run: bool, root: Path, stats: ChatStats, log_path
     return code
 
 
-def _with_browser(cfg: Config, root: Path, work) -> int:
+def _with_browser(cfg: Config, root: Path, work, auto_raise: bool = True, login: bool = True) -> int:
+    """auto_raise — заодно поднять резюме, если пора; login — нет входа: показать окно входа и ждать
+    (False — сразу закончить с ошибкой: так работают фоновые запуски, чтобы окно не выскакивало само)."""
     try:
-        return _browser_session(cfg, root, work)
+        return _browser_session(cfg, root, work, auto_raise, login)
     except Exception:
         if not control.user_stopped():
             raise
@@ -182,7 +217,7 @@ def _after_browser() -> None:
     gc.collect()
 
 
-def _browser_session(cfg: Config, root: Path, work) -> int:
+def _browser_session(cfg: Config, root: Path, work, auto_raise: bool, login: bool) -> int:
     cfg.browser.profile_dir = str(root / cfg.browser.profile_dir)
     with sync_playwright() as pw:
         context = None
@@ -193,7 +228,12 @@ def _browser_session(cfg: Config, root: Path, work) -> int:
             log.info("")
             check_region(page, cfg)
             log.info("")
-            ensure_logged_in(page, cfg)
+            if login:
+                ensure_logged_in(page, cfg)
+            elif not is_logged_in(page):
+                raise FatalError("нет входа в hh — запустите «Отклики» или «Чаты» и войдите в открывшемся окне")
+            if auto_raise:
+                _raise_if_due(page, cfg, root)
             work(page)
             return EXIT_OK
         except KeyboardInterrupt:
@@ -207,6 +247,7 @@ def _browser_session(cfg: Config, root: Path, work) -> int:
             return EXIT_STOPPED
         except FatalError as e:
             log.error(f"Остановка: {e}")
+            browser.last_error = str(e)
             return EXIT_FATAL
         except PlaywrightError as e:
             first_line = (str(e).splitlines() or [""])[0]
@@ -232,6 +273,107 @@ def _browser_session(cfg: Config, root: Path, work) -> int:
                     context.close()
                 except Exception:
                     pass
+
+
+def _raise_if_due(page, cfg: Config, root: Path) -> None:
+    """Браузер уже открыт и вход есть — заодно поднять резюме, если подошло время ([raising]). Сбой подъёма
+    основную работу не останавливает."""
+    try:
+        if raising.raise_due(page, cfg, root) is not None:
+            log.info("")
+    except Exception as e:  # noqa: BLE001 — «Остановить» (StopRequested) сюда не попадает
+        log.warning(f"  ! поднять резюме не получилось: {(str(e).splitlines() or [''])[0]}")
+        log.debug("трассировка:", exc_info=True)
+
+
+def run_raise(cfg: Config, root: Path, log_path: Path, result: dict | None = None, login: bool = True) -> int:
+    """Только поднять резюме (scripts/raise_resume.py). Если ещё рано — браузер не открываем."""
+    due = raising.next_due(root, cfg)
+    if due is None:
+        log_config_notes(cfg)
+        log.warning("поднятие резюме выключено: [raising] enabled = false")
+        return EXIT_OK
+    if due > datetime.now():
+        log_config_notes(cfg)
+        log.info(f"поднимать резюме ещё рано — следующее в {due:%H:%M} ({due:%d.%m})")
+        return EXIT_OK
+    return run_background(cfg, root, log_path, result, login=login, tasks=["raise"])
+
+
+def run_background(cfg: Config, root: Path, log_path: Path, result: dict | None = None, login: bool = True,
+                   tasks: list[str] | None = None, force_raise: bool = False) -> int:
+    """Фоновая проверка: всё, чему подошло время, — за один запуск браузера: подъём резюме ([raising]),
+    приглашения в чатах ([watch] invitations), свежие вакансии «компаний мечты» ([dream]). Ничего не пора —
+    браузер не открываем. tasks — что делать (по умолчанию — что пора); force_raise — «Поднять сейчас».
+    result — итоги для окна приложения: "raise" (RaiseResult), "invitations", "dream" (Stats), "error".
+    login=False — нет входа в hh: не ждать его, а закончить (фоновый запуск в приложении)."""
+    log_config_notes(cfg)
+    result = result if result is not None else {}
+    if force_raise:
+        cfg.raising.enabled = True
+        raising.forget_due(root)
+    todo = list(tasks) if tasks is not None else watch.due_tasks(root, cfg)
+    if not todo:
+        moment = watch.next_any(root, cfg)
+        log.info("фоновая проверка: сейчас делать нечего" + (f" — следующая {moment:%d.%m в %H:%M}" if moment else ""))
+        return EXIT_OK
+    searches = watch.dream_searches(cfg) if "dream" in todo else []
+    if "dream" in todo and not searches:
+        log.warning("компании мечты: не задан поиск (ссылка или запросы) — без него откликались бы на все вакансии "
+                    "компании, проверка пропущена")
+        watch.mark(root, "dream")
+        todo.remove("dream")
+        if not todo:
+            return EXIT_OK
+    log.info("фоновая проверка: " + ", ".join(watch.TASKS[t] for t in todo))
+    started = time.monotonic()
+    stats = Stats()
+    results = ResultsBook(root)
+
+    def work(page):
+        if "raise" in todo:
+            outcome = raising.raise_due(page, cfg, root, force=force_raise)
+            result["raise"] = outcome
+            if todo == ["raise"] and outcome is not None and outcome.failed and not (outcome.raised or outcome.early):
+                raise FatalError("резюме поднять не получилось — подробности выше")
+        if "invitations" in todo:
+            watch.mark(root, "invitations")  # и при сбое: следующая попытка — через every_minutes, а не сразу
+            log.info("")
+            result["invitations"] = check_invitations(page, cfg, root)
+        if "dream" in todo:
+            watch.mark(root, "dream")
+            result["dream"] = stats
+            log.info("")
+            log.info(f"Компании мечты: свежие вакансии ({len(searches)} комп.), не больше {cfg.dream.max_per_check} "
+                     "откликов за проверку")
+            dream_cfg = copy.copy(cfg)  # смотрим только первые страницы: свежие вакансии — сверху
+            dream_cfg.limits = replace(cfg.limits, max_pages=min(cfg.limits.max_pages, 3))
+            _apply_work(page, dream_cfg, RunOptions(limit=cfg.dream.max_per_check), root, results, stats, searches)
+
+    browser.last_error = ""
+    code = _with_browser(cfg, root, work, auto_raise=False, login=login)
+    if code == EXIT_FATAL:
+        result["error"] = browser.last_error  # «нет входа в hh …» — для меню слева
+    if "dream" in todo and (stats.applied or stats.failed or stats.skipped):
+        log_summary(stats, time.monotonic() - started)
+        record_stats(root, cfg, responses_counts(stats, time.monotonic() - started))
+        if stats.applied:
+            notify_summary(cfg, "компании мечты", f"Отправлено откликов: {stats.applied}")
+            results.save_xlsx()
+    _prune_logs(root / "logs", "raise_", keep=30)
+    _prune_logs(root / "logs", "watch_", keep=60)
+    log.info(f"подробный лог: {log_path}")
+    return code
+
+
+def _prune_logs(folder: Path, prefix: str, keep: int) -> None:
+    """Журналы фоновых проверок пишутся каждый час — храним последние keep, чтобы не заслоняли остальные."""
+    logs = sorted(folder.glob(f"{prefix}*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in logs[keep:]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 def run_login(cfg: Config, root: Path, log_path: Path) -> int:

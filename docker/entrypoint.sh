@@ -3,7 +3,10 @@
 #   login              открыть браузер для первого входа в hh (смотреть по VNC через SSH-туннель)
 #   responses [опции]  один запуск откликов (опции как у scripts/responses.py: --dry-run, --limit 5 …)
 #   chats [опции]      один запуск чатов (опции как у scripts/chats.py)
-#   loop               отклики и чаты по кругу раз в INTERVAL_HOURS часов (по умолчанию 6)
+#   raise [--force]    поднять резюме в поиске, если пора ([raising] в config.toml)
+#   watch              фоновая проверка: подъём резюме, приглашения в чатах, «компании мечты» — что пора
+#   loop               отклики и чаты по кругу раз в INTERVAL_HOURS часов (по умолчанию 6), а между ними
+#                      раз в 15 минут — фоновая проверка ([raising], [watch], [dream]), если что-то пора
 #   любая другая команда выполняется как есть (например, bash)
 set -euo pipefail
 
@@ -48,6 +51,12 @@ case "$cmd" in
   chats)
     exec python /app/scripts/chats.py "$@"
     ;;
+  raise)
+    exec python /app/scripts/raise_resume.py "$@"
+    ;;
+  watch)
+    exec python /app/scripts/watch.py "$@"
+    ;;
   loop)
     hours="${INTERVAL_HOURS:-6}"
     [ "${VNC_ALWAYS:-0}" = "1" ] && start_vnc
@@ -59,7 +68,11 @@ case "$cmd" in
         python /app/scripts/chats.py || echo "чаты завершились с кодом $?"
       fi
       echo "━━━ следующий запуск через ${hours} ч"
-      sleep "$((hours * 3600))"
+      for _ in $(seq "$((hours * 4))"); do
+        sleep 900
+        # подъём резюме, приглашения, компании мечты — что пора; ничего — скрипт сразу выходит без браузера
+        python /app/scripts/watch.py || echo "фоновая проверка завершилась с кодом $?"
+      done
     done
     ;;
   *)

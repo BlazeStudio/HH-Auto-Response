@@ -74,6 +74,25 @@ class Filters:
     # откликаться ТОЛЬКО на вакансии, где есть хотя бы одно из слов (пусто — на все)
     include_words: list[str] = field(default_factory=list)
     include_in_snippet: bool = False  # искать include_words и в описании из карточки, не только в названии
+    # уровни, на которые откликаться: intern, junior, middle, senior, lead (пусто — на любые). Пропускается
+    # вакансия, в названии которой явно указан другой уровень; без уровня в названии — откликаемся
+    levels: list[str] = field(default_factory=list)
+
+
+LEVELS = {"intern": "Стажёр", "junior": "Junior", "middle": "Middle", "senior": "Senior", "lead": "Lead / руководитель"}
+
+
+@dataclass
+class Quality:
+    # Отбор по данным, которые hh отдаёт вместе с выдачей (без лишних переходов и кликов)
+    # hh предупреждает о вакансии (вводит в заблуждение, перепродажа персональных данных), работодатель
+    # не подтверждён или на дополнительной проверке — пропускать
+    skip_suspicious: bool = True
+    skip_messengers: bool = True  # в описании просят писать в Telegram, WhatsApp и т.п. — частый признак обмана
+    skip_complaints: bool = False  # на работодателя часто жалуются или у него нарушения правил hh (бывает и у крупных)
+    max_age_days: int = 90  # вакансия создана раньше — «вечная», её переопубликуют месяцами; 0 — не проверять
+    max_responses: int = 0  # откликов на вакансию больше — ваш, скорее всего, не прочитают; 0 — не проверять
+    min_rating: float = 0  # рейтинг работодателя по отзывам ниже (при 5+ отзывах) — пропускать; 0 — не проверять
 
 
 @dataclass
@@ -84,6 +103,8 @@ class Questions:
     salary_answer: str = "Рассматриваю от 100"
     # с включённым ИИ ([ai] enabled) анкеты заполняет нейросеть: любые вопросы, текст и варианты
     max_ai_questions: int = 15  # анкеты длиннее — пропускаем (обычно это тесты)
+    skip_tests: bool = False  # пропускать анкеты с вариантами ответа (тесты): по опыту откликов они почти не окупаются
+    skip_all: bool = False  # пропускать любые вопросы работодателя — такие вакансии видно ещё в выдаче, без клика
     salary_keywords: list[str] = field(
         default_factory=lambda: [
             "зарплат", "заработн", "сумм", "доход", "оклад", "вознагражд", "компенсац", "з/п", "₽", "руб",
@@ -157,6 +178,7 @@ class Letter:
     min_length: int = 30  # письмо короче считаем несгенерированным
     fallback_text: str = ""  # запасной текст, если генерация не удалась ("" = пропустить вакансию)
     ai_max_chars: int = 900  # длина письма нейросети (mode = ai или запасной вариант для generate)
+    experience_first: bool = True  # письмо нейросети начинается с вашего опыта под вакансию, а не с пересказа компании
 
 
 @dataclass
@@ -234,6 +256,30 @@ class Schedule:
         return sorted({_parse_time(t) for t in self.times})
 
 
+@dataclass
+class Watch:
+    # Фоновая проверка, пока приложение открыто: чаты — нет ли приглашения, и «компании мечты».
+    # Консоль — scripts/watch.py по расписанию (Планировщик заданий Windows или cron)
+    invitations: bool = False  # смотреть чаты раз в every_minutes: пришло приглашение — сообщить
+    every_minutes: int = 60  # как часто (не чаще раза в 15 минут)
+
+
+@dataclass
+class Dream:
+    # «Компании мечты»: их свежие вакансии проверяются раз в [watch] every_minutes, и отклик уходит сразу.
+    # Те же фильтры, письмо и анкеты, что у обычных откликов
+    enabled: bool = False
+    companies: list[str] = field(default_factory=list)  # ссылки hh.ru/employer/1234 или просто номера
+    max_per_check: int = 5  # откликов за одну проверку
+
+
+@dataclass
+class Raising:
+    # Поднятие резюме в поиске hh — бесплатно, раз в 4 часа, как кнопка «Поднять в поиске» на «Мои резюме»
+    enabled: bool = False
+    all_resumes: bool = False  # false — только резюме из resume_url / resume= в ссылке поиска (нет его — все)
+
+
 def _parse_time(text: str) -> tuple[int, int]:
     m = re.fullmatch(r"\s*(\d{1,2})[:.](\d{2})\s*", text)
     if not m or int(m[1]) > 23 or int(m[2]) > 59:
@@ -247,6 +293,8 @@ class StatsSettings:
     # без названий вакансий и компаний; файл data/stats.json
     disabled: bool = False  # true — не вести статистику: ничего не записывается
     keep_days: int = 365  # дни старше удаляются сами; 0 — хранить всё
+    funnel: bool = True  # воронка: что стало с откликами (приглашения, отказы) — по запросам, письмам, навыкам
+    skill_tips: bool = True  # какие навыки чаще всего просят в вашей выдаче и есть ли они в резюме
 
 
 @dataclass
@@ -257,6 +305,7 @@ class Notify:
     telegram: bool = False  # сообщение в Telegram от вашего бота (удобно при запуске на сервере)
     telegram_token: str = ""  # токен бота от @BotFather (или переменная окружения HH_TELEGRAM_TOKEN)
     telegram_chat_id: str = ""  # ваш chat id (узнать: написать боту и открыть api.telegram.org/bot<токен>/getUpdates)
+    invitations: bool = True  # сразу сообщать о приглашении (в те же каналы: компьютер, Telegram)
 
 
 @dataclass
@@ -269,6 +318,7 @@ class Config:
     filters: Filters = field(default_factory=Filters)
     letter: Letter = field(default_factory=Letter)
     questions: Questions = field(default_factory=Questions)
+    quality: Quality = field(default_factory=Quality)
     relocation: Relocation = field(default_factory=Relocation)
     chats: Chats = field(default_factory=Chats)
     ai: Ai = field(default_factory=Ai)
@@ -279,6 +329,9 @@ class Config:
     logs: Logs = field(default_factory=Logs)
     notify: Notify = field(default_factory=Notify)
     schedule: Schedule = field(default_factory=Schedule)
+    raising: Raising = field(default_factory=Raising)
+    watch: Watch = field(default_factory=Watch)
+    dream: Dream = field(default_factory=Dream)
     stats: StatsSettings = field(default_factory=StatsSettings)
 
     @property
@@ -419,6 +472,7 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         filters=section(Filters, "filters", _legacy_filters(raw)),
         letter=section(Letter, "letter"),
         questions=section(Questions, "questions"),
+        quality=section(Quality, "quality"),
         relocation=section(Relocation, "relocation"),
         chats=section(Chats, "chats"),
         ai=section(Ai, "ai"),
@@ -429,6 +483,9 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         logs=section(Logs, "logs"),
         notify=section(Notify, "notify"),
         schedule=section(Schedule, "schedule"),
+        raising=section(Raising, "raising"),
+        watch=section(Watch, "watch"),
+        dream=section(Dream, "dream"),
         stats=section(StatsSettings, "stats"),
     )
     ignored += sorted(raw)  # незнакомые разделы и параметры верхнего уровня
@@ -438,6 +495,15 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         validate_search_source(cfg)
     validate_config(cfg)
     return cfg
+
+
+def employer_id(text: str) -> str | None:
+    """«https://hh.ru/employer/2180», «hh.ru/employer/2180?…» или «2180» → «2180». Иначе None."""
+    text = text.strip()
+    if text.isdigit():
+        return text
+    m = re.search(r"(?:^|/)employer/(\d+)", text)
+    return m.group(1) if m else None
 
 
 def validate_config(cfg: Config) -> None:
@@ -464,6 +530,23 @@ def validate_config(cfg: Config) -> None:
                           "опишите, что вы ищете и чего не хотите")
     if cfg.ai_filter.max_snippet_chars < 0:
         raise ConfigError("[ai_filter] max_snippet_chars не может быть отрицательным")
+    unknown = [lvl for lvl in cfg.filters.levels if lvl not in LEVELS]
+    if unknown:
+        raise ConfigError(f"[filters] levels: «{unknown[0]}», допустимо: {', '.join(LEVELS)}")
+    for key in ("max_age_days", "max_responses", "min_rating"):
+        if getattr(cfg.quality, key) < 0:
+            raise ConfigError(f"[quality] {key} не может быть отрицательным (0 — не проверять)")
+    if cfg.quality.min_rating > 5:
+        raise ConfigError("[quality] min_rating — рейтинг hh от 0 до 5")
+    if (cfg.watch.invitations or cfg.dream.enabled) and cfg.watch.every_minutes < 15:
+        raise ConfigError("[watch] every_minutes — не чаще раза в 15 минут, иначе hh может счесть это ботом")
+    for company in cfg.dream.companies:
+        if employer_id(company) is None:
+            raise ConfigError(f"[dream] companies: «{company}» — нужна ссылка hh.ru/employer/1234 или номер компании")
+    if cfg.dream.enabled and not cfg.dream.companies:
+        raise ConfigError("[dream] включено, но не указано ни одной компании (ссылки hh.ru/employer/…)")
+    if cfg.dream.max_per_check < 1 and cfg.dream.enabled:
+        raise ConfigError("[dream] max_per_check — хотя бы 1 отклик за проверку")
     if cfg.logs.keep_days < 0:
         raise ConfigError("[logs] keep_days не может быть меньше 0 (0 — хранить снимки всегда)")
     if cfg.stats.keep_days < 0:

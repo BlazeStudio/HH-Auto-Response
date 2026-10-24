@@ -246,6 +246,15 @@ def _clock(d, image, box, w, color) -> None:  # часы — расписани�
     d.line((cx, y0 + size * 0.24, cx, cy, cx + size * 0.22, cy + size * 0.14), fill=color, width=w, joint="curve")
 
 
+def _up(d, image, box, w, color) -> None:  # стрелка вверх — поднятие резюме
+    x0, y0, x1, y1 = box
+    size = x1 - x0
+    cx = (x0 + x1) / 2
+    d.line((cx, y1 - size * 0.04, cx, y0 + size * 0.12), fill=color, width=w)
+    d.line((cx - size * 0.34, y0 + size * 0.46, cx, y0 + size * 0.1, cx + size * 0.34, y0 + size * 0.46), fill=color,
+           width=w, joint="curve")
+
+
 def _chart(d, image, box, w, color) -> None:  # столбики — статистика
     x0, y0, x1, y1 = box
     size = x1 - x0
@@ -288,7 +297,7 @@ def _eye(d, image, box, w, color) -> None:  # глаз — «показать б
 
 
 _MENU = {"send": _send, "chat": _chat, "sparkle": _sparkle, "gear": _gear, "journal": _journal, "clock": _clock,
-         "chart": _chart, "mini": _mini, "expand": _expand, "eye": _eye}
+         "chart": _chart, "mini": _mini, "expand": _expand, "eye": _eye, "up": _up}
 
 
 def icon(name: str, size: int = 18, color: str | tuple[str, str] = "#FFFFFF") -> ctk.CTkImage:

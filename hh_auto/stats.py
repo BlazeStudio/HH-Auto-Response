@@ -24,6 +24,7 @@ METRICS = {
     "skip_questions": "Пропущены из-за анкет",
     "skip_relocation": "Пропущены: переезд, другой регион",
     "skip_company": "Лимит откликов в компанию",
+    "skip_quality": "Отсеяны: работодатель и вакансия",
     "skip_other": "Пропущены по другим причинам",
     "failed": "Ошибок",
     "rejections": "Отказов в чатах",
@@ -32,7 +33,8 @@ METRICS = {
     "runs": "Запусков",
     "minutes": "Минут работы",
 }
-SKIP_KINDS = ("skip_filters", "skip_ai", "skip_questions", "skip_relocation", "skip_company", "skip_other")
+SKIP_KINDS = ("skip_filters", "skip_ai", "skip_questions", "skip_relocation", "skip_company", "skip_quality",
+              "skip_other")
 SNAPSHOT = {"waiting"}  # не сумма за день, а сколько было на момент проверки — за неделю берём наибольшее
 FILE = "stats.json"
 _lock = threading.Lock()
@@ -43,6 +45,10 @@ def skip_kind(reason: str) -> str | None:
     r = reason.lower()
     if r.startswith("hh пересортировал выдачу"):
         return None
+    if r.startswith("отбор:"):  # данные hh: предупреждения, «вечные» и переполненные вакансии, рейтинг
+        return "skip_quality"
+    if r.startswith("уровень вакансии"):
+        return "skip_filters"
     if r.startswith("ии-фильтр") or r.startswith("ии: не интересна") or r.startswith("ии: не удалось проверить"):
         return "skip_ai"
     if "одну компанию" in r:

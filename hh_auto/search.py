@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -16,6 +16,7 @@ from . import selectors as S
 from .auth import hh_role, is_auth_url
 from .browser import FatalError, open_url, wait_captcha
 from .logger import log
+from .vacancy_meta import VacancyMeta, read_meta
 
 
 @dataclass
@@ -26,6 +27,7 @@ class Vacancy:
     button_text: str  # текст кнопки отклика в карточке ("" — кнопки нет)
     remote: bool = False  # в карточке есть «Можно удалённо»
     snippet: str = ""  # обязанности и требования из карточки (коротко)
+    meta: VacancyMeta | None = field(default=None, repr=False)  # данные hh из выдачи (vacancy_meta.py)
 
     @property
     def url(self) -> str:
@@ -187,6 +189,11 @@ def collect_vacancies(page: Page) -> list[Vacancy]:
         "snippet": S.SNIPPET,
     }
     vacancies = [Vacancy(**raw) for raw in page.evaluate(_COLLECT_JS, selectors)]
+    metas = read_meta(page)
+    for v in vacancies:
+        v.meta = metas.get(v.id)
+    if vacancies:
+        log.debug(f"  данные hh по вакансиям (проверка работодателя, отклики, навыки): {len(metas)} из {len(vacancies)}")
     for v in vacancies:
         log.debug(f"    • {v.id} «{v.title}» — {v.company} [кнопка: {v.button_text or 'нет'}{', удалённо' if v.remote else ''}]")
     return vacancies
