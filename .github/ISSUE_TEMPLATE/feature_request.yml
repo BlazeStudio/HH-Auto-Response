@@ -1,0 +1,22 @@
+name: Идея или доработка
+description: Чего не хватает в программе
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что хочется сделать
+      description: Какую задачу решаете и что сейчас неудобно
+      placeholder: Хочу, чтобы программа сама поднимала резюме, пока я сплю
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Как это могло бы работать
+      description: Где была бы кнопка или настройка, что программа делает сама, а что оставляет вам
+  - type: textarea
+    id: extra
+    attributes:
+      label: Что ещё важно
+      description: Скриншоты, примеры с hh.ru, похожие программы

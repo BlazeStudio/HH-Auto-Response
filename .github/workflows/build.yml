@@ -3,6 +3,8 @@
 # Релиз: поднимите __version__ в hh_auto/__init__.py, закоммитьте, затем Releases → Draft a new release →
 #   тег = эта версия (например 1.0.5-beta) → Publish release. Workflow запустится сам, соберёт все системы
 #   и приложит архивы и SHA256SUMS.txt к этому релизу (~10–15 минут). Описание релиза не трогается.
+#   Следом блок «Что нового» наверху README берётся из описания релиза (раздел «## Что нового в …») и
+#   сохраняется в основную ветку, а если она защищена от прямых push — приходит pull request.
 # Автообновление в приложении берёт именно эти файлы: архив под свою систему + SHA256SUMS.txt для проверки.
 #   Поэтому тег обязан совпадать с версией в коде — иначе приложение предлагало бы обновиться по кругу.
 # Пробная сборка без релиза: Actions → «Сборка» → Run workflow — архивы будут в Artifacts запуска.
@@ -99,3 +101,50 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG" dist/* --clobber --repo "${{ github.repository }}"
+
+  readme:
+    name: «Что нового» в README
+    if: github.event_name == 'release'
+    needs: release  # README обновляется, когда архивы уже приложены и релиз можно скачать
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # коммит README в основную ветку
+      pull-requests: write  # если она защищена от прямых push — то же изменение через pull request
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Раздел «Что нового» из описания релиза
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          PYTHONIOENCODING: utf-8
+        run: python packaging/update_readme.py
+
+      - name: README → основная ветка
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "README уже актуален"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs(readme): что нового в $TAG" -- README.md
+          if git push origin "HEAD:$BASE"; then
+            exit 0
+          fi
+          # основная ветка защищена от прямых push — предлагаем то же изменение через pull request
+          branch="readme/whats-new-$TAG"
+          git push --force origin "HEAD:refs/heads/$branch"
+          gh pr create --base "$BASE" --head "$branch" \
+            --title "README: что нового в $TAG" \
+            --body "Блок «Что нового» наверху README — из описания релиза $TAG (workflow «Сборка»)."
