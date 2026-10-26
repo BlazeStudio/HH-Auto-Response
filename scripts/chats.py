@@ -2,6 +2,7 @@
 
     python scripts/chats.py              открыть непрочитанные чаты с отказом и ответить на анкеты
     python scripts/chats.py --dry-run    только показать, что было бы сделано
+    python scripts/chats.py --only-rejections   только прочитать отказы, остальные чаты не трогать
 
 Использует тот же config.toml и тот же профиль браузера (вход), что и scripts/responses.py.
 Не запускайте одновременно с откликами: у них общий профиль браузера.
@@ -28,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Открыть непрочитанные чаты hh с отказами")
     p.add_argument("--config", type=Path, default=ROOT / "config.toml", help="путь к config.toml")
     p.add_argument("--dry-run", action="store_true", help="только показать чаты, не открывая их")
+    p.add_argument("--only-rejections", action="store_true",
+                   help="только прочитать отказы, остальные чаты не трогать (как [chats] mode = \"rejections\")")
     p.add_argument("-v", "--verbose", action="store_true", help="подробный лог (DEBUG) и в консоли")
     return p.parse_args()
 
@@ -43,6 +46,8 @@ def main() -> int:
     except ConfigError as e:
         log.error(f"Ошибка конфигурации: {e}")
         return 2
+    if args.only_rejections:
+        cfg.chats.mode = "rejections"
     return run_chats(cfg, args.dry_run, ROOT, ChatStats(), log_path)
 
 

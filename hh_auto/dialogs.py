@@ -21,7 +21,15 @@ _DEFAULT_TITLE = {"info": APP_NAME, "success": "Готово", "warning": "Об�
 
 
 def _parent(parent: tkinter.Misc | None) -> tkinter.Misc | None:
-    return parent if parent is not None else getattr(tkinter, "_default_root", None)
+    """Окно, над которым показать сообщение: заданное или главное окно программы. None — живого главного
+    окна нет (программа уже закрылась или ещё не открылась)."""
+    if parent is not None:
+        return parent
+    root = getattr(tkinter, "_default_root", None)
+    try:
+        return root if root is not None and root.winfo_exists() else None
+    except tkinter.TclError:  # «application has been destroyed»
+        return None
 
 
 def _split(message: str) -> tuple[str, str]:
@@ -55,7 +63,15 @@ class Dialog(ctk.CTkToplevel):
                  buttons=(("Понятно", True, "primary"),), cancel=None, entry: str | None = None,
                  placeholder: str = "", width: int = 470, link: tuple[str, str] | None = None):
         parent = _parent(parent)
+        temp = None
+        if parent is None:
+            # Главного окна нет: без своего невидимого customtkinter создал бы пустое окно «tk», и процесс
+            # не завершался бы, пока его не закроют руками (при обновлении программа обновления ждала его)
+            temp = ctk.CTk()
+            temp.withdraw()
+            parent = temp
         super().__init__(parent)
+        self._temp_root = temp
         self.withdraw()  # собираем невидимым, показываем уже по центру — без мигания
         self.title(APP_NAME)
         self.resizable(False, False)
@@ -165,6 +181,11 @@ class Dialog(ctk.CTkToplevel):
 
     def run(self):
         self.wait_window()
+        if self._temp_root is not None:  # своё невидимое главное окно — убрать вместе с сообщением
+            try:
+                self._temp_root.destroy()
+            except tkinter.TclError:
+                pass
         return self.result
 
 

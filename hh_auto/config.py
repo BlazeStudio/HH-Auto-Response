@@ -112,8 +112,14 @@ class Questions:
     )
 
 
+CHATS_MODES = ("all", "rejections")
+
+
 @dataclass
 class Chats:
+    # all — отказы и ИИ-ответы на анкеты (если [ai] включён); rejections — только прочитать отказы,
+    # остальные чаты не трогать, даже с включённым ИИ
+    mode: str = "all"
     url: str = "https://hh.ru/chat"
     rejection_text: str = "Отказ"  # последнее сообщение чата, по которому узнаём отказ
     delay_min: float = 0.5  # пауза после открытия чата, чтобы hh отметил его прочитанным
@@ -508,6 +514,8 @@ def employer_id(text: str) -> str | None:
 
 def validate_config(cfg: Config) -> None:
     """Проверки значений, общие для config.toml и формы настроек в приложении."""
+    if cfg.chats.mode not in CHATS_MODES:
+        raise ConfigError(f"[chats] mode: «{cfg.chats.mode}», допустимо: {', '.join(CHATS_MODES)}")
     if cfg.ai.provider not in AI_PROVIDERS:
         raise ConfigError(f"[ai] provider: «{cfg.ai.provider}», допустимо: {', '.join(AI_PROVIDERS)}")
     if cfg.search.mode not in SEARCH_MODES:
