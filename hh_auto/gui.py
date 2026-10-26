@@ -2459,9 +2459,12 @@ class App(ctk.CTk):
 
     # ---------- обновление из релизов GitHub ----------
 
-    def check_updates(self, manual: bool = False) -> None:
-        """Есть ли новая версия на GitHub — в фоне; ответ придёт в _poll событием update_found."""
-        if not manual:  # пока программа открыта — заглядываем раз в 12 часов
+    UPDATE_RETRY = 3600  # с: автоматическая проверка не удалась (нет связи, лимит GitHub) — повтор через час
+
+    def check_updates(self, manual: bool = False, retry: bool = False) -> None:
+        """Есть ли новая версия на GitHub — в фоне; ответ придёт в _poll событием update_found.
+        retry — повтор после неудачи (раз в 12 часов программа и так заглядывает сама)."""
+        if not manual and not retry:  # пока программа открыта — заглядываем раз в 12 часов
             self.after(12 * 3600 * 1000, self.check_updates)
             if not self.prefs.get("check_updates", True):
                 return
@@ -2483,6 +2486,8 @@ class App(ctk.CTk):
                                       state="normal")
             self.update_btn.pack(fill="x", padx=22, pady=(0, 10), before=self._about)
         if not manual:
+            if error:  # не ждать 12 часов: связь или лимит GitHub через час, скорее всего, вернутся
+                self.after(self.UPDATE_RETRY * 1000, lambda: self.check_updates(retry=True))
             return
         if error:
             messagebox.showwarning(APP_NAME, f"Не получилось проверить обновления: {error}")

@@ -5,6 +5,9 @@ HH-Auto-Response + _internal на Linux, HH-Auto-Response.app на macOS), и о
 файлы из архива нового релиза:
 
 1. check()    — список релизов GitHub; берём самую новую версию, у которой есть архив под эту систему.
+                Список запоминается вместе с меткой ETag: повторная проверка спрашивает «изменилось ли?», и ответ
+                «нет» (304) GitHub не засчитывает в лимит 60 запросов в час. Лимит всё же исчерпан — берём ленту
+                релизов (releases.atom, обычная страница сайта, под этот лимит не попадает).
 2. download() — архив в папку данных (update/), сверка SHA256 с SHA256SUMS.txt релиза, распаковка.
 3. launch()   — запускаем НОВУЮ версию прямо из распакованной папки с --apply-update, старая закрывается.
 4. apply()    — новая версия ждёт, пока старая закроется, откладывает старые файлы в *.old-<время>, копирует
@@ -18,6 +21,7 @@ HH-Auto-Response + _internal на Linux, HH-Auto-Response.app на macOS), и о
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import platform
@@ -29,7 +33,9 @@ import tarfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -43,7 +49,10 @@ APP_NAME = "HH-Auto-Response"
 REPO = "BlazeStudio/hh-auto-response"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=20"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases"
+RELEASES_FEED = f"https://github.com/{REPO}/releases.atom"  # запасной путь, когда лимит API исчерпан
 SUMS = "SHA256SUMS.txt"
+CACHE_FILE = "update_check.json"  # последний ответ API и его ETag (в папке данных, data/)
+_ATOM = "{http://www.w3.org/2005/Atom}"
 # что откладывает apply(): только наши файлы, чужое в папке программы не трогаем
 _LEFTOVER = re.compile(rf"^(?:{re.escape(APP_NAME)}(?:\.exe|\.app)?|_internal)\.old-\d+$")
 
@@ -91,14 +100,9 @@ def _request(url: str, accept: str = "application/octet-stream") -> urllib.reque
 
 def check(current: str = __version__, timeout: float = 10) -> Release | None:
     """Самый новый релиз новее current с архивом под эту систему, или None. Нет связи — UpdateError."""
-    api = os.environ.get("HH_UPDATE_API") or RELEASES_API  # свой адрес — чтобы проверить обновление без GitHub
-    try:
-        with urllib.request.urlopen(_request(api, "application/vnd.github+json"), timeout=timeout) as response:
-            releases = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        raise UpdateError(f"не удалось узнать о новых версиях: {e}") from e
+    releases, from_feed = _releases(timeout)
     mine, suffix = parse_version(current), asset_suffix()
-    best: tuple[tuple, Release] | None = None
+    candidates: list[tuple[tuple, Release]] = []
     for rel in releases if isinstance(releases, list) else []:
         version = parse_version(str(rel.get("tag_name", "")))
         if rel.get("draft") or version is None or (mine is not None and version <= mine):
@@ -107,12 +111,116 @@ def check(current: str = __version__, timeout: float = 10) -> Release | None:
         archive = next((a for name, a in assets.items() if name.startswith(APP_NAME) and name.endswith(suffix)), None)
         if archive is None or SUMS not in assets:
             continue  # под эту систему архива нет или релиз ещё собирается
-        if best is None or version > best[0]:
-            best = (version, Release(version=str(rel["tag_name"]).lstrip("v"), page=rel.get("html_url") or RELEASES_PAGE,
-                                     notes=(rel.get("body") or "").strip(), asset=archive["name"],
-                                     url=archive["browser_download_url"], size=int(archive.get("size") or 0),
-                                     sums_url=assets[SUMS]["browser_download_url"]))
-    return best[1] if best else None
+        candidates.append((version, Release(
+            version=str(rel["tag_name"]).lstrip("v"), page=rel.get("html_url") or RELEASES_PAGE,
+            notes=(rel.get("body") or "").strip(), asset=archive["name"], url=archive["browser_download_url"],
+            size=int(archive.get("size") or 0), sums_url=assets[SUMS]["browser_download_url"])))
+    for _version, release in sorted(candidates, key=lambda c: c[0], reverse=True):
+        # в ленте нет списка файлов: имена известны, но релиз может ещё собираться — проверяем, что суммы выложены
+        if not from_feed or _available(release.sums_url, timeout):
+            return release
+    return None
+
+
+def _cache_path() -> Path:
+    return app_root() / "data" / CACHE_FILE
+
+
+def _releases(timeout: float) -> tuple[list, bool]:
+    """Список релизов (как у GitHub API) и взят ли он из ленты. Повтор — с ETag прошлого ответа: «не изменилось»
+    (304) берём из памяти, и GitHub не считает его в лимит. Лимит исчерпан (403/429) — лента релизов."""
+    custom = os.environ.get("HH_UPDATE_API")  # свой адрес — чтобы проверить обновление без GitHub
+    api = custom or RELEASES_API
+    try:
+        cache = json.loads(_cache_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+    request = _request(api, "application/vnd.github+json")
+    if cache.get("api") == api and cache.get("etag") and isinstance(cache.get("releases"), list):
+        request.add_header("If-None-Match", cache["etag"])
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            releases = json.loads(response.read().decode("utf-8"))
+            etag = response.headers.get("ETag")
+        if etag:
+            _save_cache({"api": api, "etag": etag, "releases": releases})
+        return releases, False
+    except urllib.error.HTTPError as e:
+        if e.code == 304 and isinstance(cache.get("releases"), list):
+            return cache["releases"], False
+        if e.code not in (403, 429):
+            raise UpdateError(f"не удалось узнать о новых версиях: {e}") from e
+        limited = e
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise UpdateError(f"не удалось узнать о новых версиях: {e}") from e
+    feed = os.environ.get("HH_UPDATE_FEED") or ("" if custom else RELEASES_FEED)
+    try:
+        if not feed:
+            raise UpdateError("ленты релизов нет")
+        return _releases_from_feed(feed, timeout), True
+    except UpdateError as e:
+        raise UpdateError("GitHub временно ограничил проверки обновлений с вашего адреса (не больше 60 в час) — "
+                          "попробуйте через час или скачайте новую версию со страницы релизов") from limited or e
+
+
+def _save_cache(data: dict) -> None:
+    path = _cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        temp.replace(path)
+    except OSError:
+        pass  # без памяти проверка просто чаще тратит лимит
+
+
+def _releases_from_feed(feed: str, timeout: float) -> list[dict]:
+    """Релизы из ленты releases.atom — в том же виде, что у API. Черновиков в ленте нет; файлы релиза
+    названы предсказуемо: HH-Auto-Response-<версия><система> и SHA256SUMS.txt."""
+    try:
+        with urllib.request.urlopen(_request(feed, "application/atom+xml"), timeout=timeout) as response:
+            root = ET.fromstring(response.read())
+    except (urllib.error.URLError, OSError, ET.ParseError) as e:
+        raise UpdateError(f"лента релизов не открылась: {e}") from e
+    # …/releases.atom → …/releases/download/<версия>/<файл>
+    releases_url = feed[: -len(".atom")] if feed.endswith(".atom") else feed.rsplit("/", 1)[0] + "/releases"
+    releases = []
+    for entry in root.iter(f"{_ATOM}entry"):
+        link = entry.find(f"{_ATOM}link")
+        page = link.get("href", "") if link is not None else ""
+        tag = urllib.parse.unquote(page.rstrip("/").rsplit("/", 1)[-1]) if "/releases/tag/" in page else \
+            (entry.findtext(f"{_ATOM}title") or "").strip()
+        if not tag:
+            continue
+        base = f"{releases_url}/download/{urllib.parse.quote(tag)}/"
+        name = f"{APP_NAME}-{tag}{asset_suffix()}"
+        releases.append({"tag_name": tag, "html_url": page or RELEASES_PAGE, "draft": False,
+                         "body": _html_to_markdown(entry.findtext(f"{_ATOM}content") or ""),
+                         "assets": [{"name": name, "browser_download_url": base + name, "size": 0},
+                                    {"name": SUMS, "browser_download_url": base + SUMS, "size": 0}]})
+    return releases
+
+
+def _available(url: str, timeout: float) -> bool:
+    """Файл релиза уже выложен (у собирающегося релиза SHA256SUMS.txt ещё нет)."""
+    try:
+        with urllib.request.urlopen(_request(url, "text/plain"), timeout=timeout) as response:
+            response.read(1)
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _html_to_markdown(text: str) -> str:
+    """Описание релиза из ленты (HTML) → тот же простой markdown, что у API: заголовки, пункты, абзацы."""
+    text = re.sub(r"<br\s*/?>", " ", text)
+    text = re.sub(r"\s*\n\s*", " ", text)  # переносы внутри HTML ничего не значат
+    text = re.sub(r"<h[1-3][^>]*>", "\n## ", text)
+    text = re.sub(r"<li[^>]*>", "\n- ", text)
+    text = re.sub(r"</(h[1-6]|p|ul|ol|li)>|<(p|ul|ol)[^>]*>", "\n", text)
+    text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    lines = (" ".join(line.split()) for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
 
 
 def install_dir() -> Path:
