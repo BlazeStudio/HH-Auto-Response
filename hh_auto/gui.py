@@ -2479,7 +2479,7 @@ class App(ctk.CTk):
     def _on_update_found(self, release: updater.Release | None, error: str, manual: bool) -> None:
         if release is not None and not self.update_busy and self.update_root is None:
             self.update_release = release
-            self.update_btn.configure(text=f"Обновить до {release.version}", image=self._icon_download,
+            self.update_btn.configure(text=self._update_text(*self._update_variants()), image=self._icon_download,
                                       state="normal")
             self.update_btn.pack(fill="x", padx=22, pady=(0, 10), before=self._about)
         if not manual:
@@ -2491,6 +2491,18 @@ class App(ctk.CTk):
                                           "новее на GitHub пока нет.", kind="success")
         else:
             self._update_clicked()
+
+    UPDATE_TEXT_ROOM = 230 - 2 * 22 - 40  # ширина меню без полей, значка и отступов кнопки
+
+    def _update_text(self, *variants: str) -> str:
+        """Первая подпись, которая целиком помещается в кнопку обновления (раньше «Обновить до 1.0.11-beta»
+        и «Перезапустить и обновить» обрезались с обеих сторон)."""
+        font = ctk.CTkFont(size=13, weight="bold")
+        return next((text for text in variants if font.measure(text) <= self.UPDATE_TEXT_ROOM), variants[-1])
+
+    def _update_variants(self) -> tuple[str, ...]:
+        version = self.update_release.version if self.update_release else ""
+        return f"Обновить до {version}", f"Обновить до {version.split('-')[0]}", "Обновить"
 
     def _update_clicked(self) -> None:
         release = self.update_release
@@ -2535,11 +2547,12 @@ class App(ctk.CTk):
         self.update_busy = False
         self.update_progress.pack_forget()
         if root is None:
-            self.update_btn.configure(state="normal", text=f"Обновить до {self.update_release.version}")
+            self.update_btn.configure(state="normal", text=self._update_text(*self._update_variants()))
             messagebox.showerror(APP_NAME, f"Обновление не скачалось: {error}")
             return
         self.update_root = root
-        self.update_btn.configure(state="normal", text="Перезапустить и обновить", image=self._icon_restart)
+        self.update_btn.configure(state="normal", text=self._update_text("Перезапустить и обновить", "Обновить сейчас"),
+                                  image=self._icon_restart)
         if messagebox.askyesno(APP_NAME, "Приложение закроется на несколько секунд и откроется уже новой версией.",
                                title=f"Версия {self.update_release.version} скачана и проверена",
                                yes="Перезапустить сейчас", no="Позже", kind="update"):
@@ -2548,7 +2561,7 @@ class App(ctk.CTk):
     def _restart_into_update(self) -> None:
         if self.worker and self.worker.is_alive():
             messagebox.showwarning(APP_NAME, "Идёт работа. Дождитесь конца или остановите её — после этого нажмите "
-                                             "«Перезапустить и обновить».")
+                                             f"«{self.update_btn.cget('text').strip()}».")
             return
         try:
             updater.launch(self.update_root)
@@ -3103,6 +3116,8 @@ class App(ctk.CTk):
     def report_callback_exception(self, exc, value, tb) -> None:
         """Ошибка в окне программы: в logs/crash.log, человеку — одно сообщение за сеанс; работа продолжается."""
         path = record_crash(self.root_dir, "ошибка в окне программы", exc, value, tb)
+        if self.destroyed:  # окно уже закрыто (перезапуск в обновление, выход) — только в журнал сбоев
+            return
         if not self._crash_shown:
             self._crash_shown = True
             messagebox.showerror(APP_NAME, f"В окне программы произошла ошибка: {value}\n\nРабота продолжается. "
