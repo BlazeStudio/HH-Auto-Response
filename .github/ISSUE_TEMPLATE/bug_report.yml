@@ -1,0 +1,56 @@
+name: Ошибка
+description: Программа делает не то, что должна, или падает
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что сообщаете! Чем подробнее — тем быстрее получится исправить.
+        Сначала проверьте, что у вас [последняя версия](https://github.com/BlazeStudio/HH-Auto-Response/releases/latest):
+        «Настройки» → «Прочее» → «Проверить сейчас» — возможно, это уже исправлено.
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: Внизу меню слева, например «версия 1.0.13-beta»
+      placeholder: 1.0.13-beta
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: Система
+      options:
+        - Windows
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - Docker
+        - Запуск из исходников (python scripts/…)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось
+      description: Что делали, что увидели и что ожидали увидеть
+      placeholder: |
+        Нажал «Начать отклики». На вакансиях, где письмо необязательное, отклик ушёл без письма,
+        хотя письма включены.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Журнал запуска
+      description: |
+        «Журналы» → нужный запуск → «Копировать» (или файл из папки logs/ в папке данных). Хватит куска вокруг
+        ошибки. В журнале бывают названия вакансий и текст письма — уберите то, чем не хотите делиться.
+      render: text
+  - type: textarea
+    id: files
+    attributes:
+      label: Снимки страниц и скриншоты
+      description: |
+        При ошибке программа сохраняет скриншот и HTML страницы в logs/snapshots — приложите подходящие по
+        времени (перетащите файлы сюда, HTML лучше в .zip). Если падало окно программы — приложите logs/crash.log.

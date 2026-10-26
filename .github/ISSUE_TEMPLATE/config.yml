@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Скачать последнюю версию
+    url: https://github.com/BlazeStudio/HH-Auto-Response/releases/latest
+    about: Многие ошибки уже исправлены — сначала проверьте свежую версию
+  - name: Инструкция (README)
+    url: https://github.com/BlazeStudio/HH-Auto-Response#readme
+    about: Установка, настройки и ответы на частые вопросы
