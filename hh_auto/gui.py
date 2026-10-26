@@ -564,6 +564,9 @@ class ResponsesPage(Page):
         self.progress.set(value)
 
 
+CHATS_MODE_LABELS = {"Отказы и ответы ИИ": "all", "Только прочитать отказы": "rejections"}
+
+
 class ChatsPage(Page):
     def __init__(self, master, app: "App"):
         super().__init__(master, "Чаты",
@@ -583,8 +586,15 @@ class ChatsPage(Page):
             cards.grid_columnconfigure(i, weight=1, uniform="cards")
             card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))  # одной высоты, даже если подпись в две строки
 
+        # что делать: отказы и ИИ-ответы или только отказы ([chats] mode) — сохраняется сразу
+        mode_row = PlainFrame(self, bg=MAIN_BG)
+        mode_row.pack(fill="x", pady=(16, 0))
+        TextLabel(mode_row, "Что делать:", color=MUTED, bg=MAIN_BG).pack(side="left", padx=(0, 8))
+        self.mode = Segments(mode_row, list(CHATS_MODE_LABELS), command=self._mode_changed, height=30)
+        self.mode.pack(side="left")
+
         controls = ctk.CTkFrame(self, fg_color="transparent")
-        controls.pack(fill="x", pady=(16, 0))
+        controls.pack(fill="x", pady=(10, 0))
         self.start_btn = _primary_button(controls, "✉  Обработать чаты", lambda: app.start_chats(False), width=200)
         self.start_btn.pack(side="left")
         self.dry_btn = _secondary_button(controls, "Только показать", lambda: app.start_chats(True), width=150)
@@ -592,16 +602,37 @@ class ChatsPage(Page):
         self.stop_btn = _stop_button(controls, app.stop)
         self.stop_btn.pack(side="left")
         _mini_button(controls, app).pack(side="right")
-        self.ai_state = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w")
+        # что будет при запуске — переносится по ширине страницы, а не обрезается в узком окне
+        self.ai_state = TextLabel(self, "", color=MUTED, bg=MAIN_BG, width=1)
         self.ai_state.pack(fill="x", pady=(10, 0))
+        self.bind("<Configure>", lambda _e: self.ai_state.resize(
+            wraplength=max(200, self.winfo_width() / self._get_widget_scaling())), add="+")
 
     def refresh_config(self, cfg: Config) -> None:
-        if cfg.ai.enabled:
+        only_rejections = cfg.chats.mode == "rejections"
+        self.mode.set(next(label for label, mode in CHATS_MODE_LABELS.items() if mode == cfg.chats.mode))
+        self.start_btn.configure(text="✉  Прочитать отказы" if only_rejections else "✉  Обработать чаты")
+        if only_rejections:
+            text = ("Только отказы: откроет непрочитанные отказы, чтобы hh отметил их прочитанными. Остальные чаты "
+                    "не трогает" + (" — ИИ-ответы сейчас не работают" if cfg.ai.enabled else ""))
+        elif cfg.ai.enabled:
             model = cfg.ai.model or AI_PROVIDERS.get(cfg.ai.provider, ("", ""))[1]
             text = f"ИИ-ответы на анкеты: включены ({cfg.ai.provider}, {model})"
         else:
             text = "ИИ-ответы на анкеты выключены — только чтение отказов. Включить: «Настройки» → «ИИ-ответы в чатах»"
-        self.ai_state.configure(text=text, text_color=GREEN if cfg.ai.enabled else MUTED)
+        self.ai_state.set(text, GREEN if cfg.ai.enabled and not only_rejections else MUTED)
+
+    def _mode_changed(self, label: str) -> None:
+        """Режим чатов — сразу в config.toml: его же берут запуск по расписанию, консоль и Docker."""
+        try:
+            cfg = self.app.read_config_file(check_search_url=False)
+            cfg.chats.mode = CHATS_MODE_LABELS[label]
+            save_config(cfg, self.app.config_path)
+        except ConfigError as e:
+            messagebox.showerror(APP_NAME, f"Не сохранено: {e}")
+            self.refresh_config(self.app.cfg)
+            return
+        self.app.reload_config()
 
     def set_running(self, running: bool) -> None:
         state = "disabled" if running else "normal"
@@ -959,7 +990,7 @@ SETTINGS = [
         ("schedule", "times", "Во сколько", "list", "Через запятую, по часам компьютера: 10:00, 15:30"),
         ("schedule", "days", "По каким дням", "multi", ""),
         ("schedule", "chats_after", "После откликов прочитать отказы в чатах", "bool",
-         "И ответить ботам hh, если включены «ИИ-ответы в чатах»"),
+         "И ответить ботам hh, если включены «ИИ-ответы в чатах», а на странице «Чаты» выбрано «Отказы и ответы ИИ»"),
     ]),
     ("Поднятие резюме", [
         ("raising", "enabled", "Поднимать резюме в поиске каждые 4 часа", "bool",
@@ -2479,7 +2510,7 @@ class App(ctk.CTk):
     def _on_update_found(self, release: updater.Release | None, error: str, manual: bool) -> None:
         if release is not None and not self.update_busy and self.update_root is None:
             self.update_release = release
-            self.update_btn.configure(text=f"Обновить до {release.version}", image=self._icon_download,
+            self.update_btn.configure(text=self._update_text(*self._update_variants()), image=self._icon_download,
                                       state="normal")
             self.update_btn.pack(fill="x", padx=22, pady=(0, 10), before=self._about)
         if not manual:
@@ -2491,6 +2522,18 @@ class App(ctk.CTk):
                                           "новее на GitHub пока нет.", kind="success")
         else:
             self._update_clicked()
+
+    UPDATE_TEXT_ROOM = 230 - 2 * 22 - 40  # ширина меню без полей, значка и отступов кнопки
+
+    def _update_text(self, *variants: str) -> str:
+        """Первая подпись, которая целиком помещается в кнопку обновления (раньше «Обновить до 1.0.11-beta»
+        и «Перезапустить и обновить» обрезались с обеих сторон)."""
+        font = ctk.CTkFont(size=13, weight="bold")
+        return next((text for text in variants if font.measure(text) <= self.UPDATE_TEXT_ROOM), variants[-1])
+
+    def _update_variants(self) -> tuple[str, ...]:
+        version = self.update_release.version if self.update_release else ""
+        return f"Обновить до {version}", f"Обновить до {version.split('-')[0]}", "Обновить"
 
     def _update_clicked(self) -> None:
         release = self.update_release
@@ -2535,11 +2578,12 @@ class App(ctk.CTk):
         self.update_busy = False
         self.update_progress.pack_forget()
         if root is None:
-            self.update_btn.configure(state="normal", text=f"Обновить до {self.update_release.version}")
+            self.update_btn.configure(state="normal", text=self._update_text(*self._update_variants()))
             messagebox.showerror(APP_NAME, f"Обновление не скачалось: {error}")
             return
         self.update_root = root
-        self.update_btn.configure(state="normal", text="Перезапустить и обновить", image=self._icon_restart)
+        self.update_btn.configure(state="normal", text=self._update_text("Перезапустить и обновить", "Обновить сейчас"),
+                                  image=self._icon_restart)
         if messagebox.askyesno(APP_NAME, "Приложение закроется на несколько секунд и откроется уже новой версией.",
                                title=f"Версия {self.update_release.version} скачана и проверена",
                                yes="Перезапустить сейчас", no="Позже", kind="update"):
@@ -2548,7 +2592,7 @@ class App(ctk.CTk):
     def _restart_into_update(self) -> None:
         if self.worker and self.worker.is_alive():
             messagebox.showwarning(APP_NAME, "Идёт работа. Дождитесь конца или остановите её — после этого нажмите "
-                                             "«Перезапустить и обновить».")
+                                             f"«{self.update_btn.cget('text').strip()}».")
             return
         try:
             updater.launch(self.update_root)
@@ -2719,7 +2763,8 @@ class App(ctk.CTk):
             return
         self.chat_stats = ChatStats()
         self.pages["chats"].update_stats(self.chat_stats)
-        self._start("chats", "Чаты", "chats",
+        title = "Чаты: только отказы" if cfg.chats.mode == "rejections" else "Чаты"
+        self._start("chats", title, "chats",
                     lambda log_path: run_chats(cfg, dry_run, self.root_dir, self.chat_stats, log_path))
 
     RAISE_RETRY = 1800  # с: подъём резюме не удался (нет входа, сбой) — следующая попытка не раньше
@@ -3103,6 +3148,8 @@ class App(ctk.CTk):
     def report_callback_exception(self, exc, value, tb) -> None:
         """Ошибка в окне программы: в logs/crash.log, человеку — одно сообщение за сеанс; работа продолжается."""
         path = record_crash(self.root_dir, "ошибка в окне программы", exc, value, tb)
+        if self.destroyed:  # окно уже закрыто (перезапуск в обновление, выход) — только в журнал сбоев
+            return
         if not self._crash_shown:
             self._crash_shown = True
             messagebox.showerror(APP_NAME, f"В окне программы произошла ошибка: {value}\n\nРабота продолжается. "

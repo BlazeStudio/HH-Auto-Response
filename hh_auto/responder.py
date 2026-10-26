@@ -37,6 +37,9 @@ LIMIT_TEXT = re.compile(r"не более \d+ откликов|лимит отк
 SEND_BUTTON_TEXT = re.compile(r"^\s*(Отправить|Откликнуться)\s*$", re.I)
 CLOSE_BUTTON_TEXT = re.compile(r"^\s*(Закрыть|Отменить|Отмена)\s*$", re.I)
 SAVE_BUTTON_TEXT = re.compile(r"^\s*(Сохранить|Готово|Применить|Отправить|Добавить)\s*$", re.I)
+# Необязательное письмо в окне отклика hh прячет за кнопкой «Добавить сопроводительное» (бывает и «Приложить письмо»)
+ADD_LETTER_TEXT = re.compile(r"(добавить|приложить)\s+(сопроводительн\w*|письмо)", re.I)
+CLOSE_BUTTON_TEXT = re.compile(r"^\s*(Закрыть|Отмена|Отменить)\s*$", re.I)
 # Ошибки, которые hh пишет прямо в окне отклика/письма (тексты из переводов hh)
 SUBMIT_ERROR_TEXT = re.compile(
     r"Отклик уже просмотрен работодателем|требуется ответить на вопросы теста|Произошла ошибка"
@@ -544,8 +547,13 @@ class Responder:
                 return Result(Status.SKIPPED, "не удалось получить сопроводительное письмо")
         elif textarea.count():
             log.info("  письма отключены ([letter] mode = none) — откликаюсь без письма")
+        elif no_letters:
+            log.info("  письмо необязательное, письма отключены ([letter] mode = none) — откликаюсь без письма")
         else:
-            log.warning("  ! в окне нет поля для письма — откликаюсь без него")
+            letter = self._optional_letter(dialog, vac)
+            if letter is None:  # окно письма не закрылось — и отклик не отправить
+                self._close_dialogs()
+                return Result(Status.SKIPPED, "не удалось приложить необязательное письмо")
 
         submit = dialog.locator(S.MODAL_SUBMIT).first
         if no_letters and textarea.count() and not self._wait_enabled(submit, 3):
@@ -567,6 +575,88 @@ class Responder:
         self._log_card_state(card)
         self._close_dialogs()
         return Result(Status.APPLIED, letter=letter)
+
+    def _optional_letter(self, dialog: Locator | Page, vac: Vacancy) -> bool | None:
+        """Письмо необязательное: hh прячет поле за кнопкой «Добавить сопроводительное». Раскрываем и пишем
+        (раньше такие отклики уходили без письма). Не вышло — письмо необязательное, откликаемся без него
+        (False). None — окно письма не закрылось, и отклик отправить нельзя."""
+        toggle = self._letter_toggle(dialog)
+        if toggle is None:
+            log.warning("  ! в окне нет ни поля для письма, ни кнопки «Добавить сопроводительное» — откликаюсь без письма")
+            self._snapshot_once(vac.id, "modal-no-letter")
+            return False
+        self._pause()
+        log.info(f"  письмо необязательное → нажимаю «{' '.join(toggle.inner_text().split()) or 'Добавить сопроводительное'}»")
+        toggle.click()
+        form = self._wait_modal_letter(dialog)
+        if form is None:
+            log.warning("  ! поле письма не появилось — откликаюсь без письма")
+            self._snapshot_once(vac.id, "modal-letter-form")
+            return False
+        scope, textarea, save = form
+        if not self._write_letter(scope, textarea, vac):
+            log.warning("  ! письмо не получилось — оно необязательное, откликаюсь без него")
+            return False if save is None else self._close_letter_window(scope)
+        if save is not None:
+            error = self._submit(scope, save, "«Сохранить» (письмо)")
+            if error:
+                log.warning(f"  ! письмо не сохранилось ({error}) — откликаюсь без него")
+                return self._close_letter_window(scope)
+        return True
+
+    def _letter_toggle(self, dialog: Locator | Page) -> Locator | None:
+        """Кнопка «Добавить сопроводительное» в окне отклика: data-qa, как у других кнопок письма hh, или по тексту."""
+        for candidate in (dialog.locator(S.LETTER_TOGGLE),
+                          dialog.get_by_role("button", name=ADD_LETTER_TEXT),
+                          dialog.get_by_text(ADD_LETTER_TEXT)):
+            visible = candidate.filter(visible=True)
+            if visible.count():
+                return visible.first
+        return None
+
+    def _wait_modal_letter(self, dialog: Locator | Page, timeout: float = 8
+                           ) -> tuple[Locator | Page, Locator, Locator | None] | None:
+        """После «Добавить сопроводительное»: поле в самом окне отклика (кнопки «Сохранить» нет) или отдельное
+        окно «Сопроводительное письмо» поверх него — (где искать «Сгенерировать», поле, «Сохранить» или None)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                inline = dialog.locator(S.LETTER_INPUT).filter(visible=True)
+                if inline.count():
+                    log.info("  поле письма раскрылось в окне отклика")
+                    return dialog, inline.first, None
+                separate = (self.page.locator(S.DIALOG).filter(has=self.page.locator(S.LETTER_INPUT))
+                            .filter(has_not=self.page.locator(S.MODAL_SUBMIT)).filter(visible=True))
+                if separate.count():
+                    window = separate.last
+                    save = window.locator(S.LETTER_SUBMIT).or_(window.get_by_role("button", name=SAVE_BUTTON_TEXT))
+                    log.info("  открылось окно «Сопроводительное письмо»")
+                    return window, window.locator(S.LETTER_INPUT).first, save.first
+            except PlaywrightError:
+                pass
+            control.sleep(0.3)
+        return None
+
+    def _close_letter_window(self, window: Locator | Page) -> bool | None:
+        """Закрыть отдельное окно письма и вернуться к окну отклика. False — вернулись (отклик без письма),
+        None — окно отклика пропало."""
+        close = window.get_by_role("button", name=CLOSE_BUTTON_TEXT).filter(visible=True)
+        try:
+            if close.count():
+                close.first.click()
+            else:
+                self.page.keyboard.press("Escape")
+            window.wait_for(state="hidden", timeout=3_000)
+        except PlaywrightError:
+            pass
+        return False if self._visible(self._response_dialog().locator(S.MODAL_SUBMIT)) else None
+
+    def _snapshot_once(self, vacancy_id: str, tag: str) -> None:
+        """Снимок страницы — один на запуск для каждого вида: если hh поменял вёрстку, разобраться хватит одного."""
+        taken = self.__dict__.setdefault("_snapshots_taken", set())
+        if tag not in taken:
+            taken.add(tag)
+            self._snapshot(vacancy_id, tag)
 
     def _handle_quick(self, vac: Vacancy, card: Locator) -> Result:
         if self.cfg.letter.mode == "none":

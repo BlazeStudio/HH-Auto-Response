@@ -172,9 +172,11 @@ def read_rejections(
 ) -> ChatStats:
     rules = cfg.chats
     stats = stats if stats is not None else ChatStats()
-    ai = _make_ai(cfg)
+    only_rejections = rules.mode == "rejections"
+    ai = None if only_rejections else _make_ai(cfg)  # «только отказы»: нейросеть и резюме не нужны
     log.info("")
-    title = "чаты: отказы" + (" + ИИ-ответы на анкеты" if ai else "")
+    title = ("чаты: только отказы (остальные чаты не трогаю)" if only_rejections
+             else "чаты: отказы" + (" + ИИ-ответы на анкеты" if ai else ""))
     log.info(f"Шаг 3/3: {title}" + ("  [DRY-RUN: ничего не открываю и не отправляю]" if dry_run else ""))
     resume = ""
     if ai:
