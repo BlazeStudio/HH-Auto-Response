@@ -11,6 +11,7 @@
 [![python](https://img.shields.io/badge/python-3.11%2B-3776AB)](#из-исходников)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-6B7280)](LICENSE.md)
 [![changelog](https://img.shields.io/badge/changelog-6B7280)](CHANGELOG.md)
+</div>
 <div align="center">
 
 <img src="docs/screenshots/responses.png" alt="Страница «Отклики»" width="860">
@@ -27,7 +28,6 @@
 оставляет вам.
 
 Есть приложение с окном (Windows, macOS, Linux), консольные скрипты и Docker-образ для сервера.
-История изменений в [CHANGELOG](CHANGELOG.md).
 
 ## Содержание
 
