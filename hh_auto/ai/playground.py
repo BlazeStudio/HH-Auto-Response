@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .ai import AiClient, Decision, FormFill, FormQuestion, ours_is_last, review
-from .config import Config
-from .resume import clean_resume_text
+from .client import AiClient, Decision, FormFill, FormQuestion, ours_is_last, review
+from ..core.config import Config
+from ..hh.resume import clean_resume_text
 
 ROBOT = "Робот-рекрутер"
 ACTIONS = {

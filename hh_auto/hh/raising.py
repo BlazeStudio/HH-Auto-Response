@@ -17,9 +17,9 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 
-from .auth import RESUMES_URL, on_resumes_page
-from .config import Config
-from .logger import log
+from ..web.auth import RESUMES_URL, on_resumes_page
+from ..core.config import Config
+from ..core.logger import log
 
 EVERY = timedelta(hours=4)  # hh поднимает бесплатно не чаще раза в 4 часа
 RETRY_EARLY = timedelta(hours=1)  # hh ответил «рано», а когда будет можно — со страницы не понять

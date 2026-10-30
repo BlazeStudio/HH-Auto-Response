@@ -11,11 +11,12 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from . import control, hh_filters
-from . import selectors as S
-from .auth import hh_role, is_auth_url
-from .browser import FatalError, open_url, wait_captcha
-from .logger import log
+from ..core import control
+from . import filters as hh_filters
+from ..web import selectors as S
+from ..web.auth import hh_role, is_auth_url
+from ..web.browser import FatalError, open_url, wait_captcha
+from ..core.logger import log
 from .vacancy_meta import VacancyMeta, read_meta
 
 
@@ -80,7 +81,7 @@ def search_urls(cfg) -> list[tuple[str, str]]:
 
 def describe_search(cfg) -> str:
     if cfg.search.mode == "query":
-        from .config import AREAS
+        from ..core.config import AREAS
 
         area = AREAS.get(cfg.search.area, f"регион {cfg.search.area}")
         where = "в названии" if cfg.search.title_only else "везде"

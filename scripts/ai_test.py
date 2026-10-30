@@ -20,11 +20,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # пакет hh_auto лежит в папке проекта
 
-from hh_auto.ai import AiError  # noqa: E402
-from hh_auto.ai_playground import (ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, Turn,  # noqa: E402
+from hh_auto.ai.client import AiError  # noqa: E402
+from hh_auto.ai.playground import (ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, Turn,  # noqa: E402
                                    fill_sample_form, write_sample_letter)
-from hh_auto.config import ConfigError, load_config  # noqa: E402
-from hh_auto.paths import app_root  # noqa: E402
+from hh_auto.core.config import ConfigError, load_config  # noqa: E402
+from hh_auto.core.paths import app_root  # noqa: E402
 
 ROOT = app_root()  # hh-data/ в папке проекта или HH_AUTO_HOME: тот же config.toml, что у откликов
 
@@ -65,7 +65,7 @@ def main() -> int:
         return 2
     if args.fetch_resume:
         from hh_auto.app import fetch_resume
-        from hh_auto.logger import setup_logging
+        from hh_auto.core.logger import setup_logging
 
         log_path = setup_logging(ROOT / "logs", name="resume")
         if fetch_resume(cfg, ROOT, log_path) != 0:

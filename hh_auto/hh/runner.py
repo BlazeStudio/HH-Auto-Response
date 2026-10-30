@@ -10,16 +10,16 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 
-from . import control
-from .ai import AiError
-from .browser import FatalError
-from .config import Config
-from .logger import log
+from ..core import control
+from ..ai.client import AiError
+from ..web.browser import FatalError
+from ..core.config import Config
+from ..core.logger import log
 from .responder import MOVED, Responder, Result, Status
 from .search import (Vacancy, collect_vacancies, describe_hh_filters, next_page_info, open_results_page,
                      results_page_url, search_urls, wait_all_cards)
-from .results import ResultsBook
-from .state import State, company_key
+from ..reports.results import ResultsBook
+from ..core.state import State, company_key
 from .vacancy_meta import SkillStats, skip_reason
 
 

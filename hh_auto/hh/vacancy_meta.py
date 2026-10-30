@@ -21,7 +21,7 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 
-from .config import Config
+from ..core.config import Config
 
 # Состояние страницы → по вакансии только нужное (страница — мегабайты, обратно уходит несколько килобайт)
 _META_JS = """() => {

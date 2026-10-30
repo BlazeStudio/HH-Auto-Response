@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .search import Vacancy
+from ..hh.search import Vacancy
 
 
 class State:

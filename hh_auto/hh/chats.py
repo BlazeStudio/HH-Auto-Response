@@ -30,13 +30,13 @@ from pathlib import Path
 from playwright.sync_api import Page
 from playwright.sync_api import Error as PlaywrightError
 
-from . import control
-from . import selectors as S
-from .ai import AiClient, AiError, is_done_message, norm, ours_is_last, review
-from .auth import hh_role, is_auth_url
-from .browser import FatalError, wait_captcha
-from .config import Config
-from .logger import log
+from ..core import control
+from ..web import selectors as S
+from ..ai.client import AiClient, AiError, is_done_message, norm, ours_is_last, review
+from ..web.auth import hh_role, is_auth_url
+from ..web.browser import FatalError, wait_captcha
+from ..core.config import Config
+from ..core.logger import log
 from .negotiations import Negotiations
 from .resume import fetch_resume_text
 
@@ -346,7 +346,7 @@ def _announce(cfg: Config, fresh: list[dict], stats: ChatStats, quiet: bool = Fa
         stats.invitations.append(text)
         log.success(f"  ★ Приглашение: {text}")
     if cfg.notify.invitations and not quiet and (cfg.notify.desktop or cfg.notify.telegram):
-        from . import notify
+        from ..core import notify
 
         title = "HH-Auto-Response — приглашение" + (f" ({len(fresh)})" if len(fresh) > 1 else "")
         notify.send(cfg.notify, title, "\n".join(stats.invitations[-len(fresh):]))

@@ -13,7 +13,7 @@ from functools import lru_cache
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFont
 
-from .paths import bundled
+from ..core.paths import bundled
 
 APP_NAME = "HH-Auto-Response"
 

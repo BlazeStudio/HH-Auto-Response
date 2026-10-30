@@ -24,24 +24,27 @@ import tkinter
 
 import customtkinter as ctk
 
-from . import __version__, control
-from .app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_background, run_chats, run_responses
-from .chats import ChatStats
-from . import hh_filters as hhf
-from .hh_dicts import INDUSTRIES, INDUSTRY_NAMES, PROFESSIONAL_ROLE_CATEGORIES, PROFESSIONAL_ROLES
-from .config import (AI_PROVIDERS, AREAS, LEVELS, WEEKDAYS, Config, ConfigError, config_values, load_config,
+from .. import __version__
+from ..core import control
+from ..app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_background, run_chats, run_responses
+from ..hh.chats import ChatStats
+from ..hh import filters as hhf
+from ..hh.dicts import INDUSTRIES, INDUSTRY_NAMES, PROFESSIONAL_ROLE_CATEGORIES, PROFESSIONAL_ROLES
+from ..core.config import (AI_PROVIDERS, AREAS, LEVELS, WEEKDAYS, Config, ConfigError, config_values, load_config,
                      save_config, validate_config, validate_search_source)
-from .ai import AiClient, AiError, shutdown_ollama
-from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, fill_sample_form, write_sample_letter
-from .results import HH_DAILY_LIMIT, Summary, load_summary
-from .search import describe_search
-from .stats import FILE as STATS_FILE, METRICS, SKIP_KINDS, StatsStore, buckets, totals
-from .negotiations import FILE as NEGOTIATIONS_FILE, funnel as funnel_rows
-from .vacancy_meta import SKILLS_FILE, SkillStats
-from .logger import SUCCESS, log, setup_logging
-from .paths import app_root, bundled, is_frozen
-from .runner import RunOptions, Stats
-from . import browser, browser_window, raising, updater, watch
+from ..ai.client import AiClient, AiError, shutdown_ollama
+from ..ai.playground import ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, fill_sample_form, write_sample_letter
+from ..reports.results import HH_DAILY_LIMIT, Summary, load_summary
+from ..hh.search import describe_search
+from ..reports.stats import FILE as STATS_FILE, METRICS, SKIP_KINDS, StatsStore, buckets, totals
+from ..hh.negotiations import FILE as NEGOTIATIONS_FILE, funnel as funnel_rows
+from ..hh.vacancy_meta import SKILLS_FILE, SkillStats
+from ..core.logger import SUCCESS, log, setup_logging
+from ..core.paths import app_root, bundled, is_frozen
+from ..hh.runner import RunOptions, Stats
+from ..web import browser, window as browser_window
+from ..hh import raising, watch
+from ..core import updater
 from .mini import BrowserPreview, MiniWindow
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
 from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, QuietToplevel, SelectableText, TextLabel, flush_paint, frozen, install_editing,
@@ -1615,7 +1618,7 @@ class SettingsPage(Page):
         if not (cfg.notify.desktop or cfg.notify.telegram):
             messagebox.showinfo(APP_NAME, "Сначала включите уведомление на компьютере или в Telegram.")
             return
-        from . import notify
+        from ..core import notify
 
         threading.Thread(target=lambda: notify.send(cfg.notify, f"{APP_NAME} — проверка",
                                                     "Так будут выглядеть итоги запуска."), daemon=True).start()
@@ -1636,7 +1639,7 @@ class SettingsPage(Page):
         self.filter_test_btn.configure(state="disabled", text="Проверяю…")
 
         def work():
-            from .ai_playground import SAMPLE_VACANCY
+            from ..ai.playground import SAMPLE_VACANCY
 
             title, company, description = SAMPLE_VACANCY
             try:
@@ -3081,7 +3084,7 @@ class App(ctk.CTk):
             messagebox.showerror(APP_NAME, f"Не сохранено: {e}")
             return
         self.reload_config()
-        from . import notify
+        from ..core import notify
 
         threading.Thread(target=lambda: notify.desktop(APP_NAME, summary), daemon=True).start()
 
@@ -3396,8 +3399,8 @@ def self_test() -> int:
     except Exception:
         lines.append("драйвер Playwright не запустился:\n" + traceback.format_exc())
     try:  # Excel-отчёт (openpyxl внутри сборки)
-        from .report import build_workbook
-        from .results import Summary
+        from ..reports.excel import build_workbook
+        from ..reports.results import Summary
 
         build_workbook([], Summary()).save(out.with_name("self_test.xlsx"))
         lines.append("Excel-отчёт: OK")

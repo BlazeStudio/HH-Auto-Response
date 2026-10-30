@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
-from .config import AI_PROVIDERS, Ai
+from ..core.config import AI_PROVIDERS, Ai
 
 KINDS = ("question", "info", "human", "wait")
 
@@ -228,7 +228,7 @@ def _read_interruptible(request: urllib.request.Request, timeout: float) -> byte
     if threading.current_thread().name != "worker":
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
-    from . import control
+    from ..core import control
 
     box: dict = {}
 

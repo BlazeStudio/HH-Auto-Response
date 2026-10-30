@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from .state import company_key
+from ..core.state import company_key
 
 INVITED, REJECTED = "invited", "rejected"
 FILE = "negotiations.json"

@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .logger import log
-from .responder import Result, Status
-from .search import Vacancy
+from ..core.logger import log
+from ..hh.responder import Result, Status
+from ..hh.search import Vacancy
 
 APPLIED, QUESTIONS, SKIPPED, FAILED = "applied", "questions", "skipped", "failed"
 HH_DAILY_LIMIT = 200
@@ -120,7 +120,7 @@ class ResultsBook:
         """Пересобирает responses.xlsx. False — файл открыт в Excel и не перезаписан."""
         self._last_save = time.monotonic()
         try:
-            from .report import build_workbook
+            from .excel import build_workbook
         except ImportError as e:  # нет openpyxl
             log.warning(f"  ! Excel-отчёт не собран ({e}); установите: pip install openpyxl")
             return False

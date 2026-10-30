@@ -42,7 +42,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from . import __version__
+from .. import __version__
 from .paths import app_root, is_frozen
 
 APP_NAME = "HH-Auto-Response"
@@ -548,8 +548,8 @@ def _progress_window(work: Callable[[Callable[[str], None]], None], result: dict
 
     import customtkinter as ctk
 
-    from . import dialogs
-    from .theme import CARD_BG, GREEN, MUTED, TEXT, apply_app_icon, badge
+    from ..ui import dialogs
+    from ..ui.theme import CARD_BG, GREEN, MUTED, TEXT, apply_app_icon, badge
 
     try:  # светлое или тёмное оформление — как выбрано в приложении
         prefs = json.loads((app_root() / "app_prefs.json").read_text(encoding="utf-8"))

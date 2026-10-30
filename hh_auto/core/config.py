@@ -9,9 +9,9 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import hh_filters
+from ..hh import filters as hh_filters
 from .config_file import toml_value, write_values
-from .hh_filters import HhFilters
+from ..hh.filters import HhFilters
 
 
 class ConfigError(Exception):

@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+PROJECT_DIR = Path(__file__).resolve().parents[2]  # hh_auto/core/paths.py → корень проекта
 # До 1.0.4 из исходников всё это лежало прямо в папке проекта
 _OLD_SOURCE_LAYOUT = ("config.toml", "app_prefs.json", "browser-profile", "data", "logs")
 

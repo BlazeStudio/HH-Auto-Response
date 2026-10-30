@@ -12,11 +12,11 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import Page
 
-from . import control
+from ..core import control
 from . import selectors as S
 from .browser import FatalError, hide_after_user, open_url, show_for_user, wait_captcha
-from .config import Config
-from .logger import log
+from ..core.config import Config
+from ..core.logger import log
 
 RESUMES_URL = "https://hh.ru/applicant/resumes"
 LOGIN_URL = "https://hh.ru/account/login?backurl=%2Fapplicant%2Fresumes"

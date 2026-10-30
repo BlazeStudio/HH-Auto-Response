@@ -24,13 +24,13 @@ from playwright.sync_api import Locator, Page
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from . import control
-from . import selectors as S
-from .auth import hh_role, is_auth_url
-from .browser import CaptchaShown, FatalError, captcha_shown, open_url, wait_captcha
-from .ai import SENSITIVE, AiClient, AiError, FormAnswer, FormQuestion
-from .config import Config
-from .logger import log
+from ..core import control
+from ..web import selectors as S
+from ..web.auth import hh_role, is_auth_url
+from ..web.browser import CaptchaShown, FatalError, captcha_shown, open_url, wait_captcha
+from ..ai.client import SENSITIVE, AiClient, AiError, FormAnswer, FormQuestion
+from ..core.config import Config
+from ..core.logger import log
 from .search import Vacancy, fetch_vacancy_text, wait_all_cards
 
 LIMIT_TEXT = re.compile(r"не более \d+ откликов|лимит откликов|исчерпали лимит", re.I)

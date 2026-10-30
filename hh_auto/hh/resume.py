@@ -7,11 +7,11 @@ from pathlib import Path
 
 from playwright.sync_api import Page
 
-from . import selectors as S
-from .auth import RESUMES_URL, on_resumes_page
-from .browser import open_url
-from .config import Config
-from .logger import log
+from ..web import selectors as S
+from ..web.auth import RESUMES_URL, on_resumes_page
+from ..web.browser import open_url
+from ..core.config import Config
+from ..core.logger import log
 
 
 def verify_resume(page: Page, cfg: Config) -> str | None:

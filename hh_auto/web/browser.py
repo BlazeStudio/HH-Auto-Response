@@ -11,10 +11,11 @@ from urllib.parse import urlparse
 from playwright.sync_api import BrowserContext, Page, Playwright
 from playwright.sync_api import Error as PlaywrightError
 
-from . import browser_window, control
+from . import window as browser_window
+from ..core import control
 from . import selectors as S
-from .config import Config
-from .logger import log
+from ..core.config import Config
+from ..core.logger import log
 
 HH_HOME = "https://hh.ru/"
 IP_INFO_URL = "https://ipinfo.io/json"
@@ -375,7 +376,7 @@ def _alert_captcha() -> None:
     cfg = _cfg
     if cfg is None or not (cfg.notify.desktop or cfg.notify.telegram):
         return
-    from . import notify
+    from ..core import notify
 
     text = "hh.ru просит пройти капчу. Решите её в окне браузера — программа ждёт и потом продолжит сама."
     threading.Thread(target=notify.send, args=(cfg.notify, "HH-Auto-Response — нужна капча", text),

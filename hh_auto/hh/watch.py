@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from . import raising
-from .config import Config, employer_id
+from ..core.config import Config, employer_id
 
 FILE = "watch.json"
 TASKS = {"raise": "подъём резюме", "invitations": "приглашения в чатах", "dream": "компании мечты"}

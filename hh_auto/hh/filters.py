@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field, fields
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from .hh_dicts import INDUSTRY_NAMES, PROFESSIONAL_ROLES
+from .dicts import INDUSTRY_NAMES, PROFESSIONAL_ROLES
 
 ORDER_BY = {
     "": "Как на hh (по соответствию)",

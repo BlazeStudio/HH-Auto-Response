@@ -15,23 +15,23 @@ from pathlib import Path
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from .auth import ensure_logged_in, is_logged_in
-from . import browser
-from .browser import FatalError, check_region, launch
-from .chats import ChatStats, check_invitations, log_chat_summary, read_rejections
-from .config import Config
-from . import control
-from .control import BrowserClosed, StopRequested
-from .logger import log
-from . import raising
-from .resume import verify_resume
-from .search import describe_search
-from .runner import RunOptions, Stats, log_summary, run
-from .results import ResultsBook, log_totals
-from .state import State
-from .stats import chats_counts, record as record_stats, responses_counts
-from .vacancy_meta import SkillStats
-from . import watch
+from .web.auth import ensure_logged_in, is_logged_in
+from .web import browser
+from .web.browser import FatalError, check_region, launch
+from .hh.chats import ChatStats, check_invitations, log_chat_summary, read_rejections
+from .core.config import Config
+from .core import control
+from .core.control import BrowserClosed, StopRequested
+from .core.logger import log
+from .hh import raising
+from .hh.resume import verify_resume
+from .hh.search import describe_search
+from .hh.runner import RunOptions, Stats, log_summary, run
+from .reports.results import ResultsBook, log_totals
+from .core.state import State
+from .reports.stats import chats_counts, record as record_stats, responses_counts
+from .hh.vacancy_meta import SkillStats
+from .hh import watch
 
 EXIT_OK, EXIT_FATAL, EXIT_STOPPED = 0, 1, 130
 
@@ -98,7 +98,7 @@ RESUME_FRESH = timedelta(days=3)  # текст резюме для совето�
 def _refresh_resume(page, cfg: Config, root: Path) -> None:
     """Советы к резюме сравнивают навыки из выдачи с текстом резюме — держим его свежим (раз в 3 дня),
     даже если нейросеть выключена. Резюме неизвестно или не открылось — советы по прошлому тексту."""
-    from .resume import fetch_resume_text
+    from .hh.resume import fetch_resume_text
 
     path = root / "data" / "resume.txt"
     try:
@@ -132,7 +132,7 @@ def _ending(code: int) -> str:
 def notify_summary(cfg: Config, title: str, text: str) -> None:
     """Уведомление по итогам — только если вы его разрешили ([notify])."""
     if cfg.notify.desktop or cfg.notify.telegram:
-        from . import notify
+        from .core import notify
 
         notify.send(cfg.notify, f"HH-Auto-Response — {title}", text)
 
@@ -146,8 +146,8 @@ def _form_ai(page, cfg: Config, root: Path):
         log.info("  анкеты работодателей: без ИИ (отвечаем только на один вопрос о зарплате)")
     if not (needs_resume or cfg.ai_filter.enabled):
         return None, ""
-    from .ai import AiClient, AiError
-    from .resume import fetch_resume_text
+    from .ai.client import AiClient, AiError
+    from .hh.resume import fetch_resume_text
 
     try:
         ai = AiClient(cfg.ai)
@@ -211,7 +211,7 @@ def _after_browser() -> None:
     left = browser.finish_processes()
     if left:
         log.debug(f"после закрытия браузера оставалось процессов: {left} — завершены")
-    from .ai import release_models
+    from .ai.client import release_models
 
     release_models()
     gc.collect()
@@ -399,7 +399,7 @@ def run_login(cfg: Config, root: Path, log_path: Path) -> int:
 
 def fetch_resume(cfg: Config, root: Path, log_path: Path) -> int:
     """Загрузить свежий текст резюме с hh в data/resume.txt (для ИИ и песочницы)."""
-    from .resume import fetch_resume_text
+    from .hh.resume import fetch_resume_text
 
     code = _with_browser(cfg, root, lambda page: fetch_resume_text(page, cfg, root / "data" / "resume.txt"))
     log.info(f"подробный лог: {log_path}")

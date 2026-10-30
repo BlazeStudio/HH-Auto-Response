@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import customtkinter as ctk
 from PIL import Image, ImageDraw
 
-from . import browser_window
+from ..web import window as browser_window
 from .theme import (ACCENT, ACCENT_FILL, ACCENT_HOVER, ACCENT_SOFT, APP_NAME, BORDER, CARD_BG, FILL, FILL_HOVER, GREEN,
                     MAIN_BG, MUTED, RED_FILL, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon)
 from .widgets import PlainFrame, QuietToplevel, TextLabel
