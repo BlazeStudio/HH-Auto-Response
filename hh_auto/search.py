@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from . import hh_filters
+from . import control, hh_filters
 from . import selectors as S
 from .auth import hh_role, is_auth_url
 from .browser import FatalError, open_url, wait_captcha
@@ -46,7 +46,7 @@ _COLLECT_JS = """
   return {
     id: match ? match[1] : '', title: text(s.title), company: text(s.employer),
     button_text: text(s.button), remote: !!card.querySelector(s.remote),
-    snippet: Array.from(card.querySelectorAll(s.snippet)).map((el) => el.textContent).join(' ').replace(/\s+/g, ' ').trim(),
+    snippet: Array.from(card.querySelectorAll(s.snippet)).map((el) => el.textContent).join(' ').replace(/\\s+/g, ' ').trim(),
   };
 }).filter((v) => v.id)
 """
@@ -206,7 +206,7 @@ def wait_all_cards(page: Page, timeout: float = 12, settle: float = 1.5) -> None
     count, stable_since, deadline = cards.count(), time.monotonic(), time.monotonic() + timeout
     while time.monotonic() < deadline and time.monotonic() - stable_since < settle:
         page.mouse.wheel(0, 4000)  # на случай, если догрузка завязана на прокрутку
-        page.wait_for_timeout(400)
+        control.sleep(0.4)  # «Остановить» — сразу, а не через 12 с
         now = cards.count()
         if now != count:
             count, stable_since = now, time.monotonic()

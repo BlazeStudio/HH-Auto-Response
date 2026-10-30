@@ -14,11 +14,10 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlparse
 
 from playwright.sync_api import Page
 
-from .auth import RESUMES_URL
+from .auth import RESUMES_URL, on_resumes_page
 from .config import Config
 from .logger import log
 
@@ -152,7 +151,7 @@ def next_due(root: Path, cfg: Config, now: datetime | None = None) -> datetime |
 
 
 def list_resumes(page: Page) -> list[Resume]:
-    if urlparse(page.url).path.rstrip("/") != urlparse(RESUMES_URL).path:
+    if not on_resumes_page(page):
         page.goto(RESUMES_URL, wait_until="domcontentloaded")
     try:
         page.locator('a[href*="/resume/"]').first.wait_for(state="attached", timeout=10_000)

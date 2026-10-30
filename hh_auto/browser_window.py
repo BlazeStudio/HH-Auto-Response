@@ -68,21 +68,28 @@ def supported() -> bool:
     return sys.platform == "win32"
 
 
-def _descendants(root_pid: int) -> set[int]:
-    """Все процессы, запущенные этой программой (дети, внуки…)."""
+def _snapshot() -> tuple[dict[int, list[int]], dict[int, str]]:
+    """Все процессы Windows за один проход: кто кого запустил (родитель → дети) и имена файлов."""
+    children: dict[int, list[int]] = {}
+    names: dict[int, str] = {}
     snapshot = _k.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
     if not snapshot or snapshot == wintypes.HANDLE(-1).value:
-        return set()
-    children: dict[int, list[int]] = {}
+        return children, names
     try:
         entry = _Entry()
         entry.dwSize = ctypes.sizeof(_Entry)
         ok = _k.Process32FirstW(snapshot, ctypes.byref(entry))
         while ok:
             children.setdefault(entry.th32ParentProcessID, []).append(entry.th32ProcessID)
+            names[entry.th32ProcessID] = entry.szExeFile
             ok = _k.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
         _k.CloseHandle(snapshot)
+    return children, names
+
+
+def _below(children: dict[int, list[int]], root_pid: int) -> set[int]:
+    """Все процессы, запущенные root_pid (дети, внуки…)."""
     found, todo = set(), [root_pid]
     while todo:
         for child in children.get(todo.pop(), []):
@@ -90,6 +97,19 @@ def _descendants(root_pid: int) -> set[int]:
                 found.add(child)
                 todo.append(child)
     return found
+
+
+def _driver_tree() -> tuple[set[int], dict[int, str]]:
+    """Драйвер Playwright, запущенный программой, и всё, что запустил он, — браузер работы; и имена процессов.
+    Chrome, который программа открыла человеку по ссылке («Открыть чаты»), — тоже её потомок, но не драйвера:
+    раньше его окно могло оказаться «окном браузера» (спрятаться за край экрана, закрыться по «Остановить»),
+    а сам он — завершиться вместе с процессами работы."""
+    children, names = _snapshot()
+    tree: set[int] = set()
+    for pid in _below(children, os.getpid()):
+        if names.get(pid, "").lower() == "node.exe":
+            tree |= {pid} | _below(children, pid)
+    return tree, names
 
 
 def _rect(hwnd: int) -> tuple[int, int, int, int]:
@@ -118,7 +138,7 @@ def find(refresh: bool = False) -> int | None:
             return _cached
         if not refresh and time.monotonic() < _missing_until:
             return None
-        pids = _descendants(os.getpid())
+        pids, _names = _driver_tree()
         if not pids:
             _cached = None
             _missing_until = time.monotonic() + MISSING_TTL
@@ -192,16 +212,16 @@ def processes() -> dict[int, str]:
     """Процессы, запущенные программой сейчас (драйвер Playwright, браузер и его части): pid → имя файла."""
     if not supported():
         return {}
-    ours = _descendants(os.getpid())
-    return {pid: name for pid, name in _process_names().items() if pid in ours
-            and name.lower() in ("chrome.exe", "msedge.exe", "node.exe", "chrome-headless-shell.exe")}
+    ours, names = _driver_tree()
+    return {pid: names[pid] for pid in ours if names.get(pid, "").lower()
+            in ("chrome.exe", "msedge.exe", "node.exe", "chrome-headless-shell.exe")}
 
 
 def still_running(recorded: dict[int, str]) -> list[int]:
     """Какие из запомненных процессов ещё живы (тот же pid и то же имя — не чужой процесс с тем же номером)."""
     if not recorded or not supported():
         return []
-    names = _process_names()
+    _children, names = _snapshot()
     return [pid for pid, name in recorded.items() if names.get(pid, "").lower() == name.lower()]
 
 
@@ -219,23 +239,6 @@ def close() -> bool:
     if not hwnd:
         return False
     return bool(_u.PostMessageW(hwnd, 0x0010, 0, 0))  # WM_CLOSE
-
-
-def _process_names() -> dict[int, str]:
-    snapshot = _k.CreateToolhelp32Snapshot(0x2, 0)
-    if not snapshot or snapshot == wintypes.HANDLE(-1).value:
-        return {}
-    names: dict[int, str] = {}
-    try:
-        entry = _Entry()
-        entry.dwSize = ctypes.sizeof(_Entry)
-        ok = _k.Process32FirstW(snapshot, ctypes.byref(entry))
-        while ok:
-            names[entry.th32ProcessID] = entry.szExeFile
-            ok = _k.Process32NextW(snapshot, ctypes.byref(entry))
-    finally:
-        _k.CloseHandle(snapshot)
-    return names
 
 
 def opened_by_user() -> bool:

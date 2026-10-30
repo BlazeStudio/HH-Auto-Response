@@ -219,21 +219,29 @@ def _after_browser() -> None:
 
 def _browser_session(cfg: Config, root: Path, work, auto_raise: bool, login: bool) -> int:
     cfg.browser.profile_dir = str(root / cfg.browser.profile_dir)
+    control.set_starting(True)  # до начала работы «Остановить» закрывает браузер почти сразу — терять нечего
     with sync_playwright() as pw:
         context = None
         try:
+            # «Остановить» проверяем между шагами запуска: сам шаг (запуск браузера, открытие hh) не прервать,
+            # и раньше после него запуск шёл дальше — до первой паузы уже в работе
+            control.check()
             context = launch(pw, cfg)
+            control.check()
             page = context.pages[0] if context.pages else context.new_page()
             browser.attach(page)  # закрыли окно браузера — работа остановится сразу, а не по таймауту
             log.info("")
             check_region(page, cfg)
+            control.check()
             log.info("")
             if login:
                 ensure_logged_in(page, cfg)
             elif not is_logged_in(page):
                 raise FatalError("нет входа в hh — запустите «Отклики» или «Чаты» и войдите в открывшемся окне")
+            control.check()
             if auto_raise:
                 _raise_if_due(page, cfg, root)
+            control.set_starting(False)
             work(page)
             return EXIT_OK
         except KeyboardInterrupt:
@@ -246,6 +254,10 @@ def _browser_session(cfg: Config, root: Path, work, auto_raise: bool, login: boo
             log.warning("Остановлено пользователем")
             return EXIT_STOPPED
         except FatalError as e:
+            if control.user_stopped():  # «Остановить» закрыло браузер посреди шага — это не ошибка
+                log.warning("Остановлено пользователем")
+                log.debug(f"шаг прервался: {e}")
+                return EXIT_STOPPED
             log.error(f"Остановка: {e}")
             browser.last_error = str(e)
             return EXIT_FATAL
@@ -267,6 +279,7 @@ def _browser_session(cfg: Config, root: Path, work, auto_raise: bool, login: boo
             log.debug("трассировка:", exc_info=True)
             return EXIT_STOPPED
         finally:
+            control.set_starting(False)
             browser.detach()
             if context is not None:
                 try:
@@ -282,6 +295,7 @@ def _raise_if_due(page, cfg: Config, root: Path) -> None:
         if raising.raise_due(page, cfg, root) is not None:
             log.info("")
     except Exception as e:  # noqa: BLE001 — «Остановить» (StopRequested) сюда не попадает
+        control.check()  # …но браузер, закрытый «Остановить» посреди подъёма, — это остановка, а не сбой подъёма
         log.warning(f"  ! поднять резюме не получилось: {(str(e).splitlines() or [''])[0]}")
         log.debug("трассировка:", exc_info=True)
 

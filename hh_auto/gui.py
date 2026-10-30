@@ -35,9 +35,9 @@ from .ai import AiClient, AiError, shutdown_ollama
 from .ai_playground import ROBOT, SAMPLE_FORM, SAMPLE_VACANCY, SAMPLES, Playground, fill_sample_form, write_sample_letter
 from .results import HH_DAILY_LIMIT, Summary, load_summary
 from .search import describe_search
-from .stats import METRICS, SKIP_KINDS, StatsStore, buckets, totals
-from .negotiations import funnel as funnel_rows
-from .vacancy_meta import SkillStats
+from .stats import FILE as STATS_FILE, METRICS, SKIP_KINDS, StatsStore, buckets, totals
+from .negotiations import FILE as NEGOTIATIONS_FILE, funnel as funnel_rows
+from .vacancy_meta import SKILLS_FILE, SkillStats
 from .logger import SUCCESS, log, setup_logging
 from .paths import app_root, bundled, is_frozen
 from .runner import RunOptions, Stats
@@ -2046,6 +2046,7 @@ class StatsPage(Page):
                                                "Хранятся только числа, без названий вакансий и компаний.")
         self.app = app
         self.days: dict[str, dict] = {}
+        self._shown: tuple | None = None  # по каким данным страница посчитана в последний раз
 
         self.notice = Card(self)  # «статистика не ведётся» — видна, только если её выключили
         TextLabel(self.notice, "Статистика не ведётся: новые запуски не записываются ([stats] disabled). "
@@ -2099,7 +2100,25 @@ class StatsPage(Page):
 
     # ---------- данные ----------
 
+    # файлы в data/, по которым считается страница: дни, отклики и чаты (воронка), навыки и резюме (советы)
+    SOURCES = (STATS_FILE, "responses.jsonl", NEGOTIATIONS_FILE, SKILLS_FILE, "resume.txt")
+
+    def _sources(self) -> tuple:
+        """От чего зависит страница: файлы данных, настройки статистики, период и шаг, сегодняшний день."""
+        stamps = []
+        for name in self.SOURCES:
+            try:
+                info = (self.app.root_dir / "data" / name).stat()
+                stamps.append((info.st_mtime_ns, info.st_size))
+            except OSError:
+                stamps.append(None)
+        return datetime.now().date(), self.period.get(), self.step.get(), repr(self.app.cfg.stats), tuple(stamps)
+
     def refresh(self) -> None:
+        sources = self._sources()
+        if sources == self._shown:
+            return  # с прошлого раза ничего не поменялось — вкладка открывается без пересчёта (~45 мс)
+        self._shown = sources
         cfg = self.app.cfg
         store = StatsStore(self.app.root_dir, cfg.stats.keep_days)
         self.days = store.load()  # в первый раз — посчитает дни по уже накопленной истории откликов
@@ -2847,30 +2866,40 @@ class App(ctk.CTk):
         self.worker.start()
 
     STOP_CLOSE_AFTER = 6.0  # с: шаг не закончился — закрыть окно браузера (его ожидания оборвутся сразу)
+    STOP_CLOSE_STARTING = 1.0  # с: то же, пока браузер запускается и идут проверки, — там обрывать нечего
     STOP_KILL_AFTER = 8.0  # с: и это не помогло — завершить процессы браузера и драйвера этого запуска
+    STOP_KILL_AGAIN = 3.0  # с: окна ещё нет (браузер запускается) или работа всё не заканчивается — снова
+    STOP_QUIET = 300  # с: после «Остановить» фоновая проверка сама браузер не открывает
 
     def stop(self) -> None:
         """«Остановить»: работа заканчивается в ближайшей паузе. Если шаг затянулся (страница грузится до 45 с,
         hh не отвечает) — закрываем браузер, а если и он завис — завершаем его процессы. Раньше ждали шага
-        до конца, и казалось, что всё зависло."""
+        до конца, и казалось, что всё зависло. Пока работа не началась (запуск браузера, вход), браузер
+        закрывается почти сразу: раньше «Запустить» и тут же «Остановить» ждали, пока откроется hh."""
         if self.worker and self.worker.is_alive():
             control.request_stop()
             self._set_status("●  Останавливаюсь…", AMBER, "дождитесь завершения шага")
             for page in (self.pages["responses"], self.pages["chats"]):
                 set_stop_enabled(page.stop_btn, False)
             worker = self.worker
-            self.after(round(self.STOP_CLOSE_AFTER * 1000), self._stop_escalate, worker, 1)
+            wait = self.STOP_CLOSE_STARTING if control.starting() else self.STOP_CLOSE_AFTER
+            self.after(round(wait * 1000), self._stop_escalate, worker, 1)
 
     def _stop_escalate(self, worker: threading.Thread, stage: int) -> None:
         if worker is not self.worker or not worker.is_alive():
             return  # уже остановилось (или это прошлый запуск)
         if stage == 1:
-            browser_window.close()
+            closed = browser_window.close()
             self._set_status("●  Останавливаюсь…", AMBER, "шаг затянулся — закрываю браузер")
-            self.after(round(self.STOP_KILL_AFTER * 1000), self._stop_escalate, worker, 2)
+            # окна нет — браузер ещё запускается (или он без окна), а при запуске закрытое окно могло и не
+            # отпустить его (Playwright ещё ждал браузер): долго ждать нечего
+            wait = self.STOP_KILL_AFTER if closed and not control.starting() else self.STOP_KILL_AGAIN
+            self.after(round(wait * 1000), self._stop_escalate, worker, 2)
         else:
-            browser.finish_processes()
+            # и процессы, появившиеся после «Остановить»: браузер, который как раз запускался, записан не был
+            browser.finish_processes(everything=True)
             self._set_status("●  Останавливаюсь…", AMBER, "браузер не закрывался — завершил его")
+            self.after(round(self.STOP_KILL_AGAIN * 1000), self._stop_escalate, worker, 2)
 
     def _set_running(self, running: bool) -> None:
         self.pages["responses"].set_running(running)
@@ -2926,6 +2955,9 @@ class App(ctk.CTk):
             self.pages["responses"].current.configure(text=f"Последний запуск: {summary}")
         # следом за работой может быть запуск чатов по расписанию — подъём резюме его не опередит
         self._raise_after = max(self._raise_after, time.time() + 10)
+        if code == EXIT_STOPPED and control.user_stopped():
+            # остановили сами — фоновая проверка не открывает браузер снова через 10 секунд
+            self._raise_after = max(self._raise_after, time.time() + self.STOP_QUIET)
         if self.pages["stats"].winfo_ismapped():  # статистику смотрят прямо сейчас — с итогами этого запуска
             self.pages["stats"].refresh()
         if self.closing:

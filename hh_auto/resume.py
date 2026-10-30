@@ -8,7 +8,8 @@ from pathlib import Path
 from playwright.sync_api import Page
 
 from . import selectors as S
-from .auth import RESUMES_URL
+from .auth import RESUMES_URL, on_resumes_page
+from .browser import open_url
 from .config import Config
 from .logger import log
 
@@ -23,7 +24,7 @@ def verify_resume(page: Page, cfg: Config) -> str | None:
     source = "resume_url" if cfg.resume_url else "параметра resume= в ссылке поиска"
     log.info(f"  ID резюме (из {source}): {resume_id}")
 
-    if page.url.split("?")[0] != RESUMES_URL:
+    if not on_resumes_page(page):
         page.goto(RESUMES_URL, wait_until="domcontentloaded")
     links = page.locator(f'a[href*="/resume/{resume_id}"]')
     try:
@@ -76,7 +77,11 @@ def fetch_resume_text(page: Page, cfg: Config, cache: Path, max_chars: int = 800
     resume_id = cfg.resume_id
     if resume_id:
         try:
-            page.goto(f"https://hh.ru/resume/{resume_id}", wait_until="domcontentloaded")
+            url = f"https://hh.ru/resume/{resume_id}"
+            # страницу резюме обычно только что открыла проверка резюме — второй раз её не загружаем;
+            # переход — с повтором: прошлая страница hh, догружаясь, перебивала его (net::ERR_ABORTED)
+            if page.url.split("?")[0] != url:
+                open_url(page, url, attempts=2, timeout=20)
             area = page.locator('[data-qa="resume"], main, [data-qa="main-content"]').first
             area.wait_for(timeout=15_000)
             text = clean_resume_text(area.inner_text())[:max_chars]

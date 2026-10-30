@@ -10,6 +10,10 @@ StopRequested. Он наследует BaseException, как KeyboardInterrupt, 
 
 Пока идёт пауза, рабочий поток выполняет поручения окна приложения (on_idle): показать или спрятать
 браузер, снять кадр для превью — с Playwright можно работать только из его потока.
+
+Пока браузер запускается и идут проверки перед работой (starting), терять при остановке нечего: окно
+приложения закрывает браузер почти сразу, не дожидаясь шага. Раньше «Запустить» и сразу «Остановить»
+ждали, пока откроется hh.ru (до 45 с), а то и заканчивались ошибкой «hh.ru не открывается».
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from typing import Callable
 _stop = threading.Event()
 _user = threading.Event()  # «Остановить» нажал человек (а не браузер закрылся сам)
 _closed = threading.Event()
+_starting = threading.Event()  # браузер запускается или идут проверки перед работой
 _closed_reason = ""
 _idle: Callable[[], None] | None = None
 _in_idle = False
@@ -56,6 +61,16 @@ def reset() -> None:
     _stop.clear()
     _user.clear()
     _closed.clear()
+    _starting.clear()
+
+
+def set_starting(on: bool) -> None:
+    (_starting.set if on else _starting.clear)()
+
+
+def starting() -> bool:
+    """Работа ещё не началась (запуск браузера, вход, проверки): остановить можно сразу, ничего не оборвав."""
+    return _starting.is_set()
 
 
 def stop_requested() -> bool:

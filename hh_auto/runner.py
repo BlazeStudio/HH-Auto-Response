@@ -194,7 +194,10 @@ def run(
             return False
 
         responder.back_to_results(url)
-        _sleep(limits.delay_min, limits.delay_max, "перед следующей вакансией")
+        if responder.clicked:
+            _sleep(limits.delay_min, limits.delay_max, "перед следующей вакансией")
+        else:  # в hh ничего не нажимали (вакансия уехала, кнопки уже нет) — паузе 6–15 с нечего разделять
+            log.debug("  в hh ничего не нажимали — без паузы")
         return True
 
     def walk(label: str, search_url: str, start_page: int) -> bool:

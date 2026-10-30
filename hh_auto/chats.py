@@ -10,6 +10,10 @@
 Заодно по списку чатов узнаём, что стало с откликами (приглашение, отказ), — для воронки на вкладке
 «Статистика» и уведомления о приглашении (negotiations.py). Раз в сутки для воронки просматриваются
 и прочитанные чаты.
+
+Список чатов hh догружает порциями, когда его докрутили до конца, а новые чаты появляются сверху: дойдя
+до конца, ждём догрузку, а в конце один раз проходим список заново. Чат, где робот прислал следующий
+вопрос уже после того, как мы из него ушли, открываем снова в этом же запуске.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import json
 import random
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +32,7 @@ from playwright.sync_api import Error as PlaywrightError
 
 from . import control
 from . import selectors as S
-from .ai import AiClient, AiError, is_done_message, ours_is_last, review
+from .ai import AiClient, AiError, is_done_message, norm, ours_is_last, review
 from .auth import hh_role, is_auth_url
 from .browser import FatalError, wait_captcha
 from .config import Config
@@ -165,6 +170,10 @@ class _Chat:
     last: str
     unread: bool
     color: str = ""
+    badge: bool = False  # у чата счётчик непрочитанных (unread в списке «Только непрочитанные» — у всех)
+
+
+LIST_LOAD_WAIT = 3.0  # с: докрутили список чатов до конца — столько ждём, не догрузит ли hh ещё
 
 
 def read_rejections(
@@ -212,6 +221,11 @@ def read_rejections(
 
     rejection = rules.rejection_text.strip().lower()
     seen: set[str] = set()
+    missing: Counter = Counter()  # чат → сколько раз подряд его строки не было в списке, когда дошла очередь
+    answered: dict[str, list[str]] = {}  # чат → наши ответы в нём за этот запуск
+    opened_at: dict[str, str] = {}  # чат → его последнее сообщение в списке, когда мы его открывали
+    previous, previous_id = "", ""  # переписка прошлого чата — чтобы не принять её за переписку следующего
+    second_pass = False
     found = 0
     for _ in range(500):  # защита от бесконечного цикла
         # hh сбрасывает «Только непрочитанные» (например, при открытии чата) — проверяем каждый раз,
@@ -219,14 +233,13 @@ def read_rejections(
         if only_unread and not _filter_checked(page):
             log.warning("  ! hh снял галочку «Только непрочитанные» — включаю снова")
             only_unread = _enable_only_unread(page)
-        chats = [_Chat(**raw) for raw in page.evaluate(_COLLECT_JS, _selectors())]
-        if only_unread:  # в отфильтрованном списке непрочитанные все, даже без счётчика
-            for chat in chats:
-                chat.unread = True
+        chats = _collect(page, only_unread)
         if tracker is not None:
             _announce(cfg, tracker.update(chats, rules.rejection_text), stats, quiet=dry_run)
         for chat in chats:
             if chat.id in seen:
+                if _robot_wrote_again(chat, answered.get(chat.id), opened_at.get(chat.id), cfg.ai.max_answers_per_chat):
+                    seen.discard(chat.id)  # робот ответил, когда мы уже ушли из чата, — вернёмся к нему
                 continue
             is_rejection = chat.last.lower().startswith(rejection)
             if is_rejection and not chat.unread:
@@ -241,16 +254,34 @@ def read_rejections(
 
         target = next((c for c in chats if c.id not in seen and c.unread), None)
         if target is None:
-            if not page.evaluate(_SCROLL_JS, S.CHAT_CELL):
+            if _scroll_list(page):
+                continue
+            if second_pass or not only_unread:
                 break
-            control.sleep(0.5)  # даём виртуальному списку дорисовать строки
+            # Пока мы шли вниз, наверху могли появиться новые чаты (отказ пришёл во время запуска), а робот —
+            # ответить в чате, из которого мы ушли. Короткий список непрочитанных проходим ещё раз с начала
+            second_pass = True
+            page.evaluate(_SCROLL_TOP_JS, S.CHAT_CELL)
+            control.sleep(0.5)
+            continue
+        if not page.locator(_cell_selector(target.id)).count():
+            # Строка пропала: список перерисовался (пришёл новый чат, hh убрал прочитанный). Раньше чат
+            # всё равно открывали — щелчок ждал 20 с и чат считался ошибкой. Соберём список заново
+            missing[target.id] += 1
+            if missing[target.id] < 3:
+                control.sleep(0.5)
+                continue
+            seen.add(target.id)
+            log.warning(f"  ! чат «{target.title}» пропал из списка — пропускаю")
             continue
 
         seen.add(target.id)
         found += 1
         is_rejection = target.last.lower().startswith(rejection)
+        again = bool(answered.get(target.id))
         log.info("")
-        log.info(f"[{found}] {'✉' if is_rejection else '✎'} «{target.title}» — {target.company}: «{target.last[:100]}»")
+        log.info(f"[{found}] {'✉' if is_rejection else '✎'} «{target.title}» — {target.company}: «{target.last[:100]}»"
+                 + ("  (робот ответил после нашего ответа — возвращаюсь)" if again else ""))
         if is_rejection:
             if dry_run:
                 log.info("  [dry-run] отказ — здесь чат был бы открыт и прочитан")
@@ -260,7 +291,12 @@ def read_rejections(
             else:
                 stats.failed += 1
         else:
-            _handle_with_ai(page, target, cfg, ai, resume, stats, dry_run, answers_log)
+            opened_at[target.id] = target.last
+            sent = answered.setdefault(target.id, [])
+            other = previous if previous_id != target.id else ""  # вернулись в тот же чат — его переписка не чужая
+            transcript = _handle_with_ai(page, target, cfg, ai, resume, stats, dry_run, answers_log, sent, other)
+            if transcript:
+                previous, previous_id = transcript, target.id
     return stats
 
 
@@ -291,15 +327,11 @@ def check_invitations(page: Page, cfg: Config, root: Path) -> list[str]:
             return stats.invitations
     seen: set[str] = set()
     for _ in range(100):
-        chats = [_Chat(**raw) for raw in page.evaluate(_COLLECT_JS, _selectors())]
-        if only_unread:
-            for chat in chats:
-                chat.unread = True
+        chats = _collect(page, only_unread)
         _announce(cfg, tracker.update([c for c in chats if c.id not in seen], rules.rejection_text), stats)
         seen.update(c.id for c in chats)
-        if not page.evaluate(_SCROLL_JS, S.CHAT_CELL):
+        if not _scroll_list(page):
             break
-        control.sleep(0.5)
     if not stats.invitations:
         log.info(f"  новых приглашений нет (непрочитанных чатов: {len(seen) if only_unread else 'см. список'})")
     return stats.invitations
@@ -330,16 +362,65 @@ def _full_sync(page: Page, tracker: Negotiations, rules) -> list[dict]:
     seen: set[str] = set()
     fresh: list[dict] = []
     for _ in range(300):  # до нескольких тысяч чатов
-        chats = [_Chat(**raw) for raw in page.evaluate(_COLLECT_JS, _selectors())]
+        chats = _collect(page, only_unread=False)
         fresh += tracker.update([c for c in chats if c.id not in seen], rules.rejection_text)
         seen.update(c.id for c in chats)
-        if not page.evaluate(_SCROLL_JS, S.CHAT_CELL):
+        if not _scroll_list(page, pause=0.4):
             break
-        control.sleep(0.4)
     page.evaluate(_SCROLL_TOP_JS, S.CHAT_CELL)
     tracker.mark_full_sync()
     log.info(f"  просмотрено чатов: {len(seen)}")
     return fresh
+
+
+def _collect(page: Page, only_unread: bool) -> list[_Chat]:
+    """Чаты, которые сейчас видны в списке. Пустые строки (hh их ещё не дорисовал) не берём: по ним не понять,
+    отказ ли это, — возьмём, когда дорисуются."""
+    chats = []
+    for raw in page.evaluate(_COLLECT_JS, _selectors()):
+        chat = _Chat(**raw)
+        if not (chat.title or chat.company or chat.last):
+            continue
+        chat.badge = chat.unread
+        if only_unread:  # в отфильтрованном списке непрочитанные все, даже без счётчика
+            chat.unread = True
+        chats.append(chat)
+    return chats
+
+
+def _scroll_list(page: Page, pause: float = 0.5) -> bool:
+    """Прокрутить список чатов дальше. False — дальше ничего нет. Докрутив до конца, hh догружает следующую
+    порцию чатов не сразу: раньше программа в этот момент решала, что чатов больше нет, и чаты ниже оставались
+    необработанными. Теперь догрузку ждём до LIST_LOAD_WAIT с."""
+    deadline = time.monotonic() + LIST_LOAD_WAIT
+    while not page.evaluate(_SCROLL_JS, S.CHAT_CELL):
+        if time.monotonic() >= deadline:
+            return False
+        control.sleep(0.5)
+    control.sleep(pause)  # даём виртуальному списку дорисовать строки
+    return True
+
+
+def _cell_selector(chat_id: str) -> str:
+    return f'[data-qa="chatik-open-chat-{chat_id}"]'
+
+
+def _robot_wrote_again(chat: _Chat, sent: list[str] | None, opened_with: str | None, limit: int) -> bool:
+    """Чат, где мы в этом запуске отвечали, снова с непрочитанным сообщением — и оно не наше: робот прислал
+    следующий вопрос, когда мы уже ушли из чата (не дождались или отвечали в другом). Раньше такой чат
+    до следующего запуска не открывался, и на анкету приходилась лишь часть ответов."""
+    return (bool(sent) and len(sent) < limit and chat.badge and chat.last != opened_with
+            and not _is_ours(chat.last, sent[-1]))
+
+
+def _is_ours(last: str, answer: str) -> bool:
+    """Последнее сообщение в списке чатов — наш ответ (hh может подписать его «Вы:» и обрезать)."""
+    mine, text = norm(answer), re.sub(r"^вы:\s*", "", norm(last))
+    if not mine or not text:
+        return False
+    if len(mine) <= 40:  # короткий ответ («Да», кнопка) — целиком, а не начало чужого «Давайте…»
+        return text == mine or text.startswith(mine) and not text[len(mine)].isalnum()
+    return text[:40] == mine[:40]
 
 
 def _disable_only_unread(page: Page) -> bool:
@@ -403,7 +484,9 @@ def _enable_only_unread(page: Page) -> bool:
             log.debug(f"  попытка {attempt + 1}: галочка не встала, состояние: {_filter_state(page)}")
             control.sleep(2)
     if _filter_checked(page):
-        control.sleep(1.0)  # список перезагружается
+        # Список перезагружается: ждём, пока он перестанет меняться. Раньше ждали 1 с, и если hh не успевал,
+        # прочитанные чаты из старого списка принимались за непрочитанные
+        _wait_list_settled(page, timeout=6)
         if _filter_checked(page):  # и после перезагрузки галочка всё ещё стоит
             log.success("  ✓ фильтр включён — в списке только непрочитанные чаты")
             return True
@@ -447,8 +530,16 @@ def _filter_checked(page: Page) -> bool:
 
 
 def _click_chat(page: Page, chat: _Chat, cfg: Config) -> None:
-    cell = page.locator(f'[data-qa="chatik-open-chat-{chat.id}"]')
-    cell.scroll_into_view_if_needed()
+    cell = page.locator(_cell_selector(chat.id))
+    for attempt in range(3):
+        try:
+            cell.scroll_into_view_if_needed()
+            break
+        except PlaywrightError as e:
+            # список перерисовался (пришёл новый чат) и строку создали заново — найдём её ещё раз
+            if attempt == 2 or "not attached" not in str(e):
+                raise
+            control.sleep(0.3)
     control.sleep(random.uniform(cfg.limits.action_delay_min, cfg.limits.action_delay_max) / 2)
     log.info("  → открываю чат")
     cell.click()
@@ -466,8 +557,22 @@ def _back_to_list(page: Page) -> None:
         page.locator(S.CHAT_CELL).first.wait_for(timeout=15_000)
 
 
+def _leave_chat(page: Page, url: str) -> None:
+    """Назад к списку чатов — и после ошибки в чате: в узкой вёрстке, пока открыт чат, списка не видно,
+    и раньше после ошибки программа не находила остальных чатов и заканчивала работу."""
+    try:
+        _back_to_list(page)
+    except PlaywrightError as e:
+        log.debug(f"  к списку чатов назад не вернуться ({(str(e).splitlines() or [''])[0]}) — открываю его заново")
+        try:
+            page.goto(url, wait_until="domcontentloaded")
+            page.locator(S.CHAT_CELL).first.wait_for(timeout=15_000)
+        except PlaywrightError:
+            pass  # браузер закрыли или чатов нет — это увидит основной цикл
+
+
 def _open_chat(page: Page, chat: _Chat, cfg: Config) -> bool:
-    cell = page.locator(f'[data-qa="chatik-open-chat-{chat.id}"]')
+    cell = page.locator(_cell_selector(chat.id))
     try:
         _click_chat(page, chat, cfg)
         delay = random.uniform(cfg.chats.delay_min, cfg.chats.delay_max)
@@ -481,6 +586,7 @@ def _open_chat(page: Page, chat: _Chat, cfg: Config) -> bool:
         return True
     except PlaywrightError as e:
         log.error(f"  ✗ не удалось открыть чат: {(str(e).splitlines() or [''])[0]}")
+        _leave_chat(page, cfg.chats.url)
         return False
 
 
@@ -488,89 +594,107 @@ def _open_chat(page: Page, chat: _Chat, cfg: Config) -> bool:
 
 
 def _handle_with_ai(page, chat: _Chat, cfg: Config, ai: AiClient, resume: str, stats: ChatStats,
-                    dry_run: bool, answers_log: Path) -> None:
-    needs_you = f"«{chat.title}» — {chat.company}: {chat.last[:80]}"
+                    dry_run: bool, answers_log: Path, sent: list[str], previous: str = "") -> str:
+    """Переписка с роботом в одном чате. sent — наши ответы в этом чате за запуск (дополняется: в чат, где
+    робот ответил позже, возвращаемся с ними). previous — переписка прошлого открытого чата. Возвращает
+    последнюю увиденную переписку этого чата ("" — не прочитали)."""
+    needs_you = f"«{chat.title}» — {chat.company}"
+    transcript = None
     try:
         _click_chat(page, chat, cfg)
-        transcript = _wait_transcript(page)
+        transcript = _wait_transcript(page, chat, previous)
         if transcript is None:
             log.info("  в чате нет поля для ответа (чат закрыт работодателем) — просто прочитан")
             stats.info_read += 1
-            _back_to_list(page)
-            return
-        is_robot = any(marker.lower() in transcript.lower() for marker in cfg.ai.robot_markers)
-        log.info(f"  пишет: {'Робот-рекрутер' if is_robot else 'работодатель'}")
-
-        sent: list[str] = []
-        for _ in range(cfg.ai.max_answers_per_chat):
-            control.check()
-            # Страховка от повторного ответа: переписка заканчивается нашим же ответом — ждём работодателя
-            if sent and ours_is_last(transcript, sent[-1]):
-                log.info("  последнее сообщение — ваше, ждём работодателя")
-                break
-            log.info("  … спрашиваю ИИ, что ответить")
-            buttons = _buttons(page)
-            if buttons:
-                log.debug(f"  кнопки в чате: {buttons}")
-            decision = ai.decide(resume, cfg.ai.context, transcript[-6000:], sent, buttons)
-            for fix in ai.notes:
-                log.warning(f"  ! проверка: {fix}")
-            # Страховки: документы, деньги, контакты, ссылки и повторы — что бы ни сказала модель
-            note = review(decision, transcript, sent)
-            if note:
-                log.warning(f"  ! {note}")
-            if decision.kind == "info":
-                if is_done_message(transcript):
-                    log.success("  ✓ робот завершил анкету — перехожу к следующему чату")
-                else:
-                    log.success("  ✓ ответ не нужен (уведомление) — прочитано" if not sent else "  ✓ анкета завершена")
-                if not sent:
-                    stats.info_read += 1
-                break
-            if decision.kind == "wait":
-                log.info("  последнее сообщение — ваше, ждём работодателя")
-                break
-            if decision.kind == "human" or (cfg.ai.only_robot and not is_robot):
-                why = "нужен ваш ответ" if decision.kind == "human" else "пишет не робот, а человек"
-                log.warning(f"  ! {why} — оставляю вам" + (f": «{decision.question[:120]}»" if decision.question else ""))
-                stats.other_unread.append(needs_you)
-                break
-
-            log.info(f"  вопрос: «{decision.question[:200]}»")
-            if decision.button:
-                log.success(f"  ↳ ИИ выбрал кнопку: «{decision.button}»")
-            else:
-                log.success(f"  ↳ ответ ИИ: «{decision.reply}»")
-            answer = f"[кнопка] {decision.button}" if decision.button else decision.reply
-            if dry_run:
-                log.info("  [dry-run] ответ не отправлен")
-                _log_answer(answers_log, chat, decision.question, answer, sent=False)
-                break
-            delivered = _press(page, decision.button) if decision.button else _send(page, decision.reply)
-            if not delivered:
-                log.error("  ✗ не удалось отправить ответ — оставляю чат вам")
-                stats.failed += 1
-                stats.other_unread.append(needs_you)
-                break
-            sent.append(decision.button or decision.reply)
-            stats.answered += 1
-            if len(sent) == 1:
-                stats.questionnaires += 1
-            _log_answer(answers_log, chat, decision.question, answer, sent=True)
-            transcript = _wait_next_message(page, cfg.ai.reply_wait)
-            if transcript is None:
-                log.info(f"  робот не прислал новый вопрос за {cfg.ai.reply_wait:.0f} с — перехожу дальше")
-                break
         else:
-            log.warning(f"  ! достигнут лимит ответов в одном чате ({cfg.ai.max_answers_per_chat})")
-        _back_to_list(page)
+            transcript = _converse(page, chat, cfg, ai, resume, stats, dry_run, answers_log, sent, transcript,
+                                   needs_you)
     except AiError as e:
         log.error(f"  ✗ ошибка ИИ: {e} — оставляю чат вам")
         stats.failed += 1
-        stats.other_unread.append(needs_you)
+        _leave_to_you(stats, needs_you, chat.last)
     except PlaywrightError as e:
         log.error(f"  ✗ ошибка в чате: {(str(e).splitlines() or [''])[0]}")
         stats.failed += 1
+    _leave_chat(page, cfg.chats.url)
+    return transcript or ""
+
+
+def _leave_to_you(stats: ChatStats, who: str, last: str) -> None:
+    """В список «ждут вашего ответа» — один раз на чат: в чат могли вернуться, тогда строка — с новым сообщением."""
+    stats.other_unread[:] = [line for line in stats.other_unread if not line.startswith(f"{who}: ")]
+    stats.other_unread.append(f"{who}: {last[:80]}")
+
+
+def _converse(page, chat: _Chat, cfg: Config, ai: AiClient, resume: str, stats: ChatStats, dry_run: bool,
+              answers_log: Path, sent: list[str], transcript: str, needs_you: str) -> str:
+    """Вопрос робота → ответ ИИ → ждём следующий вопрос, и так по кругу. Возвращает последнюю переписку."""
+    is_robot = any(marker.lower() in transcript.lower() for marker in cfg.ai.robot_markers)
+    log.info(f"  пишет: {'Робот-рекрутер' if is_robot else 'работодатель'}")
+    for _ in range(cfg.ai.max_answers_per_chat - len(sent)):
+        control.check()
+        # Страховка от повторного ответа: переписка заканчивается нашим же ответом — ждём работодателя
+        if sent and ours_is_last(transcript, sent[-1]) and not _question_after(transcript, sent[-1]):
+            log.info("  последнее сообщение — ваше, ждём работодателя")
+            break
+        log.info("  … спрашиваю ИИ, что ответить")
+        buttons = _buttons(page)
+        if buttons:
+            log.debug(f"  кнопки в чате: {buttons}")
+        decision = ai.decide(resume, cfg.ai.context, transcript[-6000:], sent, buttons)
+        for fix in ai.notes:
+            log.warning(f"  ! проверка: {fix}")
+        # Страховки: документы, деньги, контакты, ссылки и повторы — что бы ни сказала модель
+        note = review(decision, transcript, sent)
+        if note:
+            log.warning(f"  ! {note}")
+        if decision.kind == "info":
+            if is_done_message(transcript):
+                log.success("  ✓ робот завершил анкету — перехожу к следующему чату")
+            else:
+                log.success("  ✓ ответ не нужен (уведомление) — прочитано" if not sent else "  ✓ анкета завершена")
+            if not sent:
+                stats.info_read += 1
+            break
+        if decision.kind == "wait":
+            log.info("  последнее сообщение — ваше, ждём работодателя")
+            break
+        if decision.kind == "human" or (cfg.ai.only_robot and not is_robot):
+            why = "нужен ваш ответ" if decision.kind == "human" else "пишет не робот, а человек"
+            log.warning(f"  ! {why} — оставляю вам" + (f": «{decision.question[:120]}»" if decision.question else ""))
+            _leave_to_you(stats, needs_you, chat.last)
+            break
+
+        log.info(f"  вопрос: «{decision.question[:200]}»")
+        if decision.button:
+            log.success(f"  ↳ ИИ выбрал кнопку: «{decision.button}»")
+        else:
+            log.success(f"  ↳ ответ ИИ: «{decision.reply}»")
+        answer = f"[кнопка] {decision.button}" if decision.button else decision.reply
+        if dry_run:
+            log.info("  [dry-run] ответ не отправлен")
+            _log_answer(answers_log, chat, decision.question, answer, sent=False)
+            break
+        delivered = _press(page, decision.button) if decision.button else _send(page, decision.reply)
+        if not delivered:
+            log.error("  ✗ не удалось отправить ответ — оставляю чат вам")
+            stats.failed += 1
+            _leave_to_you(stats, needs_you, chat.last)
+            break
+        sent.append(decision.button or decision.reply)
+        stats.answered += 1
+        if len(sent) == 1:
+            stats.questionnaires += 1
+        _log_answer(answers_log, chat, decision.question, answer, sent=True)
+        reply = _wait_next_message(page, cfg.ai.reply_wait, sent[-1])
+        if reply is None:
+            log.info(f"  робот не прислал новый вопрос за {cfg.ai.reply_wait:.0f} с — перехожу дальше "
+                     "(пришлёт позже — вернусь к чату в этом же запуске)")
+            break
+        transcript = reply
+    else:
+        log.warning(f"  ! достигнут лимит ответов в одном чате ({cfg.ai.max_answers_per_chat})")
+    return transcript
 
 
 def _transcript(page: Page) -> str | None:
@@ -580,28 +704,79 @@ def _transcript(page: Page) -> str | None:
         return None
 
 
-def _wait_transcript(page: Page, timeout: float = 8) -> str | None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+def _wait_transcript(page: Page, chat: _Chat, previous: str = "", timeout: float = 8) -> str | None:
+    """Переписка только что открытого чата. Сразу после щелчка панель ещё может показывать прошлый чат,
+    а сообщения — догружаться: раньше бралось то, что было на экране через 0,8 с, и ИИ мог отвечать по чужой
+    переписке. Ждём, пока текст перестанет меняться и будет этим чатом: его вакансия в шапке (или прошло
+    3 с) и не переписка прошлого чата. Поля для ответа нет — None (чат закрыт работодателем)."""
+    title = norm(chat.title)[:40]
+    started = time.monotonic()
+    last, stable_since = None, started
+    while time.monotonic() - started < timeout:
         text = _transcript(page)
-        if text and text.strip():
-            control.sleep(0.8)  # даём подгрузиться последним сообщениям
-            return _transcript(page) or text
-        control.sleep(0.4)
-    return None
+        now = time.monotonic()
+        if not text or not text.strip():
+            last = None
+        elif text != last:
+            last, stable_since = text, now
+        elif (now - stable_since >= 0.6 and text != previous
+              and (not title or title in norm(text) or now - started >= 3)):
+            return text
+        control.sleep(0.3)
+    return last if last and last != previous else None
 
 
-def _wait_next_message(page: Page, timeout: float) -> str | None:
-    """После нашего ответа ждём, пока в переписке появится что-то новое (следующий вопрос робота)."""
+def _wait_next_message(page: Page, timeout: float, last_sent: str) -> str | None:
+    """После нашего ответа ждём новое сообщение работодателя (следующий вопрос робота). Отметка «прочитано»,
+    время или «печатает…» под нашим ответом — ещё не оно: раньше программа принимала их за новое сообщение,
+    видела последним свой ответ и уходила из чата, а вопрос робота, пришедший следом, оставался без ответа."""
     baseline = _transcript(page) or ""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         control.sleep(1.0)
         text = _transcript(page) or ""
-        if text != baseline:
-            control.sleep(1.5)  # робот иногда шлёт несколько сообщений подряд
-            return _transcript(page) or text
+        # короткий вопрос («Ваш возраст?») ours_is_last не отличает от подписей — его видно по новой строке
+        if text != baseline and (not ours_is_last(text, last_sent) or _new_lines(baseline, text)):
+            return _settled(page, text)
     return None
+
+
+def _question_after(transcript: str, answer: str) -> bool:
+    """После нашего ответа уже есть вопрос. Короткий («Ваш город?») ours_is_last принимает за подписи под
+    ответом (время, «прочитано») — и раньше такой вопрос оставался без ответа. В подписях «?» не бывает."""
+    text, mine = norm(transcript), norm(answer)
+    at = text.rfind(mine[:60])
+    return bool(mine) and at >= 0 and "?" in text[at + len(mine):]
+
+
+# Строки-подписи под сообщениями: время, «Вы», «прочитано», «печатает…» — это не новое сообщение
+_STATUS_LINE = re.compile(r"\d{1,2}:\d{2}|вы|прочитано|доставлено|отправлено|сегодня|вчера|печатает\W*", re.I)
+
+
+def _new_lines(before: str, after: str) -> bool:
+    """В переписке появилась строка, которой не было (не время и не подпись вроде «прочитано»)."""
+    old = Counter(line.strip() for line in before.splitlines())
+    for line in after.splitlines():
+        line = line.strip()
+        if not line or _STATUS_LINE.fullmatch(line):
+            continue
+        if old[line]:
+            old[line] -= 1
+        else:
+            return True
+    return False
+
+
+def _settled(page: Page, text: str, quiet: float = 1.5, limit: float = 6) -> str:
+    """Робот часто шлёт несколько сообщений подряд («Спасибо!» и следующий вопрос) — ждём, пока переписка
+    перестанет меняться (до limit с), чтобы ответить на всё сразу, а не на первое из них."""
+    deadline, stable_since = time.monotonic() + limit, time.monotonic()
+    while time.monotonic() < deadline and time.monotonic() - stable_since < quiet:
+        control.sleep(0.5)
+        now = _transcript(page) or text
+        if now != text:
+            text, stable_since = now, time.monotonic()
+    return text
 
 
 def _buttons(page: Page) -> list[str]:

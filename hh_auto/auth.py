@@ -14,12 +14,13 @@ from playwright.sync_api import Page
 
 from . import control
 from . import selectors as S
-from .browser import FatalError, hide_after_user, show_for_user, wait_captcha
+from .browser import FatalError, hide_after_user, open_url, show_for_user, wait_captcha
 from .config import Config
 from .logger import log
 
 RESUMES_URL = "https://hh.ru/applicant/resumes"
 LOGIN_URL = "https://hh.ru/account/login?backurl=%2Fapplicant%2Fresumes"
+_resumes_landing = ""  # куда hh переводит со списка резюме после входа (сейчас — /applicant/profile/me)
 
 
 def is_auth_url(url: str) -> bool:
@@ -33,17 +34,33 @@ def hh_role(page: Page) -> str:
 
 
 def is_logged_in(page: Page) -> bool:
-    page.goto(RESUMES_URL, wait_until="domcontentloaded")
+    global _resumes_landing
+    # с повтором: прошлая страница hh может ещё догружаться и перебить переход
+    open_url(page, RESUMES_URL, attempts=2, timeout=20)
     wait_captcha(page)
     role = hh_role(page)
     log.debug(f"  cookie hhrole = {role or '(нет)'}, адрес: {page.url}")
     if role == "employer":
         raise FatalError("вы вошли как работодатель — выйдите и войдите в аккаунт соискателя")
-    return (
+    logged_in = (
         role not in ("", "anonymous")
         and not is_auth_url(page.url)
         and page.locator(S.LOGIN_FORM).count() == 0
     )
+    _resumes_landing = _path(page.url) if logged_in else ""
+    return logged_in
+
+
+def on_resumes_page(page: Page) -> bool:
+    """Открыт список резюме — только что, при проверке входа (hh переводит с него на /applicant/profile/me).
+    Переходить туда снова незачем: раньше проверка резюме и подъём открывали ту же страницу ещё раз (~2 с)."""
+    here = _path(page.url)
+    return here == _path(RESUMES_URL) or bool(_resumes_landing) and here == _resumes_landing
+
+
+def _path(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.hostname}{parsed.path.rstrip('/')}"
 
 
 def ensure_logged_in(page: Page, cfg: Config) -> None:

@@ -117,6 +117,7 @@ class Responder:
         self.captchas = 0  # сколько раз за запуск hh просил капчу
         self.generate_failures = 0  # сколько раз подряд «Сгенерировать» hh не дал письма
         self.letter_kind = "none"  # какое письмо ушло с последним откликом: hh, ai, template, fallback, none
+        self.clicked = False  # на последней вакансии нажимали «Откликнуться» (а не ушли, ничего не тронув)
 
     def apply(self, vac: Vacancy) -> Result:
         """Откликается на вакансию; непредвиденные исключения превращает в Result(FAILED).
@@ -124,6 +125,7 @@ class Responder:
         Капча вместо отклика — не ошибка: ждём, пока человек её решит, и повторяем ту же вакансию."""
         after_captcha = False
         self.letter_kind = "none"
+        self.clicked = False
         for _ in range(CAPTCHA_ATTEMPTS):
             try:
                 result = self._apply(vac)
@@ -207,6 +209,7 @@ class Responder:
         self.page.context.on("page", on_new_page)
         try:
             log.info("  → нажимаю «Откликнуться» в карточке")
+            self.clicked = True
             button.click()
             outcome = self._wait_click_outcome(card, informers_before, new_pages)
             log.info(f"  реакция hh: {outcome.value}")

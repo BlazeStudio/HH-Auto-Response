@@ -63,6 +63,7 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
         if hides_window(cfg):
             _forget_window_placement(profile)
         for attempt in range(1, PROFILE_BUSY_ATTEMPTS + 1):
+            control.check()  # остановили, пока запускался прошлый — другой браузер не пробуем
             try:
                 context = pw.chromium.launch_persistent_context(
                     user_data_dir=str(profile),
@@ -167,10 +168,14 @@ def _close_reason(what: str = "окно браузера закрыто") -> str
     return "остановлено пользователем" if control.user_stopped() else what
 
 
-def finish_processes() -> int:
+def finish_processes(everything: bool = False) -> int:
     """После закрытия: процессы браузера и драйвера этого запуска, которые почему-то остались, — завершить
-    (иначе они держат память до перезагрузки). Возвращает, сколько пришлось завершить."""
+    (иначе они держат память до перезагрузки). everything — и те, что ещё не записаны: «Остановить», пока
+    браузер только запускается (его процессы записываются, когда он открылся). Возвращает, сколько пришлось
+    завершить."""
     left = browser_window.still_running(_Watch.processes)
+    if everything:
+        left = sorted(set(left) | set(browser_window.processes()))
     _Watch.processes = {}
     if left:
         browser_window.terminate(left)
@@ -281,10 +286,14 @@ def check_region(page: Page, cfg: Config) -> None:
 
     if cfg.geo.check_ip:
         _check_ip_country(page, cfg)
+        control.check()
 
     try:
-        response = page.goto(HH_HOME, wait_until="domcontentloaded", timeout=45_000)
+        # Для проверки хватает ответа сервера: код и адрес после перенаправлений. Ждать, пока тяжёлая главная
+        # hh дорисуется (2–7 с), незачем — следом всё равно переход к резюме, там и капчу видно
+        response = page.goto(HH_HOME, wait_until="commit", timeout=45_000)
     except PlaywrightError as e:
+        control.check()  # браузер закрыли («Остановить» или крестиком) — это не «hh.ru не открывается»
         raise FatalError(f"hh.ru не открывается ({str(e).splitlines()[0]}). {REGION_HINT}") from e
     wait_captcha(page)
 
