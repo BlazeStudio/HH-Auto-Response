@@ -911,6 +911,23 @@ def set_titlebar_dark(window: tkinter.Misc, dark: bool) -> None:
         pass
 
 
+class QuietToplevel:
+    """Для окон на ctk.CTkToplevel (сообщения, мини-окно, выбор из списка). customtkinter красит заголовок,
+    пряча окно и показывая снова: при смене темы и через 10 мс после resizable() — то есть сразу после
+    появления окна-сообщения. На экране окно появлялось, пропадало и появлялось опять, а мини-окно мигало
+    при каждой смене темы. Видимому окну хватает перерисовать рамку; спрятанное — как в customtkinter."""
+
+    def _windows_set_titlebar_color(self, color_mode: str) -> None:
+        try:
+            shown = bool(self.winfo_ismapped())
+        except tkinter.TclError:  # окно уже закрыли
+            return
+        if shown:
+            set_titlebar_dark(self, color_mode.lower() == "dark")
+        else:
+            super()._windows_set_titlebar_color(color_mode)
+
+
 # ───────────────────── Ctrl+C / V / X / A / Z в любой раскладке, отмена в полях ввода ─────────────────────
 
 # В русской раскладке Tk не узнаёт букву под Ctrl (вместо «c» приходит «??»), и стандартные сочетания молчат.

@@ -44,10 +44,12 @@ from .runner import RunOptions, Stats
 from . import browser, browser_window, raising, updater, watch
 from .mini import BrowserPreview, MiniWindow
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
-from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, SelectableText, TextLabel, flush_paint, frozen, install_editing,
+from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, QuietToplevel, SelectableText, TextLabel, flush_paint, frozen, install_editing,
                       precise_timer, set_titlebar_dark, theme_switch)
-from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, LINK,
-                    MAIN_BG, MUTED, RED, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon, sharp_windows_icon)
+from .theme import (ACCENT, ACCENT_FILL, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, CARD_LINE, FILL,
+                    FILL_HOVER, GREEN, GREEN_FILL, GREEN_HOVER, LINK, MAIN_BG, MUTED, NAV_HOVER, RED, RED_ON_SOFT,
+                    RED_SOFT, RED_SOFT_HOVER, SEG_THUMB, SIDEBAR_BG, TEXT, apply_app_icon, apply_ctk_theme, icon,
+                    sharp_windows_icon)
 
 APP_VERSION = __version__
 GITHUB_URL = "https://github.com/BlazeStudio/hh-auto-response"
@@ -60,7 +62,7 @@ LOG_COLORS = {  # тег → (светлая, тёмная)
     "error": ("#B91C1C", "#F87171"),
 }
 LOG_MAX_LINES = 4000
-APPEARANCE = {"Как в системе": "system", "Светлая": "light", "Тёмная": "dark"}
+APPEARANCE = {"Авто": "system", "Светлая": "light", "Тёмная": "dark"}  # «Авто» — как в системе
 
 
 def _level_tag(levelno: int) -> str:
@@ -113,7 +115,8 @@ class QueueLogHandler(logging.Handler):
 
 class Card(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
-        super().__init__(master, fg_color=CARD_BG, corner_radius=14, border_width=1, border_color=BORDER, **kwargs)
+        kwargs.setdefault("corner_radius", 18)
+        super().__init__(master, fg_color=CARD_BG, border_width=1, border_color=CARD_LINE, **kwargs)
 
 
 class ScrollFrame(ctk.CTkScrollableFrame):
@@ -248,26 +251,29 @@ class StatCard(Card):
     """Подпись и число. В узком окне подпись переносится по словам, а число мельчает и помещается целиком
     (раньше обрезалось с обеих сторон: «тказов на 100 отклико», «200  (83%»)."""
 
-    VALUE_SIZES = (30, 26, 22, 19, 16)
+    VALUE_SIZES = (32, 28, 24, 20, 16)
 
     def __init__(self, master, title: str, color):
         super().__init__(master)
         # width=1: ширину задаёт карточка, а не длина текста
         self.title = TextLabel(self, title, color=MUTED, size=13, width=1)
-        self.title.pack(fill="x", padx=16, pady=(12, 0))
-        self.value = TextLabel(self, "0", color=color, size=30, weight="bold", width=1)
-        self.value.pack(fill="x", padx=16, pady=(0, 12))
+        self.title.pack(fill="x", padx=18, pady=(14, 0))
+        self.value = TextLabel(self, "0", color=color, size=32, weight="bold", width=1)
+        self.value.pack(fill="x", padx=18, pady=(2, 14))
         self.bind("<Configure>", lambda _e: self._fit(), add="+")
 
-    def set(self, value) -> None:
+    def set(self, value, color=None) -> None:
+        """color — сменить цвет числа (например, «Ошибок» краснеет, только когда они есть)."""
         text = str(value)
+        if color is not None and self.value._color != color:
+            self.value.set(color=color)
         if self.value.cget("text") != text:
             self.value.configure(text=text)
             self._fit()
 
     def _fit(self) -> None:
         scale = self._get_widget_scaling()
-        room = self.winfo_width() - round(32 * scale)
+        room = self.winfo_width() - round(36 * scale)
         if room <= 0:
             return
         self.title.resize(wraplength=room / scale)
@@ -276,12 +282,37 @@ class StatCard(Card):
                                     self.VALUE_SIZES[-1]))
 
 
+class SegmentBar(ctk.CTkFrame):
+    """Полоса из отрезков — «сколько из суточного лимита»: заполненные, частично (бледнее) и пустые."""
+
+    PART = ("#9CC9F5", "#1F5FA8")
+
+    def __init__(self, master, count: int = 20, height: int = 8):
+        super().__init__(master, fg_color="transparent", height=height)
+        self.segments = []
+        for i in range(count):
+            self.grid_columnconfigure(i, weight=1, uniform="segment")
+            segment = ctk.CTkFrame(self, height=height, corner_radius=height // 2, fg_color=FILL)
+            segment.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0))
+            self.segments.append(segment)
+        self._colors = [FILL] * count
+
+    def set(self, fraction: float) -> None:
+        count = len(self.segments)
+        filled = max(0.0, min(fraction, 1.0)) * count
+        for i, segment in enumerate(self.segments):
+            color = ACCENT_FILL if i < int(filled) else (self.PART if i < filled else FILL)
+            if self._colors[i] != color:  # перекрашиваем только изменившиеся: опрос идёт 8 раз в секунду
+                self._colors[i] = color
+                segment.configure(fg_color=color)
+
+
 class LogView(ctk.CTkTextbox):
     """Цветной журнал только для чтения."""
 
     def __init__(self, master, **kwargs):
         super().__init__(master, font=ctk.CTkFont(family="Consolas", size=12), wrap="word", fg_color=CARD_BG,
-                         border_width=1, border_color=BORDER, corner_radius=12, **kwargs)
+                         border_width=1, border_color=CARD_LINE, corner_radius=16, **kwargs)
         self.apply_colors()
         self.configure(state="disabled")
         self._menu = tkinter.Menu(self, tearoff=0)
@@ -367,12 +398,11 @@ class Console(ctk.CTkFrame):
         self.records: list[tuple[int, str]] = []
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(header, text="Журнал выполнения", font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        ctk.CTkLabel(header, text="Журнал", font=ctk.CTkFont(size=18, weight="bold")).pack(side="left", padx=(4, 0))
         for text, command in (("Папка логов", self.open_folder), ("Файл лога", self.open_log), ("Очистить", self.clear),
                               ("Копировать", self.copy)):
-            ctk.CTkButton(header, text=text, width=96, height=28, fg_color="transparent", border_width=1,
-                          border_color=BORDER, text_color=TEXT, hover_color=ACCENT_SOFT,
-                          command=command).pack(side="right", padx=(6, 0))
+            _secondary_button(header, text, command, width=96, height=30,
+                              font=ctk.CTkFont(size=13)).pack(side="right", padx=(6, 0))
         self.verbose = ctk.CTkSwitch(header, text="Подробно", command=self.rerender)
         self.verbose.pack(side="right", padx=12)
         if app.prefs.get("verbose"):
@@ -418,30 +448,44 @@ class Console(ctk.CTkFrame):
 
 
 class Page(ctk.CTkFrame):
+    """Страница: крупный заголовок, справа от него — главные кнопки страницы (self.actions), ниже — пояснение."""
+
     def __init__(self, master, title: str, subtitle: str):
         super().__init__(master, fg_color="transparent")
-        ctk.CTkLabel(self, text=title, font=ctk.CTkFont(size=24, weight="bold"), text_color=TEXT).pack(anchor="w")
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x")
+        ctk.CTkLabel(header, text=title, font=ctk.CTkFont(size=30, weight="bold"), text_color=TEXT).pack(
+            side="left", anchor="sw")
+        # пустая рамка customtkinter — 200×200 точек и раздвинула бы шапку: размер задают кнопки, если они есть
+        self.actions = ctk.CTkFrame(header, fg_color="transparent", width=1, height=1)
+        self.actions.pack(side="right", anchor="se")
         # выделяемый: в подзаголовке бывает путь (например, к config.toml) — его удобно скопировать
         self.subtitle = SelectableText(self, subtitle, color=MUTED, size=13, bg=MAIN_BG, width_px=860)
-        self.subtitle.pack(fill="x", pady=(2, 14))
+        self.subtitle.pack(fill="x", pady=(4, 16))
+
+
+def _pill(height: int) -> int:
+    return height // 2  # кнопка-капсула
 
 
 def _primary_button(master, text: str, command, **kwargs):
     kwargs.setdefault("height", 40)
-    return ctk.CTkButton(master, text=text, command=command, corner_radius=10, fg_color=ACCENT,
-                         hover_color=ACCENT_HOVER, font=ctk.CTkFont(size=14, weight="bold"), **kwargs)
+    kwargs.setdefault("font", ctk.CTkFont(size=14, weight="bold"))
+    return ctk.CTkButton(master, text=text, command=command, corner_radius=_pill(kwargs["height"]),
+                         fg_color=ACCENT_FILL, hover_color=ACCENT_HOVER, text_color="#FFFFFF",
+                         text_color_disabled=("#FFFFFF", "#FFFFFF"), **kwargs)
 
 
 def _secondary_button(master, text: str, command, **kwargs):
     kwargs.setdefault("height", 40)
-    return ctk.CTkButton(master, text=text, command=command, corner_radius=10, fg_color="transparent",
-                         border_width=1, border_color=BORDER, text_color=TEXT, hover_color=ACCENT_SOFT,
-                         font=ctk.CTkFont(size=14), **kwargs)
+    kwargs.setdefault("font", ctk.CTkFont(size=14))
+    return ctk.CTkButton(master, text=text, command=command, corner_radius=_pill(kwargs["height"]), fg_color=FILL,
+                         border_width=0, text_color=TEXT, text_color_disabled=MUTED, hover_color=FILL_HOVER, **kwargs)
 
 
 def _stop_button(master, command):
-    button = ctk.CTkButton(master, text="■  Остановить", command=command, height=40, width=150, corner_radius=10,
-                           hover_color=RED_HOVER, font=ctk.CTkFont(size=14, weight="bold"))
+    button = ctk.CTkButton(master, text="■  Остановить", command=command, height=40, width=150,
+                           corner_radius=_pill(40), font=ctk.CTkFont(size=14, weight="bold"))
     set_stop_enabled(button, False)
     return button
 
@@ -453,74 +497,101 @@ def _mini_button(master, app: "App") -> ctk.CTkButton:
 
 
 def set_stop_enabled(button: ctk.CTkButton, enabled: bool) -> None:
-    button.configure(state="normal" if enabled else "disabled", fg_color=RED if enabled else BORDER,
-                     text_color="white" if enabled else MUTED, text_color_disabled=MUTED)
+    button.configure(state="normal" if enabled else "disabled", fg_color=RED_SOFT if enabled else FILL,
+                     hover_color=RED_SOFT_HOVER, text_color=RED_ON_SOFT if enabled else MUTED,
+                     text_color_disabled=MUTED)
 
 
 class ResponsesPage(Page):
     def __init__(self, master, app: "App"):
-        super().__init__(master, "Отклики на вакансии",
-                         "Скрипт идёт по выдаче hh.ru и откликается с сопроводительным письмом (генерация hh, готовый текст или без письма — в «Настройках»). "
-                         "При первом запуске откроется браузер — войдите в hh.ru сами, дальше всё автоматически.")
+        super().__init__(master, "Отклики",
+                         "Программа идёт по выдаче hh.ru и откликается с сопроводительным письмом (генерация hh, "
+                         "нейросеть, свой текст или без письма — в «Настройках»). При первом запуске откроется "
+                         "браузер — войдите в hh.ru сами, дальше всё автоматически.")
         self.app = app
+        self.start_btn = _primary_button(self.actions, "▶  Начать", lambda: app.start_responses(False), width=130)
+        self.dry_btn = _secondary_button(self.actions, "Пробный прогон", lambda: app.start_responses(True), width=150)
+        self.stop_btn = _stop_button(self.actions, app.stop)
+        for i, button in enumerate((self.start_btn, self.dry_btn, self.stop_btn)):
+            button.pack(side="left", padx=(0 if i == 0 else 10, 0))
 
-        link_row = Card(self)
-        link_row.pack(fill="x", pady=(0, 12))
-        ctk.CTkLabel(link_row, text="Поиск:", text_color=MUTED).pack(side="left", padx=(16, 6), pady=10)
-        self.search_label = ctk.CTkLabel(link_row, text="", text_color=TEXT, anchor="w")
-        self.search_label.pack(side="left", fill="x", expand=True, pady=10)
-        ctk.CTkButton(link_row, text="Изменить", width=90, height=28, fg_color="transparent", text_color=ACCENT,
-                      hover_color=ACCENT_SOFT, command=lambda: app.show_page("settings")).pack(side="right", padx=10)
+        hero = ctk.CTkFrame(self, fg_color="transparent")
+        hero.pack(fill="x")
+        hero.grid_columnconfigure(0, weight=11, uniform="hero")
+        hero.grid_columnconfigure(1, weight=9, uniform="hero")
 
-        totals = Card(self)
-        totals.pack(fill="x", pady=(0, 12))
-        self.totals = ctk.CTkLabel(totals, text="", text_color=TEXT, anchor="w")
-        self.totals.pack(side="left", fill="x", expand=True, padx=16, pady=10)
-        ctk.CTkButton(totals, text="Таблица Excel", width=120, height=28, fg_color="transparent", text_color=ACCENT,
-                      hover_color=ACCENT_SOFT, command=lambda: open_path(app.xlsx_path)).pack(side="right", padx=10)
+        # «Сегодня»: сколько откликов из суточного лимита hh, что идёт сейчас, итоги
+        today = Card(hero, corner_radius=22)
+        today.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        top = ctk.CTkFrame(today, fg_color="transparent")
+        top.pack(fill="x", padx=24, pady=(20, 0))
+        ctk.CTkLabel(top, text="Сегодня", text_color=TEXT, font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        self.run_state = ctk.CTkLabel(top, text="", font=ctk.CTkFont(size=13, weight="bold"))
+        self.run_state.pack(side="right")
+        big = ctk.CTkFrame(today, fg_color="transparent")
+        big.pack(fill="x", padx=24)
+        self.today_value = ctk.CTkLabel(big, text="0", text_color=TEXT, font=ctk.CTkFont(size=56, weight="bold"))
+        self.today_value.pack(side="left")
+        ctk.CTkLabel(big, text=f"из ~{HH_DAILY_LIMIT} откликов в сутки", text_color=MUTED,
+                     font=ctk.CTkFont(size=15)).pack(side="left", anchor="s", padx=(10, 0), pady=(0, 14))
+        self.today_bar = SegmentBar(today)
+        self.today_bar.pack(fill="x", padx=24, pady=(4, 0))
+        self.current = ctk.CTkLabel(today, text="Готов к работе", text_color=MUTED, anchor="w", justify="left")
+        self.current.pack(fill="x", padx=24, pady=(14, 0))
+        bottom = ctk.CTkFrame(today, fg_color="transparent")
+        bottom.pack(fill="x", padx=24, pady=(4, 16))
+        self.totals = ctk.CTkLabel(bottom, text="", text_color=MUTED, anchor="w", font=ctk.CTkFont(size=12))
+        self.totals.pack(side="left")
+        ctk.CTkButton(bottom, text="Таблица Excel", width=0, height=26, fg_color="transparent", text_color=ACCENT,
+                      hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=12),
+                      command=lambda: open_path(app.xlsx_path)).pack(side="right")
+        # длинное название вакансии переносится по ширине карточки, а не уходит за край
+        today.bind("<Configure>", lambda e: self.current.configure(
+            wraplength=max(200, e.width / self._get_widget_scaling() - 52)), add="+")
 
-        cards = ctk.CTkFrame(self, fg_color="transparent")
-        cards.pack(fill="x")
+        grid = ctk.CTkFrame(hero, fg_color="transparent")
+        grid.grid(row=0, column=1, sticky="nsew")
         self.cards = {
-            "applied": StatCard(cards, "Отправлено за запуск", GREEN),
-            "letters": StatCard(cards, "С письмом", ACCENT),
-            "skipped": StatCard(cards, "Пропущено", AMBER),
-            "failed": StatCard(cards, "Ошибок", RED),
+            "letters": StatCard(grid, "С письмом", ACCENT),
+            "skipped": StatCard(grid, "Пропущено", AMBER),
+            "failed": StatCard(grid, "Ошибок", TEXT),
+            "applied": StatCard(grid, "Этот запуск", TEXT),
         }
         for i, card in enumerate(self.cards.values()):
-            cards.grid_columnconfigure(i, weight=1, uniform="cards")
-            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))  # одной высоты, даже если подпись в две строки
-
-        # прогресс: дорожка того же цвета, пока откликов нет, — без «точки» на нуле
-        self.progress = ctk.CTkProgressBar(self, height=8, progress_color=GREEN)
+            row, column = divmod(i, 2)
+            grid.grid_columnconfigure(column, weight=1, uniform="cards")
+            grid.grid_rowconfigure(row, weight=1, uniform="rows")
+            card.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 14, 0),
+                      pady=(0 if row == 0 else 14, 0))
+        # прогресс этого запуска — тонкая полоса под числом; пока откликов нет, без «точки» на нуле
+        self.progress = ctk.CTkProgressBar(self.cards["applied"], height=6, corner_radius=3)
         self.progress.set(0)
-        self.progress.pack(fill="x", pady=(14, 4))
-        self.current = ctk.CTkLabel(self, text="Готов к работе", text_color=MUTED, anchor="w")
-        self.current.pack(fill="x")
+        self.progress.pack(fill="x", padx=18, pady=(0, 14))
 
-        options = Card(self)
-        options.pack(fill="x", pady=(12, 0))
-        ctk.CTkLabel(options, text="Откликов:", text_color=MUTED).pack(side="left", padx=(16, 6), pady=10)
-        self.limit = ctk.CTkEntry(options, width=70, justify="center")
+        run = Card(self)
+        run.pack(fill="x", pady=(16, 0))
+        line = ctk.CTkFrame(run, fg_color="transparent")
+        line.pack(fill="x", padx=18, pady=(10, 0))
+        ctk.CTkLabel(line, text="Поиск:", text_color=MUTED).pack(side="left", padx=(0, 6))
+        self.search_label = ctk.CTkLabel(line, text="", text_color=TEXT, anchor="w")
+        self.search_label.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(line, text="Изменить", width=0, height=28, fg_color="transparent", text_color=ACCENT,
+                      hover_color=ACCENT_SOFT, command=lambda: app.show_page("settings")).pack(side="right")
+        options = ctk.CTkFrame(run, fg_color="transparent")
+        options.pack(fill="x", padx=18, pady=(6, 12))
+        ctk.CTkLabel(options, text="Откликов:", text_color=MUTED).pack(side="left", padx=(0, 6))
+        self.limit = ctk.CTkEntry(options, width=70, justify="center", corner_radius=9)
         self.limit.pack(side="left")
         ctk.CTkLabel(options, text="Со страницы:", text_color=MUTED).pack(side="left", padx=(20, 6))
-        self.start_page = ctk.CTkEntry(options, width=56, justify="center")
+        self.start_page = ctk.CTkEntry(options, width=56, justify="center", corner_radius=9)
         self.start_page.insert(0, "1")
         self.start_page.pack(side="left")
-        self.retry = ctk.CTkCheckBox(options, text="Повторить пропущенные ранее",
+        self.retry = ctk.CTkCheckBox(options, text="Повторить пропущенные ранее", corner_radius=6,
                                      checkbox_width=20, checkbox_height=20)
         self.retry.pack(side="left", padx=(20, 16))
-
-        controls = ctk.CTkFrame(self, fg_color="transparent")
-        controls.pack(fill="x", pady=(12, 0))
-        self.start_btn = _primary_button(controls, "▶  Начать отклики", lambda: app.start_responses(False), width=190)
-        self.start_btn.pack(side="left")
-        self.dry_btn = _secondary_button(controls, "Пробный прогон", lambda: app.start_responses(True), width=150)
-        self.dry_btn.pack(side="left", padx=10)
-        self.stop_btn = _stop_button(controls, app.stop)
-        self.stop_btn.pack(side="left")
-        _mini_button(controls, app).pack(side="right")
+        _mini_button(options, app).pack(side="right")
         self._set_progress(0)
+        self._show_state(False)
 
     def refresh_config(self, cfg: Config) -> None:
         try:
@@ -537,30 +608,38 @@ class ResponsesPage(Page):
         """Сегодня / последний запуск / всего. Во время работы добавляем отклики текущего запуска."""
         today = summary.today.applied + running_applied
         last = running_applied if running_applied or not summary.last_run_at else summary.last_run.applied
-        text = (f"Сегодня: {today} из ~{HH_DAILY_LIMIT}     •     Последний запуск: {last}     •     "
-                f"Всего: {summary.total.applied + running_applied}")
-        if self.totals.cget("text") != text:
-            self.totals.configure(text=text, text_color=AMBER if today >= HH_DAILY_LIMIT * 0.9 else TEXT)
+        total = summary.total.applied + running_applied
+        if (today, last, total) == getattr(self, "_totals_shown", None):  # опрос идёт 8 раз в секунду
+            return
+        self._totals_shown = (today, last, total)
+        self.today_value.configure(text=str(today), text_color=AMBER if today >= HH_DAILY_LIMIT * 0.9 else TEXT)
+        self.today_bar.set(today / HH_DAILY_LIMIT)
+        self.totals.configure(text=f"Последний запуск: {last}   ·   Всего: {total}")
 
     def set_running(self, running: bool) -> None:
         state = "disabled" if running else "normal"
         for widget in (self.start_btn, self.dry_btn, self.limit, self.start_page, self.retry):
             widget.configure(state=state)
         set_stop_enabled(self.stop_btn, running)
+        self._show_state(running)
+
+    def _show_state(self, running: bool) -> None:
+        self.run_state.configure(text="●  Идёт работа" if running else "Не запущено",
+                                 text_color=GREEN if running else MUTED)
 
     def update_stats(self, stats: Stats, limit: int) -> None:
-        self.cards["applied"].set(stats.applied)
+        self.cards["applied"].set(f"{stats.applied} / {limit}" if limit else stats.applied)
         self.cards["letters"].set(stats.with_letter)
         self.cards["skipped"].set(sum(stats.skipped.values()))
-        self.cards["failed"].set(stats.failed)
+        self.cards["failed"].set(stats.failed, RED if stats.failed else TEXT)
         self._set_progress(min(stats.applied / limit, 1) if limit else 0)
 
     def _set_progress(self, value: float) -> None:
         if value == getattr(self, "_progress_value", None):  # то же значение — не перерисовываем (8 раз в секунду)
             return
         self._progress_value = value
-        # на нуле скругление рисует зелёную точку — красим заполнение в цвет дорожки
-        self.progress.configure(progress_color=GREEN if value > 0 else self.progress.cget("fg_color"))
+        # на нуле скругление рисует цветную точку — красим заполнение в цвет дорожки
+        self.progress.configure(progress_color=ACCENT_FILL if value > 0 else self.progress.cget("fg_color"))
         self.progress.set(value)
 
 
@@ -574,34 +653,31 @@ class ChatsPage(Page):
                          "ИИ-ответы, отвечает «Роботу-рекрутеру» на анкеты по вашему резюме и читает уведомления. "
                          "Живым людям, приглашениям и просьбам о документах не отвечает — показывает их списком.")
         self.app = app
+        self.start_btn = _primary_button(self.actions, "✉  Обработать чаты", lambda: app.start_chats(False), width=200)
+        self.dry_btn = _secondary_button(self.actions, "Только показать", lambda: app.start_chats(True), width=150)
+        self.stop_btn = _stop_button(self.actions, app.stop)
+        for i, button in enumerate((self.start_btn, self.dry_btn, self.stop_btn)):
+            button.pack(side="left", padx=(0 if i == 0 else 10, 0))
+
         cards = ctk.CTkFrame(self, fg_color="transparent")
         cards.pack(fill="x")
         self.cards = {
-            "opened": StatCard(cards, "Прочитано отказов", GREEN),
+            "opened": StatCard(cards, "Прочитано отказов", TEXT),
             "answered": StatCard(cards, "Ответов ИИ", ACCENT),
             "other": StatCard(cards, "Ждут вашего ответа", AMBER),
-            "failed": StatCard(cards, "Ошибок", RED),
+            "failed": StatCard(cards, "Ошибок", TEXT),
         }
         for i, card in enumerate(self.cards.values()):
             cards.grid_columnconfigure(i, weight=1, uniform="cards")
-            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))  # одной высоты, даже если подпись в две строки
+            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 14, 0))  # одной высоты, даже если подпись в две строки
 
         # что делать: отказы и ИИ-ответы или только отказы ([chats] mode) — сохраняется сразу
         mode_row = PlainFrame(self, bg=MAIN_BG)
         mode_row.pack(fill="x", pady=(16, 0))
-        TextLabel(mode_row, "Что делать:", color=MUTED, bg=MAIN_BG).pack(side="left", padx=(0, 8))
+        TextLabel(mode_row, "Что делать:", color=MUTED, bg=MAIN_BG).pack(side="left", padx=(0, 10))
         self.mode = Segments(mode_row, list(CHATS_MODE_LABELS), command=self._mode_changed, height=30)
         self.mode.pack(side="left")
-
-        controls = ctk.CTkFrame(self, fg_color="transparent")
-        controls.pack(fill="x", pady=(10, 0))
-        self.start_btn = _primary_button(controls, "✉  Обработать чаты", lambda: app.start_chats(False), width=200)
-        self.start_btn.pack(side="left")
-        self.dry_btn = _secondary_button(controls, "Только показать", lambda: app.start_chats(True), width=150)
-        self.dry_btn.pack(side="left", padx=10)
-        self.stop_btn = _stop_button(controls, app.stop)
-        self.stop_btn.pack(side="left")
-        _mini_button(controls, app).pack(side="right")
+        _mini_button(mode_row, app).pack(side="right")
         # что будет при запуске — переносится по ширине страницы, а не обрезается в узком окне
         self.ai_state = TextLabel(self, "", color=MUTED, bg=MAIN_BG, width=1)
         self.ai_state.pack(fill="x", pady=(10, 0))
@@ -644,7 +720,7 @@ class ChatsPage(Page):
         self.cards["opened"].set(stats.opened)
         self.cards["answered"].set(stats.answered)
         self.cards["other"].set(len(stats.other_unread))
-        self.cards["failed"].set(stats.failed)
+        self.cards["failed"].set(stats.failed, RED if stats.failed else TEXT)
 
 
 class AiTestPage(Page):
@@ -830,7 +906,7 @@ class AiTestPage(Page):
                 self.view.append(f"  страховка: {turn.note}", "warn")
 
 
-class PromptWindow(ctk.CTkToplevel):
+class PromptWindow(QuietToplevel, ctk.CTkToplevel):
     """Отдельное окно: ровно то, что получает нейросеть."""
 
     def __init__(self, master, text: str):
@@ -1130,7 +1206,7 @@ class PickerField(ctk.CTkFrame):
         PickerDialog(self, self.title, self.groups, self.values, self.set)
 
 
-class PickerDialog(ctk.CTkToplevel):
+class PickerDialog(QuietToplevel, ctk.CTkToplevel):
     """Выбор из справочника hh: поиск по названию, группы, «все в группе», счётчик выбранного.
 
     Каждая группа — «чипы» на одном холсте: у отраслей 326 вариантов, и флажками это было ~1300 окон Windows,
@@ -1224,15 +1300,17 @@ class SettingsPage(Page):
         self.widgets: dict[tuple[str, str], tuple[str, object]] = {}
         self._loaded: dict | None = None  # что уже разложено по полям формы
 
-        # вкладки — как пункты меню слева: выбранная подсвечена
-        bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.pack(fill="x", pady=(0, 10))
+        # вкладки — переключатель, как «Что делать» в чатах: выбранная — светлая «таблетка» на дорожке
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 12))
+        bar = ctk.CTkFrame(row, fg_color=FILL, corner_radius=10)
+        bar.pack(side="left")
         self.tab_buttons: dict[str, ctk.CTkButton] = {}
-        for name, _ in SETTINGS_TABS:
-            button = ctk.CTkButton(bar, text=name, height=34, width=0, corner_radius=9, fg_color="transparent",
-                                   text_color=TEXT, hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=14),
+        for i, (name, _) in enumerate(SETTINGS_TABS):
+            button = ctk.CTkButton(bar, text=name, height=32, width=0, corner_radius=8, fg_color="transparent",
+                                   text_color=TEXT, hover_color=FILL_HOVER, font=ctk.CTkFont(size=14),
                                    command=lambda n=name: self.show_tab(n))
-            button.pack(side="left", padx=(0, 6))
+            button.pack(side="left", padx=(3 if i == 0 else 0, 3), pady=3)
             self.tab_buttons[name] = button
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True)
@@ -1349,8 +1427,8 @@ class SettingsPage(Page):
             theme_switch.ensure(self.tabs[name])  # тему сменили, а фон ещё не докрасил эту вкладку
             self.tabs[name].pack(fill="both", expand=True)
             for tab, button in self.tab_buttons.items():
-                button.configure(fg_color=ACCENT_SOFT if tab == name else "transparent",
-                                 text_color=ACCENT if tab == name else TEXT)
+                button.configure(fg_color=SEG_THUMB if tab == name else "transparent",
+                                 hover_color=SEG_THUMB if tab == name else FILL_HOVER)
         self.current_tab = name
         self.app.save_prefs(settings_tab=name)
 
@@ -1785,19 +1863,21 @@ def _num(value: float) -> str:
 
 
 class Segments(ctk.CTkFrame):
-    """Выбор одного из нескольких вариантов — как вкладки настроек: выбранный подсвечен мягким акцентом.
+    """Выбор одного из нескольких вариантов: серая дорожка, выбранный вариант — светлая «таблетка» на ней.
+    fill — варианты делят ширину поровну (переключатель темы в узком меню слева).
     (У CTkSegmentedButton в светлой теме невыбранное серое на сером.)"""
 
-    def __init__(self, master, values, command=None, height: int = 30, size: int = 13):
-        super().__init__(master, fg_color="transparent")
+    def __init__(self, master, values, command=None, height: int = 30, size: int = 13, fill: bool = False,
+                 track=FILL):
+        super().__init__(master, fg_color=track, corner_radius=9)
         self.command = command
         self.value = ""
         self.buttons: dict[str, ctk.CTkButton] = {}
-        for value in values:
-            button = ctk.CTkButton(self, text=value, width=0, height=height, corner_radius=8, fg_color="transparent",
-                                   text_color=TEXT, hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=size),
+        for i, value in enumerate(values):
+            button = ctk.CTkButton(self, text=value, width=0, height=height, corner_radius=7, fg_color="transparent",
+                                   text_color=TEXT, hover_color=FILL_HOVER, font=ctk.CTkFont(size=size),
                                    command=lambda v=value: self._clicked(v))
-            button.pack(side="left", padx=(0, 2))
+            button.pack(side="left", padx=(3 if i == 0 else 0, 3), pady=3, expand=fill, fill="x" if fill else None)
             self.buttons[value] = button
 
     def get(self) -> str:
@@ -1808,8 +1888,8 @@ class Segments(ctk.CTkFrame):
             return
         self.value = value
         for name, button in self.buttons.items():
-            button.configure(fg_color=ACCENT_SOFT if name == value else "transparent",
-                             text_color=ACCENT if name == value else TEXT)
+            button.configure(fg_color=SEG_THUMB if name == value else "transparent",
+                             hover_color=SEG_THUMB if name == value else FILL_HOVER)
 
     def _clicked(self, value: str) -> None:
         if value != self.value:
@@ -2225,6 +2305,7 @@ class App(ctk.CTk):
         self.prefs = self._load_prefs()
         ctk.set_appearance_mode(self.prefs.get("appearance", "system"))
         ctk.set_default_color_theme("blue")
+        apply_ctk_theme()  # флажки, поля, переключатели — в цвета программы, а не синие customtkinter
         _quiet_timers()
         super().__init__(fg_color=MAIN_BG)
         theme_switch.install(self)  # смена темы одним кадром, скрытые страницы — в фоне
@@ -2296,29 +2377,36 @@ class App(ctk.CTk):
     # ---------- построение окна ----------
 
     def _build_sidebar(self) -> None:
-        bar = ctk.CTkFrame(self, width=230, corner_radius=0, fg_color=SIDEBAR_BG)
-        bar.grid(row=0, column=0, sticky="nsw")
+        # меню — отдельная скруглённая панель с отступом от края окна
+        bar = ctk.CTkFrame(self, width=236, corner_radius=18, fg_color=SIDEBAR_BG, bg_color=MAIN_BG)
+        bar.grid(row=0, column=0, sticky="nsw", padx=(12, 0), pady=12)
         # ширина меню не зависит от надписей: длинное состояние («Браузер сейчас не открыт») раньше раздвигало
         # меню и сдвигало всю страницу
         bar.pack_propagate(False)
         self.sidebar = bar
-        # справа без отступа: название (~196 точек) не помещалось в 230 − 2×22 и обрезалось с обеих сторон
-        ctk.CTkLabel(bar, text=APP_NAME, font=ctk.CTkFont(size=21, weight="bold"), text_color=ACCENT).pack(
-            anchor="w", padx=(22, 0), pady=(26, 0))
-        ctk.CTkLabel(bar, text="автоотклики на hh.ru", text_color=MUTED).pack(anchor="w", padx=22, pady=(0, 22))
+        brand = ctk.CTkFrame(bar, fg_color="transparent")
+        brand.pack(fill="x", padx=18, pady=(22, 22))
+        ctk.CTkLabel(brand, text="hh", width=34, height=34, corner_radius=10, fg_color=ACCENT_FILL, text_color="#FFFFFF",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        names = ctk.CTkFrame(brand, fg_color="transparent")
+        names.pack(side="left", padx=(10, 0))
+        ctk.CTkLabel(names, text=APP_NAME, text_color=TEXT, height=18, font=ctk.CTkFont(size=15, weight="bold")).pack(
+            anchor="w")
+        ctk.CTkLabel(names, text="автоотклики на hh.ru", text_color=MUTED, height=16,
+                     font=ctk.CTkFont(size=12)).pack(anchor="w")
 
         self.nav: dict[str, ctk.CTkButton] = {}
-        # значки нарисованы (theme.py), а не символами шрифта: одного размера и толщины, у выбранного — цвет акцента
+        # значки нарисованы (theme.py), а не символами шрифта: одного размера и толщины; синие, у выбранного — белые
         self.nav_icons: dict[str, tuple[ctk.CTkImage, ctk.CTkImage]] = {}
         for key, name, text in (("responses", "send", "Отклики"), ("chats", "chat", "Чаты"),
                                 ("stats", "chart", "Статистика"), ("ai", "sparkle", "Проверка ИИ"),
                                 ("settings", "gear", "Настройки"), ("journals", "journal", "Журналы")):
-            self.nav_icons[key] = (icon(name, 18, TEXT), icon(name, 18, ACCENT))
-            button = ctk.CTkButton(bar, text=f" {text}", image=self.nav_icons[key][0], compound="left", anchor="w",
-                                   height=42, corner_radius=10, fg_color="transparent", text_color=TEXT,
-                                   hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=15),
+            self.nav_icons[key] = (icon(name, 18, ACCENT), icon(name, 18, "#FFFFFF"))
+            button = ctk.CTkButton(bar, text=f"  {text}", image=self.nav_icons[key][0], compound="left", anchor="w",
+                                   height=40, corner_radius=10, fg_color="transparent", text_color=TEXT,
+                                   hover_color=NAV_HOVER, font=ctk.CTkFont(size=14),
                                    command=lambda k=key: self.show_page(k))
-            button.pack(fill="x", padx=12, pady=2)
+            button.pack(fill="x", padx=12, pady=1)
             self.nav[key] = button
 
         # Низ меню — состояние, оформление, обновление, версия — прижат к низу и важнее превью: в невысоком
@@ -2351,17 +2439,19 @@ class App(ctk.CTk):
                                           wraplength=186, font=ctk.CTkFont(size=12))
         self.status_detail.pack(fill="x", padx=22, pady=(0, 16))
 
-        ctk.CTkLabel(foot, text="Оформление", text_color=MUTED, anchor="w").pack(fill="x", padx=22)
-        current = next((k for k, v in APPEARANCE.items() if v == self.prefs.get("appearance", "system")),
-                       "Как в системе")
-        mode = ctk.CTkOptionMenu(foot, values=list(APPEARANCE), command=self._set_appearance)
+        ctk.CTkLabel(foot, text="Оформление", text_color=MUTED, anchor="w", font=ctk.CTkFont(size=12)).pack(
+            fill="x", padx=22)
+        current = next((k for k, v in APPEARANCE.items() if v == self.prefs.get("appearance", "system")), "Авто")
+        # дорожка темнее обычной: на сером меню обычная почти не видна
+        mode = Segments(foot, list(APPEARANCE), command=self._set_appearance, height=26, size=12, fill=True,
+                        track=("#D8D8DE", "#2C2C2E"))
         mode.set(current)
-        mode.pack(fill="x", padx=22, pady=(4, 10))
+        mode.pack(fill="x", padx=18, pady=(4, 12))
         # появляется, когда на GitHub вышла новая версия
         self._icon_download = icon("download", 16)  # свой значок: «⬇» есть не в каждом шрифте
         self._icon_restart = icon("restart", 16)
         self.update_btn = ctk.CTkButton(foot, text="", image=self._icon_download, compound="left", height=36,
-                                        corner_radius=10, fg_color=GREEN, hover_color=GREEN_HOVER,
+                                        corner_radius=18, fg_color=GREEN_FILL, hover_color=GREEN_HOVER,
                                         text_color="#FFFFFF", text_color_disabled="#FFFFFF",
                                         font=ctk.CTkFont(size=13, weight="bold"), command=self._update_clicked)
         self.update_progress = ctk.CTkProgressBar(foot, height=4, corner_radius=2, progress_color=GREEN)
@@ -2397,7 +2487,7 @@ class App(ctk.CTk):
 
     def _build_main(self) -> None:
         main = ctk.CTkFrame(self, fg_color="transparent")
-        main.grid(row=0, column=1, sticky="nsew", padx=28, pady=24)
+        main.grid(row=0, column=1, sticky="nsew", padx=32, pady=(28, 24))
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(1, weight=1)
         self.pages = {
@@ -2418,8 +2508,9 @@ class App(ctk.CTk):
             for name, page in self.pages.items():
                 if name != key:
                     page.grid_forget()
-                self.nav[name].configure(fg_color=ACCENT_SOFT if name == key else "transparent",
-                                         text_color=ACCENT if name == key else TEXT,
+                self.nav[name].configure(fg_color=ACCENT_FILL if name == key else "transparent",
+                                         hover_color=ACCENT_FILL if name == key else NAV_HOVER,
+                                         text_color="#FFFFFF" if name == key else TEXT,
                                          image=self.nav_icons[name][name == key])
             page = self.pages[key]
             theme_switch.ensure(page)

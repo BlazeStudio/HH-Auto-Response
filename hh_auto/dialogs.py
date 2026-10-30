@@ -12,9 +12,9 @@ import tkinter
 
 import customtkinter as ctk
 
-from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, APP_NAME, BORDER, CARD_BG, GREEN, GREEN_HOVER, MUTED, RED,
-                    RED_HOVER, TEXT, apply_app_icon, badge)
-from .widgets import SelectableText
+from .theme import (ACCENT, ACCENT_FILL, ACCENT_HOVER, APP_NAME, BORDER, CARD_BG, FILL, FILL_HOVER, GREEN_FILL,
+                    GREEN_HOVER, MAIN_BG, MUTED, RED_FILL, RED_HOVER, TEXT, apply_app_icon, badge)
+from .widgets import QuietToplevel, SelectableText
 
 _DEFAULT_TITLE = {"info": APP_NAME, "success": "Готово", "warning": "Обратите внимание",
                   "error": "Что-то пошло не так", "question": "Подтвердите"}
@@ -53,7 +53,7 @@ def _split_raw(message: str) -> tuple[str, str]:
     return "", message
 
 
-class Dialog(ctk.CTkToplevel):
+class Dialog(QuietToplevel, ctk.CTkToplevel):
     """Модальное окно: значок, крупная строка, текст, (прокручиваемые подробности), поле ввода, кнопки.
 
     buttons — [(подпись, значение, стиль)], стиль: primary | secondary | danger | success. Enter — первая
@@ -102,7 +102,7 @@ class Dialog(ctk.CTkToplevel):
             label.bind("<Button-1>", lambda _e: command())
 
         if details:
-            box = ctk.CTkTextbox(body, height=230, wrap="word", fg_color=("#F6F7FB", "#1A1C21"), border_width=1,
+            box = ctk.CTkTextbox(body, height=230, wrap="word", fg_color=MAIN_BG, border_width=1,
                                  border_color=BORDER, corner_radius=10, font=ctk.CTkFont(size=13))
             box.pack(fill="both", expand=True, pady=(16, 0))
             render_markdown(box, details)
@@ -192,10 +192,11 @@ class Dialog(ctk.CTkToplevel):
 def _button(master, text: str, style: str, command) -> ctk.CTkButton:
     font = ctk.CTkFont(size=13, weight="bold" if style != "secondary" else "normal")
     if style == "secondary":
-        return ctk.CTkButton(master, text=text, command=command, height=36, corner_radius=9, fg_color="transparent",
-                             border_width=1, border_color=BORDER, text_color=TEXT, hover_color=ACCENT_SOFT, font=font)
-    colors = {"primary": (ACCENT, ACCENT_HOVER), "danger": (RED, RED_HOVER), "success": (GREEN, GREEN_HOVER)}[style]
-    return ctk.CTkButton(master, text=text, command=command, height=36, corner_radius=9, fg_color=colors[0],
+        return ctk.CTkButton(master, text=text, command=command, height=36, corner_radius=18, fg_color=FILL,
+                             border_width=0, text_color=TEXT, hover_color=FILL_HOVER, font=font)
+    colors = {"primary": (ACCENT_FILL, ACCENT_HOVER), "danger": (RED_FILL, RED_HOVER),
+              "success": (GREEN_FILL, GREEN_HOVER)}[style]
+    return ctk.CTkButton(master, text=text, command=command, height=36, corner_radius=18, fg_color=colors[0],
                          hover_color=colors[1], text_color="#FFFFFF", font=font)
 
 

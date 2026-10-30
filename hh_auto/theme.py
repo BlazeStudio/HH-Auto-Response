@@ -18,25 +18,80 @@ from .paths import bundled
 APP_NAME = "HH-Auto-Response"
 
 # --- палитра: (светлая тема, тёмная тема) ---
-ACCENT = ("#2563EB", "#3B82F6")
-ACCENT_HOVER = ("#1D4ED8", "#2563EB")
-ACCENT_SOFT = ("#DBEAFE", "#1E3A5F")
-LINK = ("#4F6FB0", "#6F8FC6")  # ссылка в меню — приглушённый синий, при наведении — ACCENT
-SIDEBAR_BG = ("#EDF0F5", "#131519")
-MAIN_BG = ("#F6F7FB", "#1A1C21")
-CARD_BG = ("#FFFFFF", "#23262D")
-BORDER = ("#E3E6EC", "#2F333B")
-TEXT = ("#111827", "#F3F4F6")
-MUTED = ("#6B7280", "#9CA3AF")
-GREEN = ("#16A34A", "#22C55E")
-GREEN_HOVER = ("#15803D", "#16A34A")
-AMBER = ("#D97706", "#F59E0B")
-RED = ("#DC2626", "#EF4444")
-RED_HOVER = ("#B91C1C", "#DC2626")
+# Светлая — серый фон, белые карточки без теней; тёмная — почти чёрный фон и графитовые карточки с тонкой
+# рамкой. Цвета-«текст» (ACCENT, GREEN, RED…) читаются на фоне и на карточке; на заливку под белый текст —
+# свои *_FILL: светло-синий тёмной темы под белым текстом не читается.
+ACCENT = ("#0066CC", "#409CFF")  # текст, значки, ссылки
+ACCENT_FILL = ("#0071E3", "#0A6CDB")  # кнопка «Начать», выбранный пункт меню — с белым текстом
+ACCENT_HOVER = ("#0077ED", "#1A78E5")
+ACCENT_SOFT = ("#E8F1FC", "#16273D")  # мягкая подсветка: наведение, выбранное в списках
+LINK = ("#0066CC", "#409CFF")
+SIDEBAR_BG = ("#E9E9EE", "#19191B")
+MAIN_BG = ("#F5F5F7", "#0F0F11")
+CARD_BG = ("#FFFFFF", "#1C1C1E")
+CARD_LINE = ("#EBEBEF", "#2A2A2D")  # тонкая рамка карточки
+BORDER = ("#E3E3E8", "#2C2C2E")  # линии и рамки полей
+FILL = ("#E8E8ED", "#2C2C2E")  # спокойные кнопки, дорожки, подложка переключателей
+FILL_HOVER = ("#DCDCE1", "#3A3A3C")
+NAV_HOVER = ("#DDDDE2", "#252527")
+SEG_THUMB = ("#FFFFFF", "#636366")  # выбранный вариант в переключателе
+TEXT = ("#1D1D1F", "#F5F5F7")
+MUTED = ("#6E6E73", "#98989D")
+GREEN = ("#1E7B34", "#30D158")
+GREEN_FILL = ("#1E7B34", "#1E7B34")
+GREEN_HOVER = ("#19692C", "#238C3B")
+AMBER = ("#B25000", "#FF9F0A")
+AMBER_FILL = ("#B25000", "#B25000")
+RED = ("#D70015", "#FF6961")
+RED_FILL = ("#D70015", "#C9302C")
+RED_HOVER = ("#B80012", "#B12A27")
+RED_SOFT = ("#FFE5E5", "#3A1A19")  # «Остановить»: мягкая красная подложка
+RED_SOFT_HOVER = ("#FFD6D6", "#4A2120")
+RED_ON_SOFT = ("#C4000F", "#FF6961")
 
-# цвет значка для каждого вида сообщения
-KIND_COLOR = {"info": ACCENT, "question": ACCENT, "success": GREEN, "warning": AMBER, "error": RED,
-              "update": GREEN}
+# цвет значка для каждого вида сообщения (белый рисунок на круге)
+KIND_COLOR = {"info": ACCENT_FILL, "question": ACCENT_FILL, "success": GREEN_FILL, "warning": AMBER_FILL,
+              "error": RED_FILL, "update": GREEN_FILL}
+
+
+def apply_ctk_theme() -> None:
+    """Стандартные элементы customtkinter (флажки, переключатели, поля, полосы прокрутки, меню) — в цвета
+    программы. Звать после set_default_color_theme и до создания окон: элементы берут цвета при создании."""
+    theme = ctk.ThemeManager.theme
+    colors = {
+        "CTkButton": {"fg_color": ACCENT_FILL, "hover_color": ACCENT_HOVER, "border_color": BORDER,
+                      "text_color": ("#FFFFFF", "#FFFFFF"), "text_color_disabled": MUTED},
+        "CTkCheckBox": {"fg_color": ACCENT_FILL, "hover_color": ACCENT_HOVER, "border_color": ("#C7C7CC", "#636366"),
+                        "checkmark_color": ("#FFFFFF", "#FFFFFF"), "text_color": TEXT, "text_color_disabled": MUTED},
+        "CTkRadioButton": {"fg_color": ACCENT_FILL, "hover_color": ACCENT_HOVER, "border_color": ("#C7C7CC", "#636366"),
+                           "text_color": TEXT, "text_color_disabled": MUTED},
+        # выключенный: дорожка темнее FILL — белый бегунок на белой карточке иначе не видно
+        "CTkSwitch": {"fg_color": ("#C7C7CC", "#48484A"), "progress_color": ACCENT_FILL,
+                      "button_color": ("#FFFFFF", "#F5F5F7"),
+                      "button_hover_color": ("#F5F5F7", "#FFFFFF"), "text_color": TEXT, "text_color_disabled": MUTED},
+        "CTkEntry": {"fg_color": ("#FFFFFF", "#2C2C2E"), "border_color": ("#D2D2D7", "#3A3A3C"), "text_color": TEXT,
+                     "placeholder_text_color": MUTED},
+        "CTkTextbox": {"fg_color": ("#FFFFFF", "#2C2C2E"), "border_color": ("#D2D2D7", "#3A3A3C"), "text_color": TEXT,
+                       "scrollbar_button_color": ("#C7C7CC", "#48484A"),
+                       "scrollbar_button_hover_color": ("#AEAEB2", "#636366")},
+        "CTkOptionMenu": {"fg_color": FILL, "button_color": FILL_HOVER, "button_hover_color": ("#D1D1D6", "#48484A"),
+                          "text_color": TEXT, "text_color_disabled": MUTED},
+        "CTkComboBox": {"fg_color": ("#FFFFFF", "#2C2C2E"), "border_color": ("#D2D2D7", "#3A3A3C"),
+                        "button_color": ("#D2D2D7", "#3A3A3C"), "button_hover_color": ("#C7C7CC", "#48484A"),
+                        "text_color": TEXT, "text_color_disabled": MUTED},
+        "CTkProgressBar": {"fg_color": FILL, "progress_color": ACCENT_FILL, "border_color": FILL},
+        "CTkSlider": {"fg_color": FILL, "progress_color": ACCENT_FILL, "button_color": ACCENT_FILL,
+                      "button_hover_color": ACCENT_HOVER},
+        "CTkScrollbar": {"button_color": ("#C7C7CC", "#48484A"), "button_hover_color": ("#AEAEB2", "#636366")},
+        "CTkSegmentedButton": {"fg_color": FILL, "selected_color": ACCENT_FILL, "selected_hover_color": ACCENT_HOVER,
+                               "unselected_color": FILL, "unselected_hover_color": FILL_HOVER, "text_color": TEXT,
+                               "text_color_disabled": MUTED},
+        "CTkLabel": {"text_color": TEXT},
+        "DropdownMenu": {"fg_color": CARD_BG, "hover_color": ACCENT_SOFT, "text_color": TEXT},
+    }
+    for widget, values in colors.items():
+        if widget in theme:
+            theme[widget].update({key: list(value) for key, value in values.items() if key in theme[widget]})
 
 
 # ─────────────────────────── иконка программы в заголовке окна ───────────────────────────

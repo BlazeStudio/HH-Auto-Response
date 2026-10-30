@@ -16,9 +16,9 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw
 
 from . import browser_window
-from .theme import (ACCENT, ACCENT_HOVER, ACCENT_SOFT, APP_NAME, BORDER, CARD_BG, GREEN, MAIN_BG, MUTED, RED,
-                    RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon)
-from .widgets import PlainFrame, TextLabel
+from .theme import (ACCENT, ACCENT_FILL, ACCENT_HOVER, ACCENT_SOFT, APP_NAME, BORDER, CARD_BG, FILL, FILL_HOVER, GREEN,
+                    MAIN_BG, MUTED, RED_FILL, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon)
+from .widgets import PlainFrame, QuietToplevel, TextLabel
 
 if TYPE_CHECKING:
     from .gui import App
@@ -80,7 +80,7 @@ class BrowserPreview(ctk.CTkFrame):
             self.caption.configure(text=caption)
 
 
-class MiniWindow(ctk.CTkToplevel):
+class MiniWindow(QuietToplevel, ctk.CTkToplevel):
     """Мини-окно в углу экрана, поверх остальных окон. Одно на весь сеанс: создаётся заранее и только
     показывается и прячется (раньше создавалось заново при каждом «В уголок» — это и было «долго
     открывается», а обращение к уже закрытому окну роняло программу). Без рамки Windows, но со своей
@@ -143,13 +143,13 @@ class MiniWindow(ctk.CTkToplevel):
         self.progress.pack(fill="x", padx=12, pady=(8, 0))
         buttons = PlainFrame(self.card)
         buttons.pack(fill="x", padx=12, pady=(8, 10))
-        self.action = ctk.CTkButton(buttons, text="", height=28, width=128, corner_radius=8,
+        self.action = ctk.CTkButton(buttons, text="", height=28, width=128, corner_radius=14,
                                     font=ctk.CTkFont(size=12, weight="bold"), command=self._action)
         self.action.pack(side="left")
         self.browser_btn = ctk.CTkButton(buttons, text=" Браузер", image=icon("eye", 14, TEXT), compound="left",
-                                         height=28, width=96, corner_radius=8, fg_color="transparent",
-                                         border_width=1, border_color=BORDER, text_color=TEXT,
-                                         hover_color=ACCENT_SOFT, font=ctk.CTkFont(size=12),
+                                         height=28, width=96, corner_radius=14, fg_color=FILL,
+                                         border_width=0, text_color=TEXT, text_color_disabled=MUTED,
+                                         hover_color=FILL_HOVER, font=ctk.CTkFont(size=12),
                                          command=app.toggle_browser)
         self.browser_btn.pack(side="left", padx=8)
 
@@ -375,7 +375,7 @@ class MiniWindow(ctk.CTkToplevel):
         running = bool(app.running_kind)
         action = "■  Остановить" if running else "▶  Начать отклики"
         if self.action.cget("text") != action:
-            self.action.configure(text=action, fg_color=RED if running else ACCENT,
+            self.action.configure(text=action, fg_color=RED_FILL if running else ACCENT_FILL,
                                   hover_color=RED_HOVER if running else ACCENT_HOVER)
         state = "normal" if browser_window.find() else "disabled"
         if self.browser_btn.cget("state") != state:
