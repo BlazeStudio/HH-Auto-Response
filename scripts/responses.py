@@ -15,10 +15,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # пакет hh_auto лежит в папке проекта
 
 from hh_auto.app import run_login, run_responses  # noqa: E402
-from hh_auto.config import ConfigError, load_config, validate_search_source  # noqa: E402
-from hh_auto.logger import log, setup_logging  # noqa: E402
-from hh_auto.paths import app_root  # noqa: E402
-from hh_auto.runner import RunOptions, Stats  # noqa: E402
+from hh_auto.core.config import ConfigError, load_config, validate_search_source  # noqa: E402
+from hh_auto.core.logger import log, setup_logging  # noqa: E402
+from hh_auto.core.paths import app_root  # noqa: E402
+from hh_auto.hh.runner import RunOptions, Stats  # noqa: E402
 
 ROOT = app_root()  # hh-data/ в папке проекта или HH_AUTO_HOME: config.toml, логи, профиль браузера
 

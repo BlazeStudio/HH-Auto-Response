@@ -17,10 +17,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # пакет hh_auto лежит в папке проекта
 
 from hh_auto.app import run_chats  # noqa: E402
-from hh_auto.chats import ChatStats  # noqa: E402
-from hh_auto.config import ConfigError, load_config  # noqa: E402
-from hh_auto.logger import log, setup_logging  # noqa: E402
-from hh_auto.paths import app_root  # noqa: E402
+from hh_auto.hh.chats import ChatStats  # noqa: E402
+from hh_auto.core.config import ConfigError, load_config  # noqa: E402
+from hh_auto.core.logger import log, setup_logging  # noqa: E402
+from hh_auto.core.paths import app_root  # noqa: E402
 
 ROOT = app_root()  # hh-data/ в папке проекта или HH_AUTO_HOME
 
