@@ -14,7 +14,7 @@
 </div>
 <div align="center">
 
-<img src="docs/screenshots/responses.png" alt="Страница «Отклики»" width="860">
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/responses.png"><img src="docs/screenshots/responses.png" alt="Страница «Отклики»" width="860"></picture>
 
 </div>
 
@@ -83,20 +83,20 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/chats.png" alt="Чаты"><br>Чаты: отказы прочитаны, на анкету робота ответила нейросеть, живой HR оставлен вам</td>
-    <td width="50%"><img src="docs/screenshots/ai.png" alt="Проверка ИИ"><br>Проверка ИИ: пишете за работодателя и смотрите, что ответит модель. В hh ничего не уходит</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/chats.png"><img src="docs/screenshots/chats.png" alt="Чаты"></picture><br>Чаты: отказы прочитаны, на анкету робота ответила нейросеть, живой HR оставлен вам</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/ai.png"><img src="docs/screenshots/ai.png" alt="Проверка ИИ"></picture><br>Проверка ИИ: пишете за работодателя и смотрите, что ответит модель. В hh ничего не уходит</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/settings.png" alt="Настройки"><br>Настройки по вкладкам: все фильтры hh, можно заполнить одной ссылкой с сайта</td>
-    <td width="50%"><img src="docs/screenshots/journals.png" alt="Журналы"><br>Журналы: логи прошлых запусков, копирование и удаление</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/settings.png"><img src="docs/screenshots/settings.png" alt="Настройки"></picture><br>Настройки по вкладкам: все фильтры hh, можно заполнить одной ссылкой с сайта</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/journals.png"><img src="docs/screenshots/journals.png" alt="Журналы"></picture><br>Журналы: логи прошлых запусков, копирование и удаление</td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/stats.png" alt="Статистика"><br>Статистика: отклики, пропуски по причинам, отказы и ответы ИИ по дням, неделям и месяцам; графики настраиваются</td>
-    <td width="50%"><img src="docs/screenshots/mini.png" alt="Мини-окно"><br>Мини-окно в углу экрана: ход работы и превью браузера, пока вы заняты другим; «—» убирает его на панель задач</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/stats.png"><img src="docs/screenshots/stats.png" alt="Статистика"></picture><br>Статистика: отклики, пропуски по причинам, отказы и ответы ИИ по дням, неделям и месяцам; графики настраиваются, выше них — воронка откликов и навыки из вашей выдачи</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/mini.png"><img src="docs/screenshots/mini.png" alt="Мини-окно"></picture><br>Мини-окно в углу экрана: ход работы и превью браузера, пока вы заняты другим; «—» убирает его на панель задач</td>
   </tr>
 </table>
 
-<sub>На скриншотах демо-данные: резюме и компании вымышленные.</sub>
+<sub>На скриншотах демо-данные: резюме и компании вымышленные. Светлая или тёмная тема — как у вас на GitHub.</sub>
 
 ## Установка
 
@@ -178,7 +178,7 @@ python scripts/gui.py
    на что откликнулась бы, ничего не отправляя. Дальше браузер работает спрятанным за краем экрана — что
    он делает, видно в превью в меню слева, «Показать» выводит его на экран (подробнее — ниже, в «Браузер
    и мини-окно»).
-4. Если всё устраивает, нажмите «Начать отклики».
+4. Если всё устраивает, нажмите «Начать» вверху страницы «Отклики».
 
 В консоли то же самое: `python scripts/responses.py --dry-run`, потом `python scripts/responses.py --limit 1`
 для одного настоящего отклика, потом просто `python scripts/responses.py`. Чаты — `python scripts/chats.py`
@@ -676,7 +676,7 @@ PyInstaller собирает только под ту систему, на ко�
 | `scripts/` | точки входа: `gui.py` (окно), `responses.py` (отклики), `chats.py` (чаты), `watch.py` (фоновая проверка), `raise_resume.py` (поднять резюме), `ai_test.py` (песочница ИИ) |
 | `packaging/` | сборка приложения: `build.bat`, `build.sh`, `build-macos.sh`, `build-linux.sh`, настройки PyInstaller, иконки |
 | `docker/` | `Dockerfile`, `entrypoint.sh` и `docker-compose.yml` для сервера |
-| `docs/` | гайд по [Ollama на другом компьютере](docs/ollama.md), [что нового в версии](docs/release-notes.md), скриншоты |
+| `docs/` | гайд по [Ollama на другом компьютере](docs/ollama.md), [что нового в версии](docs/release-notes.md), скриншоты (светлые и `dark/`), баннер для GitHub (`social-preview.png`, тёмный — `social-preview-dark.png`) |
 | `hh-data/` | ваши данные при запуске из исходников и в Docker (в git не попадает) |
 | `config.example.toml` | все настройки с пояснениями |
 
