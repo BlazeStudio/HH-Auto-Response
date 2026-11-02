@@ -11,6 +11,7 @@
 [![python](https://img.shields.io/badge/python-3.11%2B-3776AB)](#из-исходников)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-6B7280)](LICENSE.md)
 [![changelog](https://img.shields.io/badge/changelog-6B7280)](CHANGELOG.md)
+[![Github All Releases](https://img.shields.io/github/downloads/BlazeStudio/HH-Auto-Response/total.svg?color=2563EB&labelColor=6B7280)](https://github.com/BlazeStudio/HH-Auto-Response/releases)
 </div>
 <div align="center">
 
