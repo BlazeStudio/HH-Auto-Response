@@ -6,6 +6,7 @@ import hashlib
 import random
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import Page
@@ -24,6 +25,7 @@ from .vacancy_meta import SkillStats, skip_reason
 
 
 RESCANS = 2  # сколько раз дособрать вакансии, которые hh подвинул на текущую страницу
+RECENT = 30  # сколько последних вакансий помнить для окна приложения
 AI_SKIP = "ИИ-фильтр: не подходит под ваше описание"  # одна строка в итогах; причина по каждой вакансии — в Excel
 
 
@@ -43,6 +45,14 @@ class Stats:
     already: int = 0
     dry_run: int = 0
     skipped: Counter = field(default_factory=Counter)
+    # последние обработанные вакансии — для окошка на странице «Отклики»: {id, at, title, company, url, status, note}
+    recent: list = field(default_factory=list)
+
+    def seen(self, vac: Vacancy, status: str, note: str = "") -> None:
+        """status: applied, questions, skipped, failed, dry."""
+        self.recent.append({"id": vac.id, "at": datetime.now().strftime("%H:%M"), "title": vac.title,
+                            "company": vac.company, "url": vac.url, "status": status, "note": note})
+        del self.recent[:-RECENT]
 
 
 def run(
@@ -58,9 +68,11 @@ def run(
     resume_text: str = "",
     searches: list[tuple[str, str]] | None = None,
     skills: SkillStats | None = None,
+    market=None,
 ) -> None:
     """searches — свои выдачи (подпись, ссылка) вместо выдач из настроек (так проверяются «компании мечты»);
-    skills — куда считать ключевые навыки из выдачи (советы к резюме, [stats] skill_tips)."""
+    skills — куда считать ключевые навыки из выдачи (советы к резюме, [stats] skill_tips);
+    market — куда записывать вакансии выдачи для анализа резюме (analysis.market.MarketStore)."""
     limits = cfg.limits
     max_responses = opts.limit or limits.max_responses
     log.info("")
@@ -106,32 +118,38 @@ def run(
         excluded = _find_word(vac.title, cfg.filters.exclude_title_words)
         if excluded:
             stats.skipped[f"в названии «{excluded}»"] += 1
+            stats.seen(vac, "skipped", f"в названии «{excluded}»")
             log.info(f"{tag} «{vac.title}» — в названии «{excluded}» ([filters]), пропускаю")
             return True
         company_word = _find_word(vac.company, cfg.filters.exclude_company_words)
         if company_word:
             stats.skipped[f"компания: «{company_word}»"] += 1
+            stats.seen(vac, "skipped", f"компания: «{company_word}»")
             log.info(f"{tag} «{vac.title}» — компания «{vac.company}» содержит «{company_word}» ([filters]), пропускаю")
             return True
         if cfg.filters.include_company_words and not _find_word(vac.company, cfg.filters.include_company_words):
             stats.skipped["компания не из списка ([filters] include_company_words)"] += 1
+            stats.seen(vac, "skipped", "компания не из списка")
             log.info(f"{tag} «{vac.title}» — компания «{vac.company}» не из списка include_company_words, пропускаю")
             return True
         if cfg.filters.include_words:
             where = f"{vac.title} {vac.snippet}" if cfg.filters.include_in_snippet else vac.title
             if not _find_word(where, cfg.filters.include_words):
                 stats.skipped["нет нужных слов ([filters] include_words)"] += 1
+                stats.seen(vac, "skipped", "нет нужных слов")
                 log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
                 return True
         skip = skip_reason(vac.title, vac.snippet, vac.meta, cfg)  # уровень, данные hh, вопросы при отклике
         if skip:
             stats.skipped[skip[0]] += 1
+            stats.seen(vac, "skipped", skip[1])
             log.info(f"{tag} «{vac.title}» — {skip[1]}, пропускаю")
             return True
         if limits.per_company and vac.company:
             sent = state.company_applied(vac.company, limits.per_company_days) + planned[company_key(vac.company)]
             if sent >= limits.per_company:
                 stats.skipped[f"лимит откликов в одну компанию ([limits] per_company)"] += 1
+                stats.seen(vac, "skipped", "лимит откликов в компанию")
                 log.info(f"{tag} «{vac.title}» — в «{vac.company}» уже {sent} откл. за {limits.per_company_days} дн. "
                          "([limits] per_company), пропускаю")
                 return True
@@ -139,6 +157,7 @@ def run(
             ai_reason, rejected = _ai_skip_reason(cfg, ai, vac, tag)
             if ai_reason:
                 stats.skipped[AI_SKIP if rejected else ai_reason] += 1
+                stats.seen(vac, "skipped", ai_reason)
                 log.info(f"{tag} «{vac.title}» — {ai_reason}, пропускаю")
                 if rejected and not opts.dry_run:
                     # запоминаем: в следующих запусках не спрашиваем нейросеть снова (токены и время), а в
@@ -152,6 +171,7 @@ def run(
         log.info(f"  {vac.url}")
         if opts.dry_run:
             stats.dry_run += 1
+            stats.seen(vac, "dry")
             planned[company_key(vac.company)] += 1
             log.info("  [dry-run] здесь был бы отклик")
             return True
@@ -161,6 +181,10 @@ def run(
             # для воронки на вкладке «Статистика»: из какого поиска, какое письмо, совпадение по навыкам
             results.add(vac, result, {"query": label, "letter_kind": responder.letter_kind if result.letter else "none",
                                       "match": vac.meta.match if vac.meta else None})
+            stats.seen(vac, {Status.APPLIED: "applied", Status.SKIPPED: "questions" if result.questions else "skipped"}
+                       .get(result.status, "failed"),
+                       "с письмом" if result.status is Status.APPLIED and result.letter else
+                       "лимит hh" if result.status is Status.LIMIT else result.reason)
         else:
             handled.discard(vac.id)  # hh увёз её на другую страницу — встретим там и обработаем
         if result.status is Status.APPLIED:
@@ -213,6 +237,11 @@ def run(
                 return True
             if skills is not None:
                 skills.record([v.meta for v in vacancies if v.meta])
+            if market is not None:
+                try:
+                    market.record([v.meta for v in vacancies if v.meta], label)
+                except OSError as e:  # анализ резюме не важнее откликов
+                    log.debug(f"  вакансии для анализа резюме не записались: {e}")
             can_respond = sum(v.can_respond for v in vacancies)
             done_before = sum(1 for v in vacancies if state.seen(v.id, opts.retry_skipped))
             log.success(

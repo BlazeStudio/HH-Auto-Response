@@ -201,6 +201,24 @@ def load_summary(root: Path) -> Summary:
     return ResultsBook(root).summary()
 
 
+def recent(root: Path, count: int = 10) -> list[dict]:
+    """Последние обработанные вакансии из журнала — для окна приложения, новые первыми:
+    {id, at, title, company, url, status, note}; status — applied, questions, skipped, failed."""
+    statuses = {APPLIED: "applied", QUESTIONS: "questions", SKIPPED: "skipped", FAILED: "failed"}
+    today = datetime.now().strftime("%Y-%m-%d")
+    items = []
+    for record in reversed(ResultsBook(root).records()[-count:]):
+        at = record.get("at", "")
+        category = record.get("category", "")
+        items.append({
+            "id": record.get("id", ""), "at": at[11:16] if at[:10] == today else f"{at[8:10]}.{at[5:7]}",
+            "title": record.get("title", ""), "company": record.get("company", ""), "url": record.get("url", ""),
+            "status": statuses.get(category, "failed"),
+            "note": ("с письмом" if record.get("letter") else "") if category == APPLIED else record.get("reason", ""),
+        })
+    return items
+
+
 def log_totals(summary: Summary) -> None:
     log.info(
         f"  за сегодня откликов: {summary.today.applied} (лимит hh — около {HH_DAILY_LIMIT} в сутки), "

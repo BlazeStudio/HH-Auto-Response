@@ -57,11 +57,12 @@ class Dialog(QuietToplevel, ctk.CTkToplevel):
     """Модальное окно: значок, крупная строка, текст, (прокручиваемые подробности), поле ввода, кнопки.
 
     buttons — [(подпись, значение, стиль)], стиль: primary | secondary | danger | success. Enter — первая
-    кнопка, Escape — cancel."""
+    кнопка, Escape — cancel. entry — поле в одну строку, text — многострочное (в нём Enter — новая строка)."""
 
     def __init__(self, parent, *, kind: str = "info", title: str = "", message: str = "", details: str = "",
                  buttons=(("Понятно", True, "primary"),), cancel=None, entry: str | None = None,
-                 placeholder: str = "", width: int = 470, link: tuple[str, str] | None = None):
+                 placeholder: str = "", width: int = 470, link: tuple[str, str] | None = None,
+                 text: str | None = None):
         parent = _parent(parent)
         temp = None
         if parent is None:
@@ -113,6 +114,13 @@ class Dialog(QuietToplevel, ctk.CTkToplevel):
             self.entry.pack(fill="x", pady=(16, 0))
             if entry:
                 self.entry.insert(0, entry)
+        self.textbox = None
+        if text is not None:
+            self.textbox = ctk.CTkTextbox(body, height=280, wrap="word", font=ctk.CTkFont(size=13), border_width=1,
+                                          corner_radius=10)
+            self.textbox.pack(fill="both", expand=True, pady=(16, 0))
+            if text:
+                self.textbox.insert("1.0", text)
 
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=26, pady=(22, 22))
@@ -122,8 +130,8 @@ class Dialog(QuietToplevel, ctk.CTkToplevel):
             button.pack(side="right", padx=(10 if i else 0, 0))
             self._buttons.append((button, value))
 
-        self.bind("<Return>", lambda _e: self._choose(self._buttons[0][1]))
-        self.bind("<KP_Enter>", lambda _e: self._choose(self._buttons[0][1]))
+        self.bind("<Return>", self._on_return)
+        self.bind("<KP_Enter>", self._on_return)
         self.bind("<Escape>", lambda _e: self._choose(self._cancel))
         self.protocol("WM_DELETE_WINDOW", lambda: self._choose(self._cancel))
         self._show(parent, width)
@@ -168,10 +176,19 @@ class Dialog(QuietToplevel, ctk.CTkToplevel):
             self.focus_force()
             if self.entry is not None:
                 self.entry.focus_set()
+            elif self.textbox is not None:
+                self.textbox.focus_set()
+
+    def _on_return(self, event) -> None:
+        if self.textbox is not None and event.widget == self.textbox._textbox:
+            return  # в многострочном поле Enter — новая строка
+        self._choose(self._buttons[0][1])
 
     def _choose(self, value) -> None:
         if self.entry is not None and value is not self._cancel:
             value = self.entry.get().strip() if value is True else value
+        elif self.textbox is not None and value is True:
+            value = self.textbox.get("1.0", "end").strip()
         self.result = value
         try:
             self.grab_release()
@@ -289,4 +306,11 @@ def askstring(title: str, message: str, placeholder: str = "", initial: str = ""
     """Строка от пользователя (например, ссылка hh). None — передумал."""
     result = Dialog(parent, kind="question", title=title, message=message, entry=initial, placeholder=placeholder,
                     buttons=((ok, True, "primary"), ("Отмена", None, "secondary")), cancel=None, width=560).run()
+    return result or None
+
+
+def asktext(title: str, message: str, ok: str = "Готово", parent=None) -> str | None:
+    """Многострочный текст от пользователя (например, резюме целиком). None — передумал."""
+    result = Dialog(parent, kind="question", title=title, message=message, text="",
+                    buttons=((ok, True, "primary"), ("Отмена", None, "secondary")), cancel=None, width=680).run()
     return result or None
