@@ -148,14 +148,17 @@ class SelectableText(_Light, tkinter.Text):
     """Текст, который можно выделить мышью и скопировать: Ctrl+C (в любой раскладке), правая кнопка →
     «Копировать». Для подсказок, путей и текста ошибок. Высота сама подстраивается под текст и ширину.
 
-    width_px — ширина, по которой считать перенос строк, пока виджет ещё не на экране (как wraplength)."""
+    width_px — ширина, по которой считать перенос строк, пока виджет ещё не на экране (как wraplength);
+    quick — считать её грубо, по абзацам (для десятков текстов отчёта: точная высота всё равно посчитается,
+    когда текст появится на экране, а пословный замер занимал полсекунды)."""
 
     def __init__(self, master, text: str = "", color=TEXT, size: int = 13, weight: str = "normal", bg=CARD_BG,
-                 width_px: int = 600, **kwargs):
+                 width_px: int = 600, quick: bool = False, **kwargs):
         tkinter.Text.__init__(self, master, bd=0, highlightthickness=0, relief="flat", wrap="word", height=1,
                               width=1, padx=0, pady=0, insertwidth=0, takefocus=0, cursor="xterm", **kwargs)
         self._color, self._bg, self._size, self._weight, self._width_px = color, bg, size, weight, width_px
         self._text = text
+        self._quick, self._measure = quick, None
         self._init_light()
         self.bind("<Configure>", lambda _e: self._fit())
         # ширина могла смениться, пока текст был не на экране (окно ещё не показано, страница скрыта), — тогда
@@ -174,6 +177,7 @@ class SelectableText(_Light, tkinter.Text):
         scale = self._get_widget_scaling()
         mode = self._apply_appearance_mode
         self._font = (_family(), -round(self._size * scale), self._weight)
+        self._measure = None
         tkinter.Text.configure(self, fg=mode(self._color), bg=mode(self._bg), font=self._font,
                                selectbackground=mode(ACCENT_SOFT), selectforeground=mode(TEXT),
                                inactiveselectbackground=mode(ACCENT_SOFT))
@@ -201,12 +205,22 @@ class SelectableText(_Light, tkinter.Text):
                 lines = self._estimate(self.winfo_width())
         else:
             lines = self._estimate(round(self._width_px * self._get_widget_scaling()))
-        if int(self.cget("height")) != max(lines, 1):
-            tkinter.Text.configure(self, height=max(lines, 1))
+        lines = max(lines, 1) + self._extra_lines()
+        if int(self.cget("height")) != lines:
+            tkinter.Text.configure(self, height=lines)
+
+    def _extra_lines(self) -> int:
+        return 0
 
     def _estimate(self, width: int) -> int:
         import tkinter.font as tkfont
 
+        if self._quick:
+            if self._measure is None:
+                self._measure = tkfont.Font(root=self, font=self._font)
+            # ширина абзаца целиком на ширину строки, с запасом на перенос по словам
+            return sum(max(1, -(-round(self._measure.measure(paragraph) * 1.08) // max(width, 1)))
+                       for paragraph in self._text.split("\n"))
         font = tkfont.Font(root=self, font=self._font)
         lines = 0
         for paragraph in self._text.split("\n"):
@@ -249,6 +263,118 @@ class SelectableText(_Light, tkinter.Text):
     def destroy(self):
         self._destroy_light()
         tkinter.Text.destroy(self)
+
+
+class RichText(SelectableText):
+    """Строки с колонками и цветами — таблица одним текстом: выделяется и копируется как обычный текст, столбцы
+    разделены табуляцией (при вставке в Excel расходятся по ячейкам). И рисуется в разы быстрее сетки из
+    десятков подписей.
+
+    tabs — столбцы: [(x, "left" | "right")], x — в точках или доля ширины (меньше 1); indent — отступ
+    перенесённых строк (длинный текст в последнем столбце продолжается под ним); wrap="none" — таблица
+    не переносится: в узком окне правый край просто не виден; spacing — промежуток после каждой строки (точки).
+    Шрифт у всех строк один — иначе высота, посчитанная по строкам, не совпала бы с настоящей."""
+
+    def __init__(self, master, tabs=(), indent: int = 0, wrap: str = "word", size: int = 12, bg=CARD_BG,
+                 width_px: int = 760, spacing: int = 0):
+        self._tabs, self._indent, self._tab_spec, self._spacing = list(tabs), indent, None, spacing
+        self._wrap_mode = wrap
+        self._styles: dict[str, tuple] = {}  # тег → (цвет, жирный)
+        self._link_tags: list[str] = []
+        super().__init__(master, "", size=size, bg=bg, width_px=width_px, quick=True)
+        tkinter.Text.configure(self, wrap=wrap)
+        self.bind("<Configure>", lambda _e: self._apply_tabs(), add="+")
+
+    def _restyle(self) -> None:
+        super()._restyle()
+        scale = self._get_widget_scaling()
+        for tag, (color, bold) in self._styles.items():
+            self.tag_configure(tag, foreground=self._apply_appearance_mode(color),
+                               font=(_family(), -round(self._size * scale), "bold" if bold else "normal"))
+        self.tag_configure("row", lmargin2=round(self._indent * scale), spacing3=round(self._spacing * scale))
+        self._tab_spec = None
+        self._apply_tabs()
+
+    def _extra_lines(self) -> int:
+        """Промежутки между строками — в строках (Tk считает высоту по строкам без них)."""
+        if not self._spacing or not self._text:
+            return 0
+        import tkinter.font as tkfont
+
+        rows = self._text.count("\n") + 1
+        line = tkfont.Font(root=self, font=self._font).metrics("linespace")
+        return -(-rows * round(self._spacing * self._get_widget_scaling()) // max(line, 1))
+
+    def _apply_tabs(self) -> None:
+        if not self._tabs:
+            return
+        scale = self._get_widget_scaling()
+        width = self.winfo_width() if self.winfo_ismapped() and self.winfo_width() > 20 else self._width_px * scale
+        spec, last = [], 0
+        for x, align in self._tabs:
+            px = max(round(x * width) if x < 1 else round(x * scale), last + 1)
+            spec += [px, align]
+            last = px
+        if spec != self._tab_spec:
+            self._tab_spec = spec
+            tkinter.Text.configure(self, tabs=spec)
+
+    def _style(self, color, bold: bool) -> str:
+        for tag, style in self._styles.items():
+            if style == (color, bold):
+                return tag
+        tag = f"style{len(self._styles)}"
+        self._styles[tag] = (color, bold)
+        size = -round(self._size * self._get_widget_scaling())
+        self.tag_configure(tag, foreground=self._apply_appearance_mode(color),
+                           font=(_family(), size, "bold" if bold else "normal"))
+        return tag
+
+    def set_rows(self, rows) -> None:
+        """rows — строки, строка — ячейки: текст или (текст, цвет[, жирный[, ссылка]])."""
+        tkinter.Text.configure(self, state="normal")
+        self.delete("1.0", "end")
+        for tag in self._link_tags:
+            self.tag_delete(tag)
+        self._link_tags = []
+        plain = []
+        for n, row in enumerate(rows):
+            cells = []
+            for i, cell in enumerate(row):
+                text, color, bold, link = (((cell,) if isinstance(cell, str) else tuple(cell)) + (None,) * 3)[:4]
+                text, bold = text or "", bool(bold)
+                if i:
+                    self.insert("end", "\t", "row")
+                tags = ["row"]
+                if color is not None or bold:
+                    tags.append(self._style(color if color is not None else self._color, bold))
+                if link:
+                    tag = f"link{len(self._link_tags)}"
+                    self._link_tags.append(tag)
+                    tags.append(tag)
+                    self.tag_bind(tag, "<Button-1>", lambda _e, url=link: _open_link(url))
+                    self.tag_bind(tag, "<Enter>", lambda _e: tkinter.Text.configure(self, cursor="hand2"))
+                    self.tag_bind(tag, "<Leave>", lambda _e: tkinter.Text.configure(self, cursor="xterm"))
+                self.insert("end", text, tuple(tags))
+                cells.append(text)
+            if n + 1 < len(rows):
+                self.insert("end", "\n", "row")
+            plain.append("\t".join(cells))
+        tkinter.Text.configure(self, state="disabled")
+        self._text = "\n".join(plain)
+        self._apply_tabs()
+        self._fit()
+
+    def _estimate(self, width: int) -> int:
+        if self._wrap_mode == "none":
+            return self._text.count("\n") + 1
+        return super()._estimate(width)
+
+
+def _open_link(url: str) -> None:
+    import webbrowser
+
+    webbrowser.open(url)
 
 
 @lru_cache(maxsize=None)

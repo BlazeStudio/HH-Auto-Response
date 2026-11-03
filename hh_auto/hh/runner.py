@@ -349,6 +349,8 @@ def _ai_skip_reason(cfg: Config, ai, vac: Vacancy, tag: str) -> tuple[str, bool]
 
 
 def _sleep(low: float, high: float, what: str) -> None:
-    delay = random.uniform(low, high)
+    from ..web.browser import slowdown
+
+    delay = random.uniform(low, high) * slowdown()  # после капчи — дольше
     log.info(f"  ⏸ пауза {delay:.1f} с {what}")
     control.sleep(delay)
