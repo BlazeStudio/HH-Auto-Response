@@ -551,6 +551,11 @@ def frozen(widget: tkinter.Misc, flush: bool = False):
     if hwnd in _frozen:  # уже заморожено снаружи
         yield
         return
+    # спрятанное окно и так не рисуется, а WM_SETREDRAW «рисовать» его показало бы: Windows ставит окну
+    # видимость, и в углу страницы оставался белый квадратик 1×1 (вкладка настроек, открытая до показа страницы)
+    if not user32.IsWindowVisible(hwnd):
+        yield
+        return
     _frozen.add(hwnd)
     user32.SendMessageW(hwnd, 0x000B, 0, 0)  # WM_SETREDRAW: не рисовать
     try:

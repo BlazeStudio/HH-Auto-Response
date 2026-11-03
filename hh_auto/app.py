@@ -31,6 +31,7 @@ from .reports.results import ResultsBook, log_totals
 from .core.state import State
 from .reports.stats import chats_counts, record as record_stats, responses_counts
 from .hh.vacancy_meta import SkillStats
+from .analysis.market import MarketStore
 from .hh import watch
 
 EXIT_OK, EXIT_FATAL, EXIT_STOPPED = 0, 1, 130
@@ -88,8 +89,10 @@ def _apply_work(page, cfg: Config, opts: RunOptions, root: Path, results: Result
     ai, resume_text = _form_ai(page, cfg, root)
     if cfg.stats.skill_tips and not resume_text:
         _refresh_resume(page, cfg, root)
+    tips = cfg.stats.skill_tips  # советы к резюме: навыки на «Статистике» и вакансии для «Анализа резюме»
     run(page, cfg, opts, State(root / "data" / "state.json"), results, stats, resume_title, root / "logs" / "snapshots",
-        ai, resume_text, searches=searches, skills=SkillStats(root) if cfg.stats.skill_tips else None)
+        ai, resume_text, searches=searches, skills=SkillStats(root) if tips else None,
+        market=MarketStore(root) if tips and not searches else None)
 
 
 RESUME_FRESH = timedelta(days=3)  # текст резюме для советов на вкладке «Статистика» обновляем не чаще
@@ -393,6 +396,17 @@ def _prune_logs(folder: Path, prefix: str, keep: int) -> None:
 def run_login(cfg: Config, root: Path, log_path: Path) -> int:
     """Только вход в hh: открыть браузер, дождаться входа и сохранить сессию (первый запуск на сервере)."""
     code = _with_browser(cfg, root, lambda page: log.success("Сессия сохранена — можно запускать отклики и чаты"))
+    log.info(f"подробный лог: {log_path}")
+    return code
+
+
+def run_market(cfg: Config, root: Path, log_path: Path, query: str, result: dict | None = None) -> int:
+    """«Проверить рынок» (вкладка «Анализ резюме»): общий поиск hh по query — обычно должность из резюме,
+    без фильтров и подбора под резюме — и записать всю выдачу, без откликов."""
+    from .analysis.market import scan
+
+    log_config_notes(cfg)
+    code = _with_browser(cfg, root, lambda page: scan(page, cfg, root, query, result), auto_raise=False)
     log.info(f"подробный лог: {log_path}")
     return code
 

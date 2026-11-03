@@ -6,7 +6,8 @@
 читается одним запросом к уже открытой странице — без переходов и кликов. По этим данным:
   • отбор ([quality]): предупреждения hh, «вечные» и перегруженные вакансии, низкий рейтинг;
   • уровень вакансии по названию ([filters] levels) и вопросы при отклике ([questions] skip_all);
-  • советы к резюме: какие навыки чаще всего просят в вашей выдаче (data/skills.json).
+  • советы к резюме: какие навыки чаще всего просят в вашей выдаче (data/skills.json);
+  • анализ резюме: название, зарплата, опыт, формат и требования вакансий (analysis/market.py).
 Если hh перестанет отдавать эти данные, отбор по ним просто не срабатывает — отклики идут как раньше.
 """
 
@@ -38,6 +39,9 @@ _META_JS = """() => {
     const skillLabel = labels.find((l) => /skillsPercentage/i.test(l.id || ''));
     const match = skillLabel ? /(\\d+)\\s*%/.exec(skillLabel.text || '') : null;
     const reviews = c.employerReviews || {};
+    const pay = v.compensation || {};
+    const snippet = v.snippet || {};
+    const eng = [].concat(...(v.languages || []).map((l) => l.language || [])).find((l) => l.isoCode === 'eng');
     return {
       id: String(v.vacancyId || ''),
       employer_id: c.id ? String(c.id) : '',
@@ -54,6 +58,16 @@ _META_JS = """() => {
       match: match ? parseInt(match[1], 10) : null,
       reply_fast: labels.some((l) => /reply-speed/i.test(l.id || '')),
       experience: v.workExperience || '',
+      title: v.name || '',
+      area: (v.area || {}).name || '',
+      salary_from: pay.from || null,
+      salary_to: pay.to || null,
+      currency: pay.currencyCode || '',
+      gross: !!pay.gross,
+      salary_mode: pay.mode || '',
+      formats: [].concat(...(v.workFormats || []).map((f) => f.workFormatsElement || [])),
+      english: eng ? (eng.degree || '') : '',
+      requirement: [snippet.req, snippet.resp].filter(Boolean).join(' ').replace(/<[^>]+>/g, '').slice(0, 1200),
     };
   }).filter((m) => m.id);
 }"""
@@ -76,6 +90,17 @@ class VacancyMeta:
     match: int | None = None  # «Подходит по навыкам на N%» (hh показывает не у всех вакансий)
     reply_fast: bool = False  # «Отвечает в течение дня / трёх дней»
     experience: str = ""  # noExperience, between1And3, between3And6, moreThan6
+    # для анализа резюме (analysis/market.py): что за вакансия и сколько платят
+    title: str = ""
+    area: str = ""
+    salary_from: int | None = None
+    salary_to: int | None = None
+    currency: str = ""  # RUR, USD, EUR…
+    gross: bool = False  # true — до вычета налогов
+    salary_mode: str = ""  # MONTH, HOUR, SHIFT…
+    formats: tuple[str, ...] = ()  # REMOTE, HYBRID, ON_SITE, FIELD_WORK
+    english: str = ""  # нужный уровень английского: a1…c2
+    requirement: str = ""  # требования и обязанности из карточки
 
     @classmethod
     def from_raw(cls, raw: dict) -> VacancyMeta:
@@ -86,7 +111,12 @@ class VacancyMeta:
             rating=raw.get("rating"), reviews=int(raw.get("reviews") or 0), responses=raw.get("responses"),
             created=str(raw.get("created") or ""), has_test=bool(raw.get("has_test")),
             skills=tuple(raw.get("skills") or ()), match=raw.get("match"), reply_fast=bool(raw.get("reply_fast")),
-            experience=str(raw.get("experience") or ""))
+            experience=str(raw.get("experience") or ""), title=str(raw.get("title") or ""),
+            area=str(raw.get("area") or ""), salary_from=_int(raw.get("salary_from")),
+            salary_to=_int(raw.get("salary_to")), currency=str(raw.get("currency") or ""),
+            gross=bool(raw.get("gross")), salary_mode=str(raw.get("salary_mode") or ""),
+            formats=tuple(raw.get("formats") or ()), english=str(raw.get("english") or ""),
+            requirement=str(raw.get("requirement") or ""))
 
     def age_days(self, now: datetime | None = None) -> int | None:
         try:
@@ -94,6 +124,13 @@ class VacancyMeta:
         except ValueError:
             return None
         return ((now or datetime.now()) - created).days
+
+
+def _int(value) -> int | None:
+    try:
+        return int(value) if value else None
+    except (TypeError, ValueError):
+        return None
 
 
 def read_meta(page: Page) -> dict[str, VacancyMeta]:
@@ -243,11 +280,17 @@ class SkillStats:
     def tips(self, resume_text: str, top: int = 15) -> tuple[int, int | None, list[tuple[str, float, bool]]]:
         """(сколько вакансий учтено, средний % совпадения по навыкам или None,
         [(навык, доля вакансий, есть ли в резюме)] — самые частые)."""
+        from ..analysis.skills import Vocabulary, implied
+
         data = self.load()
         total = data["vacancies"]
         resume = _norm(resume_text)
         ranked = sorted(data["skills"].values(), key=lambda pair: -pair[1])[:top]
-        rows = [(name, count / total if total else 0.0, has_skill(name, resume)) for name, count in ranked]
+        # «Английский язык» есть и у резюме с «Английский — C1», «SQL» — у резюме с PostgreSQL
+        vocab = Vocabulary(name for name, _ in ranked)
+        found = implied(vocab.find(resume_text)) if resume_text else set()
+        rows = [(name, count / total if total else 0.0, vocab.key(name) in found or has_skill(name, resume))
+                for name, count in ranked]
         match = round(data["match_sum"] / data["match_n"]) if data["match_n"] else None
         return total, match, rows
 

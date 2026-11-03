@@ -318,6 +318,19 @@ def _chart(d, image, box, w, color) -> None:  # столбики — стати�
         d.rounded_rectangle((left, y1 - size * height, left + size * 0.22, y1), radius=w * 0.45, fill=color)
 
 
+def _resume(d, image, box, w, color) -> None:  # лист резюме: фото и строки — анализ резюме
+    x0, y0, x1, y1 = box
+    size = x1 - x0
+    left, right = x0 + size * 0.1, x1 - size * 0.1
+    d.rounded_rectangle((left, y0, right, y1), radius=size * 0.12, outline=color, width=w)
+    r = size * 0.11
+    cx, cy = left + size * 0.26, y0 + size * 0.27
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
+    d.line((cx + r * 2, cy, right - size * 0.16, cy), fill=color, width=w)
+    for y in (0.56, 0.76):
+        d.line((left + size * 0.16, y0 + size * y, right - size * 0.16, y0 + size * y), fill=color, width=w)
+
+
 def _mini(d, image, box, w, color) -> None:  # окно и маленькое окошко в углу — «в уголок»
     x0, y0, x1, y1 = box
     size = x1 - x0
@@ -352,7 +365,7 @@ def _eye(d, image, box, w, color) -> None:  # глаз — «показать б
 
 
 _MENU = {"send": _send, "chat": _chat, "sparkle": _sparkle, "gear": _gear, "journal": _journal, "clock": _clock,
-         "chart": _chart, "mini": _mini, "expand": _expand, "eye": _eye, "up": _up}
+         "chart": _chart, "mini": _mini, "expand": _expand, "eye": _eye, "up": _up, "resume": _resume}
 
 
 def icon(name: str, size: int = 18, color: str | tuple[str, str] = "#FFFFFF") -> ctk.CTkImage:
