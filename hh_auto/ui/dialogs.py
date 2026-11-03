@@ -57,12 +57,12 @@ class Dialog(QuietToplevel, ctk.CTkToplevel):
     """Модальное окно: значок, крупная строка, текст, (прокручиваемые подробности), поле ввода, кнопки.
 
     buttons — [(подпись, значение, стиль)], стиль: primary | secondary | danger | success. Enter — первая
-    кнопка, Escape — cancel. entry — поле в одну строку, text — многострочное (в нём Enter — новая строка)."""
+    кнопка, Escape — cancel. entry — поле в одну строку, multiline — многострочное (в нём Enter — новая строка)."""
 
     def __init__(self, parent, *, kind: str = "info", title: str = "", message: str = "", details: str = "",
                  buttons=(("Понятно", True, "primary"),), cancel=None, entry: str | None = None,
                  placeholder: str = "", width: int = 470, link: tuple[str, str] | None = None,
-                 text: str | None = None):
+                 multiline: str | None = None):
         parent = _parent(parent)
         temp = None
         if parent is None:
@@ -115,12 +115,12 @@ class Dialog(QuietToplevel, ctk.CTkToplevel):
             if entry:
                 self.entry.insert(0, entry)
         self.textbox = None
-        if text is not None:
+        if multiline is not None:  # не «text»: так выше называется подпись ссылки (link)
             self.textbox = ctk.CTkTextbox(body, height=280, wrap="word", font=ctk.CTkFont(size=13), border_width=1,
                                           corner_radius=10)
             self.textbox.pack(fill="both", expand=True, pady=(16, 0))
-            if text:
-                self.textbox.insert("1.0", text)
+            if multiline:
+                self.textbox.insert("1.0", multiline)
 
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=26, pady=(22, 22))
@@ -311,6 +311,6 @@ def askstring(title: str, message: str, placeholder: str = "", initial: str = ""
 
 def asktext(title: str, message: str, ok: str = "Готово", parent=None) -> str | None:
     """Многострочный текст от пользователя (например, резюме целиком). None — передумал."""
-    result = Dialog(parent, kind="question", title=title, message=message, text="",
+    result = Dialog(parent, kind="question", title=title, message=message, multiline="",
                     buttons=((ok, True, "primary"), ("Отмена", None, "secondary")), cancel=None, width=680).run()
     return result or None
