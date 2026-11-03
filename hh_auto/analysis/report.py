@@ -168,6 +168,12 @@ def plural(n: int, one: str, few: str, many: str) -> str:
     return f"{n} {word}"
 
 
+def signed(value: float) -> str:
+    """Прибавка в процентах: «+12%», «−5%», «0%» (не «-0%»)."""
+    points = round(value * 100)
+    return "0%" if points == 0 else f"{points:+d}%".replace("-", "−")
+
+
 def _pct(value: float) -> str:
     return f"{value * 100:.0f}%"
 
@@ -271,8 +277,10 @@ def build(profile: ResumeProfile, vacancies: list[MarketVacancy], applied: set[s
 
     def value(name: str, current: dict[str, int]) -> float:
         # насколько навык приближает к вакансиям: прибавка к совпадению (1/размер) с весом «насколько вы
-        # к ней уже близки». Одна мелкая вакансия «Python + 1С» не перевешивает десяток Data-вакансий с ClickHouse
-        return sum(current[vid] / size[vid] ** 2 for vid in missing_in.get(name, ()))
+        # к ней уже близки». Одна мелкая вакансия «Python + 1С» не перевешивает десяток Data-вакансий с ClickHouse.
+        # Где вы уже подходите, прибавка весит вдвое меньше: навык, который открывает новые вакансии, полезнее
+        return sum(current[vid] / size[vid] ** 2 * (0.5 if current[vid] / size[vid] >= FIT else 1)
+                   for vid in missing_in.get(name, ()))
 
     def row(name: str) -> SkillRow:
         return SkillRow(name=name, kind=vocab.kind(name), count=count_near[name], share=count_near[name] / len(near),
@@ -529,7 +537,7 @@ def to_text(report: Report) -> str:
         out.append("\nНАВЫКИ РЫНКА (доля вашего рынка · зарплата · в резюме)")
         labels = {"key": "в навыках", "text": "только в опыте", "missing": "нет"}
         for r in report.market:
-            pay = f"{r.lift:+.0%}" if r.lift is not None else ""
+            pay = signed(r.lift) if r.lift is not None else ""
             extra = f"  +{r.gain} подходящих" if r.gain else ""
             out.append(f"  {r.name:<32} {_pct(r.share):>4}  {pay:>5}  {labels[r.status]}{extra}")
     if report.path:

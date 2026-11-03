@@ -581,7 +581,9 @@ class RecentCard(Card):
     def _toggle(self) -> None:
         self._collapsed = not self._collapsed
         self.app.save_prefs(recent_collapsed=self._collapsed)
-        with frozen(self.master):
+        # замораживаем общую рамку страницы и журнала: журнал поднимается на место строк, и полосу между ними
+        # Windows иначе не перерисовывала — под свёрнутой карточкой оставалась старая строка
+        with frozen(self.app.main, flush=True):
             self._apply_collapsed()
 
     def _apply_collapsed(self) -> None:
@@ -2561,7 +2563,7 @@ class MarketSkillsCard(ReportCard):
                     row=n, column=0, sticky="ew", pady=1)
                 TextLabel(body, f"{r.share * 100:.0f}%", size=12).grid(row=n, column=1, sticky="w", padx=(14, 0))
                 lift = r.lift
-                TextLabel(body, "—" if lift is None else f"{lift * 100:+.0f}%", size=12,
+                TextLabel(body, "—" if lift is None else analysis.signed(lift), size=12,
                           color=MUTED if lift is None or abs(lift) < 0.05 else GREEN if lift > 0 else RED).grid(
                     row=n, column=2, sticky="w", padx=(14, 0))
                 text, color = SKILL_STATUS[r.status]

@@ -4,7 +4,7 @@
 
 # HH-Auto-Response
 
-Автоотклики на hh.ru: письмо под вакансию, ответы на анкеты, разбор чатов с отказами
+Автоотклики на hh.ru: письмо под вакансию, ответы на анкеты, разбор чатов с отказами и анализ резюме под рынок
 
 [![version](https://img.shields.io/github/v/release/BlazeStudio/HH-Auto-Response?include_prereleases&label=version&color=2563EB)](https://github.com/BlazeStudio/HH-Auto-Response/releases/latest)
 [![platforms](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Docker-0078D6)](#установка)
@@ -27,6 +27,10 @@
 Если работодатель прикрепил анкету, её заполняет нейросеть по вашему резюме. В чатах программа читает
 отказы и отвечает «Роботу-рекрутеру», а живых людей, приглашения и всё, что касается документов и денег,
 оставляет вам.
+
+А чтобы откликов было с чем отправлять, есть анализ резюме: программа сравнивает его с открытыми вакансиями
+и подсказывает, какие навыки перенести из опыта в «Ключевые навыки», что изучить в первую очередь, хватает
+ли опыта и какие платят зарплаты.
 
 Есть приложение с окном (Windows, macOS, Linux), консольные скрипты и Docker-образ для сервера.
 
@@ -87,6 +91,10 @@
 ## Скриншоты
 
 <table>
+  <tr>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/analysis.png"><img src="docs/screenshots/analysis.png" alt="Анализ резюме"></picture><br>Анализ резюме: оценка против открытых вакансий и что сделать — по пользе, от навыков из опыта до «Обо мне»</td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/analysis-skills.png"><img src="docs/screenshots/analysis-skills.png" alt="Навыки, которые просят"></picture><br>Навыки рынка: спрос, насколько больше платят, есть ли в резюме и сколько вакансий откроет каждый</td>
+  </tr>
   <tr>
     <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/chats.png"><img src="docs/screenshots/chats.png" alt="Чаты"></picture><br>Чаты: отказы прочитаны, на анкету робота ответила нейросеть, живой HR оставлен вам</td>
     <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/ai.png"><img src="docs/screenshots/ai.png" alt="Проверка ИИ"></picture><br>Проверка ИИ: пишете за работодателя и смотрите, что ответит модель. В hh ничего не уходит</td>
@@ -473,6 +481,8 @@ SSH-туннель или по домашней сети/VPN. В настрой�
 накопленной истории откликов.
 
 ## Анализ резюме
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/analysis.png"><img src="docs/screenshots/analysis.png" alt="Вкладка «Анализ резюме»" width="860"></picture>
 
 Вкладка «Анализ резюме»: загрузите резюме — «Файл…» (PDF с hh: «Скачать» → PDF, Word или TXT), «С hh»
 (программа откроет страницу резюме) или «Вставить текст». Телефон и почта убираются сразу, резюме никуда
