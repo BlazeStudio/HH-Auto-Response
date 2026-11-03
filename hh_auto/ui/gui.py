@@ -500,6 +500,12 @@ def _mini_button(master, app: "App") -> ctk.CTkButton:
                              compound="left")
 
 
+def set_primary_enabled(button: ctk.CTkButton, enabled: bool) -> None:
+    """Главная кнопка недоступна — серая, как остальные недоступные кнопки (синяя казалась нажимаемой)."""
+    button.configure(state="normal" if enabled else "disabled", fg_color=ACCENT_FILL if enabled else FILL,
+                     text_color_disabled=MUTED)
+
+
 def set_stop_enabled(button: ctk.CTkButton, enabled: bool) -> None:
     button.configure(state="normal" if enabled else "disabled", fg_color=RED_SOFT if enabled else FILL,
                      hover_color=RED_SOFT_HOVER, text_color=RED_ON_SOFT if enabled else MUTED,
@@ -2423,8 +2429,8 @@ class Bar(PlainFrame):
 
 
 class ReportCard(Card):
-    """Карточка отчёта: заголовок (справа — свои кнопки в self.head), ниже содержимое; длинный текст
-    переносится по ширине карточки."""
+    """Карточка отчёта: заголовок (справа — свои кнопки в self.head), ниже содержимое. Длинный текст
+    переносится по ширине карточки, его можно выделить мышью и скопировать."""
 
     def __init__(self, master, title: str):
         super().__init__(master)
@@ -2434,35 +2440,23 @@ class ReportCard(Card):
         self.title.pack(side="left")
         self.body = PlainFrame(self)
         self.body.pack(fill="x", padx=16, pady=(8, 14))
-        self._wrapped: list[tuple[TextLabel, int]] = []
-        self.bind("<Configure>", lambda _e: self._wrap(), add="+")
 
     def clear(self) -> None:
         for child in self.body.winfo_children():
             child.destroy()
-        self._wrapped = []
 
-    def text(self, master, text: str, minus: int = 0, **kwargs) -> TextLabel:
-        """Подпись, которая переносится по ширине карточки (minus — сколько занято слева от неё)."""
-        label = TextLabel(master, text, width=1, **kwargs)
-        self._wrapped.append((label, minus))
-        return label
-
-    def _wrap(self) -> None:
-        scale = self._get_widget_scaling()
-        room = (self.winfo_width() - round(32 * scale)) / scale
-        if room <= 0:
-            return
-        for label, minus in self._wrapped:
-            label.resize(wraplength=max(120, round(room - minus)))
-
-    def done(self) -> None:
-        self.after_idle(self._wrap)
+    @staticmethod
+    def text(master, text: str, minus: int = 0, **kwargs) -> SelectableText:
+        """Текст по ширине карточки, который можно выделить и скопировать (minus — сколько занято слева:
+        по нему считается высота, пока карточка ещё не на экране)."""
+        return SelectableText(master, text, width_px=max(200, 820 - minus), **kwargs)
 
 
 class ScoreCard(ReportCard):
-    def __init__(self, master):
+    def __init__(self, master, page: "AnalysisPage"):
         super().__init__(master, "Оценка резюме")
+        _secondary_button(self.head, "Копировать отчёт", page.copy_report, width=160, height=28,
+                          font=ctk.CTkFont(size=12)).pack(side="right")
 
     def show(self, report: analysis.Report) -> None:
         self.clear()
@@ -2498,7 +2492,6 @@ class ScoreCard(ReportCard):
         if report.total < 100:
             summary += " Вакансий мало — выводы приблизительные: «Проверить рынок» соберёт больше."
         self.text(body, summary, color=MUTED, size=12).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-        self.done()
 
 
 class AdviceCard(ReportCard):
@@ -2522,7 +2515,6 @@ class AdviceCard(ReportCard):
             self.text(self.body, item.text, minus=80, size=13).grid(row=n, column=1, sticky="ew", pady=3)
         if not advice:
             self.text(self.body, "Серьёзных замечаний нет.", color=MUTED).grid(row=0, column=0, sticky="ew")
-        self.done()
 
     def show_ai(self, text: str, color=TEXT) -> None:
         if not self.ai_box.winfo_manager():
@@ -2578,7 +2570,6 @@ class MarketSkillsCard(ReportCard):
                             "в опыте, но его нет в «Ключевых навыках»: hh его там не видит. «Если изучить» — сколько "
                             "вакансий станут подходящими с одним этим навыком.", color=MUTED, size=12).grid(
                 row=len(rows) + 2, column=0, columnspan=5, sticky="ew", pady=(10, 0))
-        self.done()
 
 
 class PathCard(ReportCard):
@@ -2605,7 +2596,6 @@ class PathCard(ReportCard):
                         "к которым вы уже близки. Изученное добавьте в резюме, когда будет что показать.",
                   color=MUTED, size=12).grid(row=len(report.path) + 2, column=0, columnspan=3, sticky="ew",
                                              pady=(10, 0))
-        self.done()
 
 
 class YourSkillsCard(ReportCard):
@@ -2634,7 +2624,6 @@ class YourSkillsCard(ReportCard):
             self.text(body, "Доля — от всех вакансий выборки. «Почти не просят» — не значит «не нужно»: просто "
                             "по нему вас редко найдут; держите такие навыки в конце списка.", color=MUTED,
                       size=12).grid(row=half + 1, column=0, columnspan=7, sticky="ew", pady=(10, 0))
-        self.done()
 
 
 class MarketCard(ReportCard):
@@ -2684,7 +2673,6 @@ class MarketCard(ReportCard):
             self.text(body, line, size=12, color=MUTED).grid(row=row, column=0, columnspan=3, sticky="ew",
                                                              pady=(8 if line is lines[0] else 2, 0))
             row += 1
-        self.done()
 
 
 class MatchesCard(ReportCard):
@@ -2715,7 +2703,6 @@ class MatchesCard(ReportCard):
         if not report.matches:
             self.text(body, "Вакансий, где у вас больше половины навыков и хватает опыта, в выборке нет.",
                       color=MUTED, size=12).grid(row=0, column=0, columnspan=3, sticky="ew")
-        self.done()
 
 
 class ChecksCard(ReportCard):
@@ -2734,7 +2721,6 @@ class ChecksCard(ReportCard):
                                                                           padx=(0, 10), pady=2)
             TextLabel(body, check.title, size=13).grid(row=n, column=1, sticky="nw", padx=(0, 14), pady=2)
             self.text(body, check.detail, minus=230, size=12, color=MUTED).grid(row=n, column=2, sticky="ew", pady=2)
-        self.done()
 
 
 class AnalysisPage(Page):
@@ -2794,10 +2780,6 @@ class AnalysisPage(Page):
         line = PlainFrame(card)
         line.pack(fill="x", padx=16, pady=(8, 0))
         TextLabel(line, "Проверить по запросу", color=MUTED, size=13).pack(side="left", padx=(0, 8))
-        self.pages_entry = ctk.CTkEntry(line, width=46, height=28, justify="center", corner_radius=9)
-        self.pages_entry.insert(0, str(app.prefs.get("analysis_pages", 10)))
-        self.pages_entry.pack(side="right")
-        TextLabel(line, "стр.", color=MUTED, size=13).pack(side="right", padx=(8, 6))
         self.query = ctk.CTkEntry(line, height=28, corner_radius=9, placeholder_text="по должности из резюме")
         if app.prefs.get("analysis_query"):
             self.query.insert(0, app.prefs["analysis_query"])
@@ -2813,7 +2795,7 @@ class AnalysisPage(Page):
         self.placeholder = ReportCard(self.scroll, "")
         self.placeholder_text = self.placeholder.text(self.placeholder.body, "", size=13, color=MUTED)
         self.placeholder_text.pack(fill="x")
-        self.score_card = ScoreCard(self.scroll)
+        self.score_card = ScoreCard(self.scroll, self)
         self.advice_card = AdviceCard(self.scroll, self)
         self.skills_card = MarketSkillsCard(self.scroll)
         self.path_card = PathCard(self.scroll)
@@ -2910,28 +2892,24 @@ class AnalysisPage(Page):
 
     def scan(self) -> None:
         typed = self.query.get().strip()
-        try:
-            pages = max(1, min(int(self.pages_entry.get() or 10), 20))
-        except ValueError:
-            messagebox.showerror(APP_NAME, "«стр.» — число страниц выдачи, от 1 до 20")
-            return
         query = typed or self._default_query()
         if not query:
             messagebox.showinfo(APP_NAME, "Что искать?\n\nВпишите должность в «Проверить по запросу» — например, "
                                           "«python разработчик» — или загрузите резюме: тогда искать будем по нему.")
             return
-        self.app.save_prefs(analysis_query=typed, analysis_pages=pages)
+        self.app.save_prefs(analysis_query=typed)
         cfg = self.app._config_for_run(need_search_url=False)
         if cfg is None:
             return
         self.app.market_result = {}
         self.market_state.set("Проверяю рынок — откроется браузер…", ACCENT)
         self.app._start("market", "Проверка рынка", "market",
-                        lambda log_path: run_market(cfg, self.app.root_dir, log_path, query, pages,
-                                                    self.app.market_result))
+                        lambda log_path: run_market(cfg, self.app.root_dir, log_path, query, self.app.market_result))
 
     def show_progress(self, result: dict) -> None:
-        text = f"Проверяю рынок: просмотрено {result.get('seen', 0)}, новых {result.get('added', 0)}…"
+        total = f" из {result['total']}" if result.get("total") else ""
+        text = (f"Проверяю рынок: просмотрено {result.get('seen', 0)}{total}, новых {result.get('added', 0)}… "
+                "Смотрится вся выдача: в широком запросе это несколько минут")
         if self.market_state.cget("text") != text:
             self.market_state.set(text, ACCENT)
 
@@ -2957,9 +2935,8 @@ class AnalysisPage(Page):
     # ---------- отчёт ----------
 
     def set_running(self, running: bool) -> None:
-        state = "disabled" if running else "normal"
-        self.scan_btn.configure(state=state)
-        self.hh_btn.configure(state=state)
+        set_primary_enabled(self.scan_btn, not running)  # пока горит «Остановить» — проверить рынок нельзя
+        self.hh_btn.configure(state="disabled" if running else "normal")
         set_stop_enabled(self.stop_btn, running and self.app.running_kind == "market")
 
     def refresh(self) -> None:
@@ -3063,9 +3040,16 @@ class AnalysisPage(Page):
             self.placeholder.pack(fill="x", pady=(0, 12), padx=(0, 6))
             for card in keep:
                 card.pack(fill="x", pady=(0, 12), padx=(0, 6))
-            self.placeholder.done()
 
     # ---------- нейросеть ----------
+
+    def copy_report(self) -> None:
+        """Весь отчёт текстом — в заметки, письмо или чат с нейросетью."""
+        if self.report is None:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(analysis.to_text(self.report))
+        self.app.toast("Отчёт скопирован в буфер обмена")
 
     def ask_ai(self) -> None:
         report, resume = self.report, self._resume()

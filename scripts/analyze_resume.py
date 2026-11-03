@@ -33,7 +33,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("file", nargs="?", type=Path, help="резюме: PDF, DOCX или TXT (по умолчанию — сохранённое с hh)")
     p.add_argument("--scan", metavar="ЗАПРОС", nargs="?", const="",
                    help="сначала общий поиск hh: по запросу, а без него — по должности из резюме")
-    p.add_argument("--pages", type=int, default=10, help="сколько страниц выдачи пролистать (по 100 вакансий)")
     p.add_argument("--query", metavar="ВЫДАЧА", default="", help="сравнивать только с вакансиями этой выдачи")
     p.add_argument("--config", type=Path, default=ROOT / "config.toml", help="путь к config.toml")
     return p.parse_args()
@@ -70,7 +69,7 @@ def main() -> int:
             return 2
         log_path = setup_logging(ROOT / "logs", False, name="market")
         result: dict = {}
-        if run_market(cfg, ROOT, log_path, query, max(1, min(args.pages, 20)), result) != EXIT_OK:
+        if run_market(cfg, ROOT, log_path, query, result) != EXIT_OK:
             return 1
         pool = pool or result.get("label", "")
     vacancies = market.MarketStore(ROOT).vacancies(label=pool or None)

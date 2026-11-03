@@ -400,14 +400,13 @@ def run_login(cfg: Config, root: Path, log_path: Path) -> int:
     return code
 
 
-def run_market(cfg: Config, root: Path, log_path: Path, query: str, pages: int = 10,
-               result: dict | None = None) -> int:
+def run_market(cfg: Config, root: Path, log_path: Path, query: str, result: dict | None = None) -> int:
     """«Проверить рынок» (вкладка «Анализ резюме»): общий поиск hh по query — обычно должность из резюме,
-    без фильтров и подбора под резюме — и записать вакансии, без откликов."""
+    без фильтров и подбора под резюме — и записать всю выдачу, без откликов."""
     from .analysis.market import scan
 
     log_config_notes(cfg)
-    code = _with_browser(cfg, root, lambda page: scan(page, cfg, root, query, pages, result), auto_raise=False)
+    code = _with_browser(cfg, root, lambda page: scan(page, cfg, root, query, result), auto_raise=False)
     log.info(f"подробный лог: {log_path}")
     return code
 

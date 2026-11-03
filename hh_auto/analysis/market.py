@@ -4,13 +4,15 @@
 зарплату, опыт, формат работы — по каждой вакансии. Вакансии приходят двумя путями:
   • при обычных откликах — страница выдачи и так открыта, отдельно ничего не загружается;
   • «Проверить рынок» на вкладке «Анализ резюме» — общий поиск hh по должности из резюме, без фильтров и
-    подбора «подходящие к резюме»: так видно, что просят в профессии вообще. Ни на что не откликается.
+    подбора «подходящие к резюме»: так видно, что просят в профессии вообще. Смотрится вся выдача, а не
+    первые страницы. Ни на что не откликается.
 Хранится KEEP_DAYS дней и не больше LIMIT вакансий: рынок меняется, старое только мешает.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 import threading
@@ -24,11 +26,18 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from ..core import control
 from ..core.config import Config
 from ..core.logger import log
+from ..hh.filters import EXPERIENCE, WORK_FORMAT
 from ..hh.vacancy_meta import VacancyMeta, read_meta
 
 FILE = "market.json"
 KEEP_DAYS = 45
-LIMIT = 6000
+LIMIT = 15_000  # полная проверка широкого запроса («Python» — 5000+) не должна вытеснять сама себя
+HH_CAP = 2000  # больше hh по одному поиску не показывает: дальше 20-й страницы по 100 — пусто
+SCAN_LIMIT = 10_000  # больше за одну проверку не смотрим (100 страниц — минут 7)
+PER_PAGE = 100
+# Чем делить поиск, в котором больше HH_CAP: сначала опытом (он у вакансии один — части не пересекаются),
+# потом форматом работы (их бывает несколько — одна вакансия попадёт в две части, но считается один раз)
+SPLITS = (("experience", "опыт", EXPERIENCE), ("work_format", "формат", WORK_FORMAT))
 POOL_DAYS = 30  # анализ — по вакансиям, которые видели за последний месяц
 NET = 0.87  # «до вычета налогов» → на руки (НДФЛ 13%)
 _lock = threading.Lock()
@@ -212,10 +221,12 @@ def query_url(cfg: Config, text: str) -> str:
     return f"{SEARCH_PAGE}?{urlencode(query)}"
 
 
-def scan(page, cfg: Config, root: Path, query: str, pages: int = 10, result: dict | None = None) -> None:
-    """Общий поиск hh по запросу query (обычно — должность из резюме, market_query): pages страниц по 100 вакансий
-    записать для анализа. Ни на что не откликается. result: "added", "seen" — сколько новых и всего просмотрено,
-    "label" — выдача, под которой они записаны (её и стоит выбрать для сравнения)."""
+def scan(page, cfg: Config, root: Path, query: str, result: dict | None = None) -> None:
+    """Общий поиск hh по запросу query (обычно — должность из резюме, market_query): записать для анализа всю
+    выдачу. hh показывает по одному поиску не больше HH_CAP вакансий — такой поиск делится по опыту, а часть,
+    где и так больше, — ещё по формату работы. Ни на что не откликается. result: "seen" — сколько разных вакансий
+    просмотрено, "added" — из них новых, "total" — сколько нашёл hh, "label" — выдача, под которой они записаны
+    (её и стоит выбрать для сравнения)."""
     from ..hh.search import results_page_url
     from ..web.auth import is_auth_url
     from ..web.browser import FatalError, open_url, wait_captcha
@@ -228,44 +239,70 @@ def scan(page, cfg: Config, root: Path, query: str, pages: int = 10, result: dic
         raise FatalError("не задано, что искать: впишите должность в «Проверить по запросу»")
     label = f"проверка рынка: «{query}»"
     result["label"] = label
-    searches = [(label, query_url(cfg, query))]
     store = MarketStore(root)
-    log.info("")
-    log.info(f"Проверка рынка: общий поиск hh «{query}», до {pages} стр. по 100 вакансий — без фильтров и откликов")
-    for number, (label, url) in enumerate(searches, 1):
-        log.info("")
-        log.info(f"━━━━━━━━━━ {label} ━━━━━━━━━━")
-        url = _with_params(url, items_on_page="100")  # меньше страниц — меньше запросов к hh
-        seen_here, total = 0, None
-        for page_num in range(pages):
-            control.check()
-            page_url = results_page_url(url, page_num)
-            log.info(f"  страница {page_num + 1}: {page_url}")
-            open_url(page, page_url)
-            wait_captcha(page)
-            if is_auth_url(page.url):
-                raise FatalError("hh просит войти — запустите «Отклики» и войдите в открывшемся окне")
-            metas = read_meta(page)
-            if page_num == 0:
-                try:
-                    total = page.evaluate(_TOTAL_JS)
-                except Exception:  # noqa: BLE001 — сколько всего, необязательно
-                    total = None
+    seen: set[str] = set()
+    opened = 0
+
+    def open_page(url: str, page_num: int) -> tuple[dict[str, VacancyMeta], int | None]:
+        nonlocal opened
+        control.check()
+        if opened:  # пауза между страницами, как у человека
+            control.sleep(random.uniform(1.5, 3.0))
+        opened += 1
+        page_url = results_page_url(url, page_num)
+        log.debug(f"  открываю: {page_url}")
+        open_url(page, page_url)
+        wait_captcha(page)
+        if is_auth_url(page.url):
+            raise FatalError("hh просит войти — запустите «Отклики» и войдите в открывшемся окне")
+        total = None
+        if page_num == 0:
+            try:
+                total = page.evaluate(_TOTAL_JS)
+            except Exception:  # noqa: BLE001 — сколько всего, необязательно
+                pass
+        return read_meta(page), total
+
+    def save(metas: dict[str, VacancyMeta], total: int | None = None) -> int:
+        added = store.record(metas.values(), label, total)
+        seen.update(metas)
+        result["added"] += added
+        result["seen"] = len(seen)
+        return added
+
+    def walk(url: str, part: str, level: int) -> None:
+        """Одна выдача целиком; больше HH_CAP — делим её на части (SPLITS[level]) и проходим каждую."""
+        metas, total = open_page(url, 0)
+        if level == 0:
+            result["total"] = total
+            log.info(f"  hh нашёл вакансий: {total if total is not None else 'не сказал сколько'}")
+        if not metas:
+            log.info(f"  {part}: вакансий нет")
+            return
+        if total and total > HH_CAP and level < len(SPLITS):
+            key, what, values = SPLITS[level]
+            log.info(f"  {part}: {total} — больше {HH_CAP}, которые hh показывает по одному поиску; делю по «{what}»")
+            save(metas, total if level == 0 else None)  # первая страница уже открыта — её вакансии тоже в счёт
+            for value, title in values.items():
+                walk(_with_params(url, **{key: value}), f"{part} · {title.lower()}", level + 1)
+            return
+        if total and total > HH_CAP:
+            log.warning(f"  ! {part}: {total} — hh покажет только первые {HH_CAP}")
+        pages = math.ceil(min(total or len(metas), HH_CAP) / PER_PAGE)
+        added = save(metas, total if level == 0 else None)
+        for page_num in range(1, pages):
+            if len(seen) >= SCAN_LIMIT:
+                log.warning(f"  ! просмотрено {len(seen)} вакансий — на одну проверку хватит, остальное пропускаю")
+                return
+            metas, _ = open_page(url, page_num)
             if not metas:
-                log.info("  вакансий на странице нет — выдача закончилась")
                 break
-            added = store.record(metas.values(), label, total if page_num == 0 else None)
-            result["added"] += added
-            result["seen"] += len(metas)
-            seen_here += len(metas)
-            log.success(f"  ✓ вакансий: {len(metas)}, новых для анализа: {added}"
-                        + (f" (всего по запросу hh нашёл {total})" if total and page_num == 0 else ""))
-            if total is not None and seen_here >= total:
-                log.info("  это последняя страница выдачи")
-                break
-            if page_num + 1 < pages:
-                control.sleep(random.uniform(2.0, 4.0))
-        if number < len(searches):
-            control.sleep(random.uniform(2.0, 4.0))
+            added += save(metas)
+        log.success(f"  ✓ {part}: {pages} стр., новых для анализа {added} · всего просмотрено {len(seen)}")
+
     log.info("")
-    log.success(f"Проверка рынка закончена: просмотрено {result['seen']}, новых {result['added']}")
+    log.info(f"Проверка рынка: общий поиск hh «{query}» — вся выдача, без фильтров и откликов")
+    walk(_with_params(query_url(cfg, query), items_on_page=str(PER_PAGE)), f"«{query}»", 0)
+    log.info("")
+    log.success(f"Проверка рынка закончена: просмотрено {len(seen)} вакансий, новых {result['added']}"
+                + (f" (hh нашёл {result['total']})" if result.get("total") else ""))
