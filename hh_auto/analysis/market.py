@@ -3,7 +3,8 @@
 Что hh отдаёт вместе со страницей выдачи (vacancy_meta.py): название, ключевые навыки, требования,
 зарплату, опыт, формат работы — по каждой вакансии. Вакансии приходят двумя путями:
   • при обычных откликах — страница выдачи и так открыта, отдельно ничего не загружается;
-  • «Проверить рынок» на вкладке «Анализ резюме» — программа листает выдачу, ни на что не откликаясь.
+  • «Проверить рынок» на вкладке «Анализ резюме» — общий поиск hh по должности из резюме, без фильтров и
+    подбора «подходящие к резюме»: так видно, что просят в профессии вообще. Ни на что не откликается.
 Хранится KEEP_DAYS дней и не больше LIMIT вакансий: рынок меняется, старое только мешает.
 """
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import threading
 from collections import Counter
 from collections.abc import Iterable
@@ -184,9 +186,24 @@ def _with_params(url: str, **params: str) -> str:
     return urlunparse(u._replace(query=urlencode(query)))
 
 
+# уровень и «ведущий» в названии сужают поиск — рынок профессии ищем без них
+_LEVEL = re.compile(r"(?<!\w)(?:junior|middle|senior|team ?lead|lead|младший|старший|ведущий|главный|стажер|стажёр|"
+                    r"intern|trainee|head|principal|chief)(?!\w)\+?", re.I)
+
+
+def market_query(title: str) -> str:
+    """Что искать, чтобы увидеть рынок профессии: должность из резюме без уточнений в скобках, второй должности
+    через «/» и уровня. «Senior Python-разработчик (Backend, LLM / AI-агенты)» → «Python разработчик»."""
+    text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", title)
+    text = re.split(r"[/,;|•]|\s+или\s+", text)[0]
+    text = _LEVEL.sub(" ", text)
+    text = re.sub(r"(?<=\w)-(?=\w)", " ", text)  # «Python-разработчик» — hh найдёт и «Python разработчик»
+    return " ".join(text.split()).strip(" -—–:")[:80]
+
+
 def query_url(cfg: Config, text: str) -> str:
-    """Общий поиск hh по запросу — в вашем регионе (из настроек или из ссылки поиска), без остальных фильтров:
-    чтобы видеть рынок целиком, а не только то, на что вы откликаетесь."""
+    """Общий поиск hh по запросу — в вашем регионе (из настроек или из ссылки поиска), без остальных фильтров
+    и без подбора под резюме: чтобы видеть рынок целиком, а не только то, на что вы откликаетесь."""
     from ..hh.search import SEARCH_PAGE
 
     areas = [cfg.search.area] if cfg.search.area else \
@@ -195,20 +212,26 @@ def query_url(cfg: Config, text: str) -> str:
     return f"{SEARCH_PAGE}?{urlencode(query)}"
 
 
-def scan(page, cfg: Config, root: Path, query: str = "", pages: int = 5, result: dict | None = None) -> None:
-    """Пройти pages страниц выдачи — по запросу query или (пусто) по поиску из настроек — и записать вакансии.
-    Ни на что не откликается. result["added"], result["seen"] — сколько новых и всего просмотрено."""
-    from ..hh.search import results_page_url, search_urls
+def scan(page, cfg: Config, root: Path, query: str, pages: int = 10, result: dict | None = None) -> None:
+    """Общий поиск hh по запросу query (обычно — должность из резюме, market_query): pages страниц по 100 вакансий
+    записать для анализа. Ни на что не откликается. result: "added", "seen" — сколько новых и всего просмотрено,
+    "label" — выдача, под которой они записаны (её и стоит выбрать для сравнения)."""
+    from ..hh.search import results_page_url
     from ..web.auth import is_auth_url
     from ..web.browser import FatalError, open_url, wait_captcha
 
     result = result if result is not None else {}
     result.setdefault("added", 0)
     result.setdefault("seen", 0)
-    searches = [(f"проверка рынка: «{query}»", query_url(cfg, query))] if query else search_urls(cfg)
+    query = " ".join(query.split())
+    if not query:
+        raise FatalError("не задано, что искать: впишите должность в «Проверить по запросу»")
+    label = f"проверка рынка: «{query}»"
+    result["label"] = label
+    searches = [(label, query_url(cfg, query))]
     store = MarketStore(root)
     log.info("")
-    log.info(f"Проверка рынка: {len(searches)} выдач(и), до {pages} стр. в каждой — без откликов")
+    log.info(f"Проверка рынка: общий поиск hh «{query}», до {pages} стр. по 100 вакансий — без фильтров и откликов")
     for number, (label, url) in enumerate(searches, 1):
         log.info("")
         log.info(f"━━━━━━━━━━ {label} ━━━━━━━━━━")

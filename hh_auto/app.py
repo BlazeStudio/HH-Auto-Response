@@ -400,9 +400,10 @@ def run_login(cfg: Config, root: Path, log_path: Path) -> int:
     return code
 
 
-def run_market(cfg: Config, root: Path, log_path: Path, query: str = "", pages: int = 5,
+def run_market(cfg: Config, root: Path, log_path: Path, query: str, pages: int = 10,
                result: dict | None = None) -> int:
-    """«Проверить рынок» (вкладка «Анализ резюме»): пролистать выдачу и записать вакансии, без откликов."""
+    """«Проверить рынок» (вкладка «Анализ резюме»): общий поиск hh по query — обычно должность из резюме,
+    без фильтров и подбора под резюме — и записать вакансии, без откликов."""
     from .analysis.market import scan
 
     log_config_notes(cfg)

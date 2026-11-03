@@ -1,12 +1,13 @@
 """Анализ резюме в консоли — то же, что вкладка «Анализ резюме» в окне программы.
 
     python scripts/analyze_resume.py резюме.pdf                     сравнить с уже собранными вакансиями
-    python scripts/analyze_resume.py резюме.pdf --scan "python"     сначала пролистать выдачу по запросу
-    python scripts/analyze_resume.py --scan ""                      …или по поиску из config.toml
+    python scripts/analyze_resume.py резюме.pdf --scan              сначала общий поиск hh по должности из резюме
+    python scripts/analyze_resume.py резюме.pdf --scan "python"     …или по своему запросу
     python scripts/analyze_resume.py                                резюме с hh, сохранённое при откликах
 
 Резюме — PDF (на hh: «Скачать» → PDF), DOCX или TXT. Вакансии копятся при обычных откликах и при --scan
-(программа листает выдачу, ни на что не откликаясь) в data/market.json. Отчёт печатается в консоль.
+(общий поиск hh без фильтров и подбора под резюме, ни на что не откликается) в data/market.json; после --scan
+резюме сравнивается с тем, что нашёл этот поиск. Отчёт печатается в консоль.
 """
 
 from __future__ import annotations
@@ -30,9 +31,9 @@ ROOT = app_root()  # hh-data/ в папке проекта или HH_AUTO_HOME
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Сравнить резюме с вакансиями hh: навыки, опыт, зарплата, советы")
     p.add_argument("file", nargs="?", type=Path, help="резюме: PDF, DOCX или TXT (по умолчанию — сохранённое с hh)")
-    p.add_argument("--scan", metavar="ЗАПРОС",
-                   help="сначала пролистать выдачу по запросу (\"\" — по поиску из config.toml)")
-    p.add_argument("--pages", type=int, default=5, help="сколько страниц выдачи пролистать (по 100 вакансий)")
+    p.add_argument("--scan", metavar="ЗАПРОС", nargs="?", const="",
+                   help="сначала общий поиск hh: по запросу, а без него — по должности из резюме")
+    p.add_argument("--pages", type=int, default=10, help="сколько страниц выдачи пролистать (по 100 вакансий)")
     p.add_argument("--query", metavar="ВЫДАЧА", default="", help="сравнивать только с вакансиями этой выдачи")
     p.add_argument("--config", type=Path, default=ROOT / "config.toml", help="путь к config.toml")
     return p.parse_args()
@@ -55,20 +56,28 @@ def main() -> int:
         if not text:
             print("Резюме не указано: python scripts/analyze_resume.py резюме.pdf", file=sys.stderr)
             return 2
+    profile = resume.parse(text)
+    pool = args.query
     if args.scan is not None:
         try:
-            cfg = load_config(args.config, check_search_url=not args.scan)
+            cfg = load_config(args.config, check_search_url=False)
         except ConfigError as e:
             print(f"Ошибка конфигурации: {e}", file=sys.stderr)
             return 2
+        query = args.scan or market.market_query(profile.title) or next(iter(cfg.search.queries), "")
+        if not query:
+            print("Что искать? Укажите запрос: --scan \"python разработчик\"", file=sys.stderr)
+            return 2
         log_path = setup_logging(ROOT / "logs", False, name="market")
-        if run_market(cfg, ROOT, log_path, args.scan, max(1, min(args.pages, 20))) != EXIT_OK:
+        result: dict = {}
+        if run_market(cfg, ROOT, log_path, query, max(1, min(args.pages, 20)), result) != EXIT_OK:
             return 1
-    vacancies = market.MarketStore(ROOT).vacancies(label=args.query or None)
+        pool = pool or result.get("label", "")
+    vacancies = market.MarketStore(ROOT).vacancies(label=pool or None)
     applied = {r.get("id") for r in ResultsBook(ROOT).records() if r.get("category") == "applied"}
-    print(report.to_text(report.build(resume.parse(text), vacancies, applied)))
+    print(report.to_text(report.build(profile, vacancies, applied)))
     if not vacancies:
-        print("\nВакансий для сравнения нет — добавьте --scan \"запрос\" или запустите отклики.")
+        print("\nВакансий для сравнения нет — добавьте --scan (общий поиск по должности из резюме).")
     return 0
 
 

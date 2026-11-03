@@ -2795,10 +2795,10 @@ class AnalysisPage(Page):
         line.pack(fill="x", padx=16, pady=(8, 0))
         TextLabel(line, "Проверить по запросу", color=MUTED, size=13).pack(side="left", padx=(0, 8))
         self.pages_entry = ctk.CTkEntry(line, width=46, height=28, justify="center", corner_radius=9)
-        self.pages_entry.insert(0, str(app.prefs.get("analysis_pages", 5)))
+        self.pages_entry.insert(0, str(app.prefs.get("analysis_pages", 10)))
         self.pages_entry.pack(side="right")
         TextLabel(line, "стр.", color=MUTED, size=13).pack(side="right", padx=(8, 6))
-        self.query = ctk.CTkEntry(line, height=28, corner_radius=9, placeholder_text="как в настройках")
+        self.query = ctk.CTkEntry(line, height=28, corner_radius=9, placeholder_text="по должности из резюме")
         if app.prefs.get("analysis_query"):
             self.query.insert(0, app.prefs["analysis_query"])
         self.query.pack(side="left", fill="x", expand=True)
@@ -2899,15 +2899,29 @@ class AnalysisPage(Page):
 
     # ---------- вакансии ----------
 
+    def _default_query(self) -> str:
+        """Что искать, если запрос не вписан: должность из резюме («Python разработчик»), а без неё — первый
+        запрос из настроек. Общим поиском, без «подходящих к резюме»: так видно, что просят в профессии вообще."""
+        resume = self._resume()
+        title = self.report.profile.title if self.report else ""
+        if not title and resume:
+            title = analysis_resume.parse(resume["text"]).title
+        return analysis_market.market_query(title) or next(iter(self.app.cfg.search.queries), "")
+
     def scan(self) -> None:
-        query = self.query.get().strip()
+        typed = self.query.get().strip()
         try:
-            pages = max(1, min(int(self.pages_entry.get() or 5), 20))
+            pages = max(1, min(int(self.pages_entry.get() or 10), 20))
         except ValueError:
             messagebox.showerror(APP_NAME, "«стр.» — число страниц выдачи, от 1 до 20")
             return
-        self.app.save_prefs(analysis_query=query, analysis_pages=pages)
-        cfg = self.app._config_for_run(need_search_url=not query)
+        query = typed or self._default_query()
+        if not query:
+            messagebox.showinfo(APP_NAME, "Что искать?\n\nВпишите должность в «Проверить по запросу» — например, "
+                                          "«python разработчик» — или загрузите резюме: тогда искать будем по нему.")
+            return
+        self.app.save_prefs(analysis_query=typed, analysis_pages=pages)
+        cfg = self.app._config_for_run(need_search_url=False)
         if cfg is None:
             return
         self.app.market_result = {}
@@ -2922,6 +2936,9 @@ class AnalysisPage(Page):
             self.market_state.set(text, ACCENT)
 
     def on_scan_done(self, code: int) -> None:
+        label = self.app.market_result.get("label")
+        if code == EXIT_OK and label:  # сравниваем с тем, что только что собрали: это рынок профессии целиком
+            self.app.save_prefs(analysis_pool=label)
         self._shown = None
         self.refresh()
 
@@ -2958,10 +2975,12 @@ class AnalysisPage(Page):
         label = self._pools[current]
         if self.app.running_kind != "market":
             found = store.found()
-            when = (f" Проверка рынка «{label}»: hh нашёл {found[label][1]} ({found[label][0]})." if label in found
-                    else "")
-            self.market_state.set(f"Копятся при обычных откликах и при «Проверить рынок» (листает выдачу, ни на что "
-                                  f"не откликаясь). Хранятся {analysis_market.KEEP_DAYS} дней.{when}", MUTED)
+            day, total = found.get(label, ("", 0))
+            found_text = analysis.plural(total, "вакансию", "вакансии", "вакансий")
+            when = f" По этой выдаче hh нашёл {found_text} ({day})." if total else ""
+            self.market_state.set(f"«Проверить рынок» — общий поиск hh без фильтров и подбора под резюме, ни на что "
+                                  f"не откликается. Вакансии копятся и при откликах, хранятся "
+                                  f"{analysis_market.KEEP_DAYS} дней.{when}", MUTED)
         resume = self._resume()
         if resume:
             self.source.set(_short(resume.get("source", ""), 40))
@@ -3011,6 +3030,8 @@ class AnalysisPage(Page):
         if p.updated:
             facts.append(f"обновлено {p.updated:%d.%m.%Y}")
         self.resume_info.set(" · ".join(facts), TEXT)
+        query = analysis_market.market_query(p.title)
+        self.query.configure(placeholder_text=f"по должности: {query}" if query else "должность, например python")
         with frozen(self):
             if not report.total or not report.near:
                 self._show_placeholder("Не с чем сравнить", "Вакансий с навыками пока нет. Нажмите «Проверить рынок» — "
