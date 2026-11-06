@@ -26,7 +26,7 @@ const { title, lines, prompt = '$' } = Astro.props;
           <div class="term-line">
             <span class="term-prompt" aria-hidden="true">{prompt}</span>
             <code class="term-code" data-release-text>{line.cmd}</code>
-            <button type="button" class="term-copy" data-copy aria-label="Скопировать команду">
+            <button type="button" class="term-copy" data-copy="" aria-label="Скопировать команду">
               <Icon name="copy" class="is-idle size-3.5" />
               <Icon name="check" class="is-done size-3.5" />
             </button>

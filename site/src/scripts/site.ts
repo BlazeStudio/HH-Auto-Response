@@ -1,4 +1,5 @@
 import { initAnalysis } from './analysis';
+import { initFacets } from './facets';
 import { initGithub } from './github';
 import { initTabs } from './tabs';
 import { initUi } from './ui';
@@ -9,3 +10,4 @@ initUi();
 initAnalysis();
 initWindowSim();
 initGithub();
+initFacets();

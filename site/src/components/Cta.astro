@@ -24,8 +24,9 @@ const { version } = await getRepoSnapshot();
           </h2>
           <div class="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             <a class="btn btn-primary" href={assetUrl(version, 'windows')} data-download-cta data-asset="windows">
-              <Icon name="download" />
-              <span data-cta-label>Скачать для Windows</span>
+              <Icon name="download" class="is-idle size-4" />
+              <Icon name="check" class="is-done size-4" />
+              <span data-cta-label aria-live="polite">Скачать для Windows</span>
             </a>
             <a class="btn btn-ghost" href="/#install">Другие системы и Docker</a>
           </div>

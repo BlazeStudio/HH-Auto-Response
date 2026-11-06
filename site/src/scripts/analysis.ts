@@ -1,6 +1,8 @@
 // Демо в блоке «Анализ резюме»: отмечаем навыки и смотрим, как меняются оценка и число вакансий.
 // Веса оценки те же, что в приложении: навыки 45, опыт 20, название 15, оформление 20.
 
+import { tweenNumber } from './motion';
+
 const WEIGHTS = { skills: 0.45, exp: 0.2, title: 0.15, format: 0.2 };
 const BASE = { skills: 85, exp: 93, title: 100, format: 75, matched: 366, topSkills: 16 };
 // Вакансии частично пересекаются, поэтому каждый следующий навык открывает чуть меньше.
@@ -29,9 +31,9 @@ export function initAnalysis() {
       WEIGHTS.skills * skills + WEIGHTS.exp * BASE.exp + WEIGHTS.title * BASE.title + WEIGHTS.format * BASE.format,
     );
 
-    if (score) score.textContent = String(scoreValue);
-    if (matched) matched.textContent = String(total);
-    if (skillsValue) skillsValue.textContent = String(skills);
+    tweenNumber(score, scoreValue);
+    tweenNumber(matched, total);
+    tweenNumber(skillsValue, skills);
     skillsFill?.style.setProperty('--v', `${skills}%`);
     if (skillsNote) skillsNote.textContent = `${BASE.topSkills + picked.length} из 25 самых востребованных`;
 

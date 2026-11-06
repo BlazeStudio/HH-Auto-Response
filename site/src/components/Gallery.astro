@@ -19,7 +19,7 @@ const shots = [
 ];
 ---
 
-<section class="pb-[clamp(4.5rem,10vw,8rem)]">
+<section id="gallery" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
   <div class="wrap">
     <div class="reveal max-w-3xl">
       <p class="kicker">Живое приложение</p>
@@ -31,7 +31,7 @@ const shots = [
         role="tablist"
         aria-label="Снимки экрана приложения"
         aria-orientation="vertical"
-        class="no-scrollbar flex gap-1 overflow-x-auto lg:flex-col lg:gap-0.5 lg:overflow-visible"
+        class="tabs-shot no-scrollbar flex gap-1 overflow-x-auto lg:flex-col lg:gap-0.5 lg:overflow-visible"
       >
         {
           shots.map((shot, index) => (
@@ -72,7 +72,7 @@ const shots = [
             </div>
           ))
         }
-        <p class="demo-note mt-3">На снимках демо-данные: резюме и компании вымышленные.</p>
+        <p class="demo-note mt-3">Резюме и компании на снимках вымышленные.</p>
       </div>
     </div>
   </div>
