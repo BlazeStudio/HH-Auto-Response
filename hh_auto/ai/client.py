@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from ..core.config import AI_PROVIDERS, Ai
@@ -120,6 +121,10 @@ LETTER_PROMPT = """Ты пишешь сопроводительное письм
 {structure}
 - если требования вакансии шире опыта — сделай упор на смежный опыт и быстрое обучение, но опыт,
   которого нет в резюме, не приписывай;
+- название и требования вакансии — не твой опыт: технологию оттуда, которой нет в резюме и контексте, не называй
+  своей («знаю», «понимаю», «работал»); можно честно написать, что с ней не работал и готов освоить;
+- цифры и результаты — только те, что написаны в резюме и контексте, теми же словами: не пересчитывай их
+  в проценты и «в N раз», не округляй и не добавляй новых;
 - никаких контактов, ссылок, подписи с именем, заполнителей в квадратных скобках, темы письма и markdown;
 - зарплату упоминай только если о ней просят в вакансии и она есть в контексте;
 - до {max_chars} символов;
@@ -996,18 +1001,22 @@ class AiClient:
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user}]
         self.last_raw = self.complete(messages, max_tokens=900)
         text = clean_letter(self.last_raw, max_chars, signature)
-        known = f"{resume}\n{context}\n{rules}\n{title}\n{company}"
+        facts = f"{resume}\n{context}\n{rules}"  # что соискатель сам сказал о себе
 
-        def problems(letter: str) -> tuple[list[str], list[str]]:
-            return (letter_invented_tech(letter, known),
+        def problems(letter: str) -> tuple[list[str], list[str], list[str]]:
+            return (letter_invented_tech(letter, f"{facts}\n{company}", title),
+                    letter_invented_numbers(letter, facts, title, company),
                     letter_mentions(letter, title, company, hide_vacancy, hide_company, resume))
 
-        invented, mentioned = problems(text)
-        if invented or mentioned:  # выдуманный опыт или то, что просили не упоминать — переписываем
+        invented, numbers, mentioned = problems(text)
+        if invented or numbers or mentioned:  # выдуманный опыт, чужие цифры, то, что просили не упоминать — переписываем
             asks = []
             if invented:
                 asks.append(f"В резюме НЕТ {', '.join(invented)}. Не упоминай их как свой опыт — только то, что есть "
                             "в резюме.")
+            if numbers:
+                asks.append(f"В резюме НЕТ таких цифр: {', '.join(numbers)}. Не пересчитывай результаты в проценты "
+                            "и разы и не округляй: пиши цифры теми же словами, что в резюме, или совсем без цифр.")
             if mentioned:
                 asks.append(f"Соискатель просил этого не упоминать, а в письме есть: {', '.join(mentioned)}. Убери это, "
                             "пиши о задачах и своём опыте.")
@@ -1019,9 +1028,9 @@ class AiClient:
                 text = clean_letter(self.last_raw, max_chars, signature) or text
             except AiError:  # черновик уже есть: лишнее вырежем сами
                 pass
-            invented, mentioned = problems(text)
-            if invented or mentioned:  # снова — убираем такие предложения
-                text = drop_sentences_with(text, invented + mentioned)
+            # Снова — убираем такие предложения. Проверяем каждое заново, а не ищем слово: «с Python не работал»
+            # и название вакансии в кавычках остаются, хотя слово то же
+            text = drop_sentences_if(text, lambda sentence: any(problems(sentence)))
         return text
 
     def _honest_fallback(self, resume: str, context: str, vacancy: str, q: FormQuestion) -> FormAnswer | None:
@@ -1168,8 +1177,15 @@ _OFFTOPIC_OPENER = re.compile(r"^\s*(?:Меня (?:заинтересовала|
 
 
 _TECH_WORD = re.compile(r"\b[A-Za-z][A-Za-z0-9+#.\-]*[A-Za-z0-9+#]\b")
-_NO_EXPERIENCE = re.compile(r"не работал|не использовал|не было|нет (?:прямого |коммерческого )?опыта|напрямую не|"
-                            r"не применял|не доводилось|знаком на базовом|готов (?:быстро )?освоить|изуча", re.I)
+# Честная оговорка об опыте. «Не было» — только про опыт: «писал на Python сервисы, где не было простоев» — не оговорка
+_NO_EXPERIENCE = re.compile(
+    r"\bне\s+(?:\w+\s+)?(?:работал|использовал|применял|сталкивал|пробовал|приходилось|доводилось|довелось|знаком)|"
+    r"\bнезнаком|\bнапрямую не\b|\bзнаком\w* на базовом|"
+    r"\b(?:опыта|практики|дела|проектах|стеке)\b[^.!?]{0,40}?\b(?:не\s+было|нет)\b|"
+    r"\b(?:не\s+было|нет)\s+(?:\w+\s+){0,2}?(?:опыта|практики|дела|возможност\w+|задач)\b|"
+    r"\b(?:готов\w*|могу|хочу|хотел\w*(?:\s+бы)?|планирую|интересно)\s+(?:\w+\s+){0,2}?(?:освоить|осваивать|изучить|"
+    r"изучать|разобраться|научиться|учиться|перейти|погрузиться)\b|"
+    r"\b(?:освою|изучу|разберусь|научусь)\b|изуча", re.I)
 _EXPERIENCE_Q = re.compile(r"опыт|работал|использовал|владеете|знаете|уровень|сколько лет", re.I)
 # Вопрос именно про опыт с чем-то («опыт с Helm», «работали в Kubernetes») — а не «опыт работы оформлен по ТК?»
 _EXPERIENCE_WITH = re.compile(r"опыт\w*\s+(?:работы\s+)?(?:с|со|в)\s|работал\w*\s+(?:с|со|в)\s|использовал|владеете|"
@@ -1493,26 +1509,256 @@ def letter_mentions(text: str, title: str, company: str, hide_vacancy: bool, hid
     return list(dict.fromkeys(found))
 
 
-def letter_invented_tech(text: str, known: str) -> list[str]:
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+# Оговорка «не работал» относится к своей части предложения: «с Kafka не работал, но ускорил обработку в 10 раз»,
+# «хорошо понимаю Python и готов освоить Kafka», «готов освоить Kafka, так как знаю Python»
+_CLAUSE = re.compile(r"(?:,\s*|\s+)(?:но|однако|зато)\s+|;\s*|"
+                     r",\s*(?:хотя|где|ведь|поскольку|потому что|так как|а(?!\s+также\b))\s+|"
+                     r"(?:,\s*|\s+и\s+)(?=(?:быстро\s+)?(?:готов|могу|хочу|планирую|освою|изучу|изучаю|разберусь|"
+                     r"научусь|не\s))", re.I)
+# Вакансия названа: «на вакансию Python-разработчика», «на позицию…». «На позиции Python-разработчика работал» — это
+# уже о себе, поэтому «на позиции» и «занимал должность» не считаются
+_VACANCY_INTRO = (r"\bваканси\w*|\bна\s+(?:позицию|должность|роль)\b|\bпозиция\b|"
+                  r"\b(?:ваш|эт|данн)\w+\s+(?:позици|должност|рол)\w*")
+# Слова из названия вакансии, которые говорят о должности, а не о технологии
+_ROLE_WORDS = {"backend", "frontend", "fullstack", "developer", "engineer", "programmer", "software", "manager",
+               "analyst", "lead"}
+
+
+def _name_stems(text: str) -> list[str]:
+    """Слова названия для сравнения: латиница как есть, русские — по началу («разработчика» = «разработчик»)."""
+    words = re.findall(r"[^\W_][\w+#.]*[\w+#]|[^\W_]", text.lower())
+    return [w if w.isascii() else w[:5] for w in words if w not in ("на", "по")]
+
+
+def _without_names(text: str, title: str, company: str = "") -> str:
+    """Письмо без названий вакансии и компании там, где письмо их называет. Название вакансии — только в кавычках
+    или сразу после «вакансия», «на позицию»: без них «работаю Python-разработчиком» — уже рассказ о своём опыте."""
+    name = _company_regex(company) if company else None
+    if name is not None:
+        text = name.sub(" ", text)
+    stems = set(_name_stems(title))
+    if not stems:
+        return text
+
+    def unquote(match: re.Match) -> str:
+        found = _name_stems(match.group(1))
+        # одно слово в кавычках — не название, если в названии их несколько: «Python» при «Backend-разработчик (Python)»
+        return " " if found and set(found) <= stems and (len(found) > 1 or len(stems) == 1) else match.group(0)
+
+    text = _QUOTED.sub(unquote, text)
+    words = "|".join(re.escape(s) + (r"(?:['’]?[а-яё]{1,3})?" if s.isascii() else r"[а-яё]*")
+                     for s in sorted(stems, key=len, reverse=True))
+    return re.sub(rf"({_VACANCY_INTRO})(?:[\s()«»\"„“”\-–—]+(?:{words}|на|по)(?!\w))+", r"\1 ", text, flags=re.I)
+
+
+def _letter_parts(text: str, title: str = "", company: str = "") -> Iterator[tuple[str, bool]]:
+    """Части письма, где соискатель говорит о себе: (текст части, есть ли в ней честная оговорка)."""
+    for sentence in _SENTENCE.split(_without_names(text, title, company)):
+        for part in _CLAUSE.split(sentence):
+            yield part, bool(_NO_EXPERIENCE.search(part))
+
+
+def letter_invented_tech(text: str, known: str, title: str = "") -> list[str]:
     """Технологии (латиницей) в письме, которых нет ни в резюме, ни в контексте, — если о них не сказано
-    честно («не работал», «готов освоить»)."""
-    known = known.lower()
+    честно («не работал», «готов освоить»). title — название вакансии: само по себе оно не факт о соискателе.
+    «Вакансия «Backend-разработчик (Python)»» проходит, «хорошо понимаю Python» при резюме на Go — нет."""
+    roles = [w for w in _TECH_WORD.findall(title) if w.lower() in _ROLE_WORDS]
+    known = "\n".join([known, *roles]).lower()
     found = []
-    for sentence in re.split(r"(?<=[.!?])\s+", text):
-        if _NO_EXPERIENCE.search(sentence):
+    for part, honest in _letter_parts(text, title):
+        if honest:
             continue
-        for word in _TECH_WORD.findall(sentence):
-            if len(word) > 1 and word not in found and not re.search(
-                    rf"(?<![a-z0-9]){re.escape(word.lower())}(?![a-z0-9])", known):
+        for word in _TECH_WORD.findall(part):
+            # по частям: «Python-Backend» — не выдумка, если в резюме есть и Python, и Backend
+            if len(word) > 1 and word not in found and not all(
+                    re.search(rf"(?<![a-z0-9]){re.escape(piece)}(?![a-z0-9])", known) for piece in word.lower().split("-")):
                 found.append(word)
     return found
 
 
+# ─────────── цифры в письме: сверяем с тем, что соискатель сам сказал о себе ───────────
+# «Двух часов» в резюме и «в два раза» в письме — одно и то же число, но разные утверждения. Поэтому сверяем вид:
+# кратность и проценты — только с кратностью и процентами, срок — только с тем же сроком (2 часа ≠ 2 минуты),
+# прочие числа — по значению. Пересчитанное («в 8 раз» из «с двух часов до 15 минут») тоже считается выдумкой: модели
+# плохо считают, а работодатель прочитает это как факт.
+
+_NUMERALS = {word: value for value, words in {
+    1: "один одна одно одного одной одному одним одну", 1.5: "полтора полторы полутора",
+    2: "два две двух двум двумя двое", 3: "три трёх трех трём трем тремя трое",
+    4: "четыре четырёх четырех четырём четырем четырьмя четверо", 5: "пять пяти пятью пятеро",
+    6: "шесть шести шестью шестеро", 7: "семь семи семеро", 8: "восемь восьми восемью", 9: "девять девяти девятью",
+    10: "десять десяти десятью", 11: "одиннадцать одиннадцати", 12: "двенадцать двенадцати",
+    13: "тринадцать тринадцати", 14: "четырнадцать четырнадцати", 15: "пятнадцать пятнадцати",
+    16: "шестнадцать шестнадцати", 17: "семнадцать семнадцати", 18: "восемнадцать восемнадцати",
+    19: "девятнадцать девятнадцати", 20: "двадцать двадцати", 30: "тридцать тридцати", 40: "сорок сорока",
+    50: "пятьдесят пятидесяти", 60: "шестьдесят шестидесяти", 70: "семьдесят семидесяти",
+    80: "восемьдесят восьмидесяти", 90: "девяносто девяноста", 100: "сто ста",
+}.items() for word in words.split()}
+_NUMERAL = "|".join(sorted(_NUMERALS, key=len, reverse=True))
+_NOT_IN_NAME = r"(?<![\w.,/:])(?<![^\W\d_]-)"  # цифра внутри имени — не число: Web-3, ISO-27001, HTTP/2
+_QUANTITY = re.compile(
+    rf"{_NOT_IN_NAME}(?P<literal>\d+(?:[/:]\d+)+|\d+(?:\.\d+){{2,}})(?![\w/:])|"  # 24/7, 12:30, 01.02.2021, 1.2.3
+    rf"{_NOT_IN_NAME}(?P<digits>\d{{1,3}}(?:[   ]\d{{3}})+(?!\d)|\d+(?:[.,]\d+)?)|"  # 150 000, 2,5, 15
+    rf"(?<!\w)[xх×](?P<fold>\d+)(?!\w)|"  # x10
+    rf"(?<!\w)(?P<words>(?:{_NUMERAL})(?:\s+(?:{_NUMERAL}))*)(?!\w)",  # двадцать пять
+    re.I)
+_HALF = re.compile(r"\s+с\s+половиной", re.I)
+_NUMERAL_ENDING = re.compile(r"(?:-(?:х|ух|ёх|ех|и|ти|мя|ми)|х(?=\s+[а-яё]))(?!\w)", re.I)  # 3-х, 5-ти, 2х часов
+# Срок одним словом: «пятилетний опыт», «двухчасовой»
+_NUMERAL_ADJECTIVE = re.compile(rf"(?<!\w)({_NUMERAL})(летн|месячн|недельн|дневн|часов|минутн|секундн)\w*", re.I)
+_ADJECTIVE_UNITS = {"летн": "year", "месячн": "month", "недельн": "week", "дневн": "day", "часов": "hour",
+                    "минутн": "minute", "секундн": "second"}
+_SCALE = re.compile(r"(?:\s*(?:(?P<k>тыс(?:яч\w*|\.)?)|(?P<m>млн\.?|миллион\w*)|(?P<g>млрд\.?|миллиард\w*))|(?P<kk>[кk]))"
+                    r"(?!\w)", re.I)
+_UNIT = re.compile(
+    r"\+?(?:\s*|-)(?:(?P<percent>%|процент\w*)|"
+    r"(?P<times>[xх×](?!\w)|кратн\w*|раз(?:а|ов)?\b"  # «2 раза в неделю» — не кратность, а обычное число
+    r"(?!\s+в\s+(?:день|сутки|час|минуту|неделю|месяц|квартал|год|смену|спринт)))|"
+    r"(?P<year>лет\b|летн\w*|год(?:а|у|ы|ов|ом|ах|ами)?\b|гг?\b\.?)|"
+    r"(?P<month>месяц\w*|месячн\w*|мес\b\.?)|"
+    r"(?P<week>недел\w*|нед\b\.?)|"
+    r"(?P<day>день\b|дн(?:я|ей|и|ях|ям|ём)\b|дневн\w*|сут(?:ки|ок|очн\w*)?\b\.?)|"
+    r"(?P<hour>час(?:а|у|ы|ов|ах|ам|ом)?\b|часов\w*|ч\b\.?)|"
+    r"(?P<minute>минут\w*|мин\b\.?)|"
+    r"(?P<second>секунд\w*|сек\b\.?)|"
+    r"(?P<ms>миллисекунд\w*|мс\b))", re.I)
+_TIME_UNITS = ("year", "month", "week", "day", "hour", "minute", "second", "ms")
+_RANGE_LINK = re.compile(r"\s*(?:[-–—]|до|по|или|и)\s*", re.I)  # 2-3 года, с 5 до 7 лет
+# Кратность и доли, которые записаны без отдельного числа
+_RESULT_PHRASES = [(re.compile(rf"(?<!\w)(?:{pattern})(?!\w)", re.I), key) for pattern, key in (
+    (r"вдвое|вдвойне|двукратн\w*|двухкратн\w*", ("times", 2)),
+    (r"втрое|втройне|тр[её]хкратн\w*", ("times", 3)),
+    (r"вчетверо|четыр[её]хкратн\w*", ("times", 4)),
+    (r"впятеро|пятикратн\w*", ("times", 5)),
+    (r"вшестеро|шестикратн\w*", ("times", 6)),
+    (r"всемеро|семикратн\w*", ("times", 7)),
+    (r"ввосьмеро|восьмикратн\w*", ("times", 8)),
+    (r"вдевятеро|девятикратн\w*", ("times", 9)),
+    (r"вдесятеро|десятикратн\w*|на\s+порядок", ("times", 10)),
+    (r"в\s+разы|в\s+(?:несколько|десятки|сотни|тысячи)\s+раз|многократн\w*|кратн(?:о|ый|ого|ое|ая|ые|ых)|"
+     r"на\s+порядки|на\s+(?:несколько|пару)\s+порядков", ("times", "много")),
+    (r"наполовину|вполовину|на\s+половину", ("percent", 50)),
+    (r"на\s+треть", ("percent", 33)),
+    (r"на\s+четверть", ("percent", 25)),
+    (r"на\s+две\s+трети", ("percent", 66)),
+    (r"на\s+три\s+четверти", ("percent", 75)),
+    (r"полгода|полугода", ("unit", 0.5, "year")),
+    (r"полчаса|получаса", ("unit", 0.5, "hour")),
+)]
+# Порядок без числа: «тысячи запросов», «сотни сервисов»
+_MAGNITUDE = re.compile(r"(?<!\w)(?:десятк\w*|сотн\w*|сотен|тысяч\w*|миллион\w*|миллиард\w*)(?!\w)", re.I)
+_LIST_MARK = re.compile(r"^\s*\d{1,2}[.)](?:\s+|$)", re.M)  # нумерованный список — не утверждение о цифре
+
+
+@dataclass
+class _Quantity:
+    value: float | str
+    start: int
+    end: int
+    unit: str = ""
+    scale: float = 1
+    bare_one: bool = False  # «один» словом: чаще это «один из сервисов», а не число
+
+
+def _quantities(text: str) -> list[_Quantity]:
+    """Числа в тексте с единицами. Цифры, приклеенные к имени (1С, 3D, 5G, 152-ФЗ, 1-й), числом не считаем."""
+    found = []
+    for match in _QUANTITY.finditer(text):
+        if match.group("literal"):
+            found.append(_Quantity(match.group("literal"), match.start(), match.end()))
+            continue
+        if match.group("fold"):
+            found.append(_Quantity(float(match.group("fold")), match.start(), match.end(), "times"))
+            continue
+        if match.group("digits"):
+            value = float(re.sub(r"\s", "", match.group("digits")).replace(",", "."))
+        else:
+            words = match.group("words").lower().split()
+            value = float(sum(_NUMERALS[w] for w in words))
+        pos = match.end()
+        half = _HALF.match(text, pos)
+        if half:
+            value, pos = value + 0.5, half.end()
+        ending = _NUMERAL_ENDING.match(text, pos)
+        pos = ending.end() if ending else pos
+        scale = 1.0
+        scaled = _SCALE.match(text, pos)
+        if scaled:
+            scale = 1e6 if scaled.group("m") else 1e9 if scaled.group("g") else 1e3
+            pos = scaled.end()
+        unit = _UNIT.match(text, pos)
+        name = unit.lastgroup if unit else ""
+        if not unit and match.group("digits") and re.match(r"-?[^\W\d_]", text[pos:pos + 2]):
+            continue
+        found.append(_Quantity(value * scale, match.start(), unit.end() if unit else pos, name or "", scale,
+                               bare_one=value == 1 and not match.group("digits")))
+    return found
+
+
+def _number_claims(text: str) -> list[tuple[tuple, str]]:
+    """Что текст утверждает цифрами: (вид и значение, как это написано в тексте)."""
+    claims: list[tuple[tuple, str]] = []
+
+    def take(match: re.Match, key: tuple) -> str:  # запомнить и вычеркнуть: в «в десятки раз» уже не ищем «десятки»
+        claims.append((key, match.group(0)))
+        return " " * len(match.group(0))
+
+    for pattern, key in _RESULT_PHRASES:
+        text = pattern.sub(lambda m: take(m, key), text)
+    text = _NUMERAL_ADJECTIVE.sub(lambda m: take(m, ("unit", float(_NUMERALS[m.group(1).lower()]),
+                                                     _ADJECTIVE_UNITS[m.group(2).lower()])), text)
+    quantities = _quantities(text)
+    # Единица и «тысяч» одни на весь диапазон: «2-3 года», «от 150 до 200 тысяч»
+    for left, right in zip(quantities[-2::-1], quantities[:0:-1]):
+        if not left.unit and isinstance(left.value, float) and _RANGE_LINK.fullmatch(text, left.end, right.start):
+            left.unit, left.scale, left.value = right.unit, right.scale, left.value * right.scale
+    for q in quantities:
+        value = round(q.value, 3) if isinstance(q.value, float) else q.value
+        if (q.bare_one and q.unit not in _TIME_UNITS) or (value == 1 and q.unit == "times"):
+            continue  # «один из сервисов», «один раз» — не цифры
+        if q.unit in ("percent", "times"):
+            key = (q.unit, value)
+        elif q.unit and not (q.unit == "year" and isinstance(value, float) and 1900 <= value <= 2100):
+            key = ("unit", value, q.unit)
+        else:  # «с 2021 года» — дата, в резюме она может быть без слова «год»
+            key = ("plain", value)
+        # Как написано в письме, с соседним словом: модели понятнее «в 10 раз» и «7 сервисов», чем «10» и «7»
+        before = re.search(r"(?<!\w)(?:в|на|до)\s+$", text[max(0, q.start - 5):q.start])
+        after = None if q.unit else re.match(r"\s+\w+", text[q.end:])
+        claims.append((key, (before.group(0) if before else "") + text[q.start:q.end] + (after.group(0) if after else "")))
+    for match in _MAGNITUDE.finditer(text):
+        if not any(q.start <= match.start() < q.end for q in quantities):
+            word = match.group(0).lower()
+            claims.append((("plain", word[:6] if word.startswith("мил") else word[:3]), match.group(0)))
+    return claims
+
+
+def letter_invented_numbers(text: str, known: str, title: str = "", company: str = "") -> list[str]:
+    """Цифры в письме, которых нет в известном о соискателе (резюме, контекст, свой промпт) — как они написаны в письме.
+    Требования из вакансии сюда не входят: «от 2 лет» оттуда — не стаж соискателя. Цифры из названий вакансии и компании,
+    когда письмо их называет, не проверяем. После оговорки («опыта от 2 лет нет») обычные числа — не утверждение
+    о себе, а кратность и проценты проверяем всегда: «с Kafka не работал, но ускорил в 10 раз»."""
+    facts = {key for key, _ in _number_claims(known)}
+    found: list[str] = []
+    for part, honest in _letter_parts(_LIST_MARK.sub("", text), title, company):
+        for key, label in _number_claims(part):
+            if honest and key[0] not in ("times", "percent"):
+                continue
+            allowed = key in facts or (key[0] == "plain" and any(f[0] == "unit" and f[1] == key[1] for f in facts))
+            if not allowed and label not in found:
+                found.append(label)
+    return found
+
+
+def drop_sentences_if(text: str, bad: Callable[[str], bool]) -> str:
+    """Убирает из письма предложения, для которых bad(предложение) истинно (абзацы сохраняются)."""
+    paragraphs = [" ".join(s for s in re.split(r"(?<=[.!?])\s+", paragraph) if not bad(s))
+                  for paragraph in text.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(paragraphs)).strip()
+
+
 def drop_sentences_with(text: str, words: list[str]) -> str:
     """Убирает из письма предложения, где упомянуты эти слова (абзацы сохраняются)."""
-    paragraphs = []
-    for paragraph in text.split("\n"):
-        kept = [s for s in re.split(r"(?<=[.!?])\s+", paragraph)
-                if not any(re.search(rf"(?<![A-Za-z0-9]){re.escape(w)}(?![A-Za-z0-9])", s) for w in words)]
-        paragraphs.append(" ".join(kept))
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(paragraphs)).strip()
+    return drop_sentences_if(text, lambda sentence: any(
+        re.search(rf"(?<![A-Za-z0-9]){re.escape(w)}(?![A-Za-z0-9])", sentence) for w in words))
