@@ -1,5 +1,6 @@
 ---
 import Icon from './Icon.astro';
+import { sitePath } from '../config';
 
 const tree = [
   { path: 'HH-Auto-Response/', note: 'папка данных на вашем диске', depth: 0 },
@@ -102,7 +103,7 @@ const pace = [
           </p>
         </div>
       </div>
-      <a href="/safety" class="btn btn-ghost btn-sm w-fit">
+      <a href={sitePath('/safety')} class="btn btn-ghost btn-sm w-fit">
         Куда уходят данные и что с правилами
         <Icon name="arrow" />
       </a>

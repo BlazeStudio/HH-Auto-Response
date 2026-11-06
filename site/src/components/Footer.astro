@@ -1,7 +1,7 @@
 ---
 import ContactTile from './ContactTile.astro';
 import Icon from './Icon.astro';
-import { contacts, links } from '../config';
+import { contacts, links, sitePath } from '../config';
 
 interface Props {
   /** На странице контактов этот блок повторял бы её саму */
@@ -15,11 +15,11 @@ const columns = [
   {
     title: 'Сайт',
     items: [
-      { label: 'Возможности', href: '/#features' },
-      { label: 'Анализ резюме', href: '/#analysis' },
-      { label: 'Установка', href: '/#install' },
-      { label: 'Безопасность', href: '/safety' },
-      { label: 'Контакты', href: '/contacts' },
+      { label: 'Возможности', href: sitePath('/#features') },
+      { label: 'Анализ резюме', href: sitePath('/#analysis') },
+      { label: 'Установка', href: sitePath('/#install') },
+      { label: 'Безопасность', href: sitePath('/safety') },
+      { label: 'Контакты', href: sitePath('/contacts') },
     ],
   },
   {
@@ -45,7 +45,7 @@ const columns = [
             <h2 class="h2 text-[clamp(1.75rem,3vw,2.5rem)]!">
               Есть вопрос или идея? <span class="dim">Пишите мне напрямую.</span>
             </h2>
-            <a href="/contacts" class="link mt-5 inline-flex items-center gap-1.5 text-[0.9375rem]">
+            <a href={sitePath('/contacts')} class="link mt-5 inline-flex items-center gap-1.5 text-[0.9375rem]">
               Все контакты и лицензия <Icon name="arrow" class="size-3.5" />
             </a>
           </div>
@@ -63,8 +63,8 @@ const columns = [
 
   <div class="wrap grid gap-12 py-14 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.4fr)]">
     <div class="max-w-sm">
-      <a href="/" class="inline-flex items-center gap-2.5 rounded-lg">
-        <img src="/logo.png" width="28" height="28" alt="" class="size-7 rounded-lg" loading="lazy" />
+      <a href={sitePath('/')} class="inline-flex items-center gap-2.5 rounded-lg">
+        <img src={sitePath('/logo.png')} width="28" height="28" alt="" class="size-7 rounded-lg" loading="lazy" />
         <span class="font-semibold tracking-tight">HH Auto</span>
       </a>
       <p class="body-sm mt-4">

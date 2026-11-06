@@ -1,6 +1,6 @@
 ---
 import Icon from './Icon.astro';
-import { links } from '../config';
+import { links, sitePath } from '../config';
 ---
 
 <section id="faq" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
@@ -10,7 +10,7 @@ import { links } from '../config';
       <h2 class="h2">Что обычно спрашивают</h2>
       <p class="body-sm mt-4 max-w-xs">
         Не нашли ответ? Загляните в <a class="link" href={links.readme}>подробную инструкцию</a> или
-        <a class="link" href="/contacts">напишите мне</a>.
+        <a class="link" href={sitePath('/contacts')}>напишите мне</a>.
       </p>
     </div>
 
@@ -30,7 +30,7 @@ import { links } from '../config';
         <p class="faq-answer">
           Такой риск есть. Программа держит человеческий темп и останавливается на лимитах, но соглашение hh.ru может
           ограничивать автоматизацию. В худшем случае аккаунт ограничат или заблокируют. Не ставьте слишком маленькие паузы
-          и откликайтесь только на подходящее. <a class="link" href="/safety">Подробнее о правилах</a>.
+          и откликайтесь только на подходящее. <a class="link" href={sitePath('/safety')}>Подробнее о правилах</a>.
         </p>
       </details>
 

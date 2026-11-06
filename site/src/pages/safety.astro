@@ -1,7 +1,7 @@
 ---
 import Base from '../layouts/Base.astro';
 import Icon from '../components/Icon.astro';
-import { links } from '../config';
+import { links, sitePath } from '../config';
 
 const destinations = [
   { to: 'hh.ru', when: 'во время работы', what: 'Ваши отклики, письма и ответы. Всё идёт из браузера под вашим входом, как если бы вы нажимали сами.' },
@@ -148,7 +148,7 @@ const legal = [
       </p>
       <div class="mt-6 flex flex-wrap gap-3">
         <a class="btn btn-ghost btn-sm" href={links.repo}><Icon name="github" /> Проверить в исходниках</a>
-        <a class="btn btn-ghost btn-sm" href="/contacts">Задать вопрос</a>
+        <a class="btn btn-ghost btn-sm" href={sitePath('/contacts')}>Задать вопрос</a>
       </div>
     </section>
   </div>

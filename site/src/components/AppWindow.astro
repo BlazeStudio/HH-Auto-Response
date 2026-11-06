@@ -1,5 +1,6 @@
 ---
 import Icon from './Icon.astro';
+import { sitePath } from '../config';
 import { getRepoSnapshot } from '../lib/github';
 
 const { version } = await getRepoSnapshot();
@@ -48,7 +49,7 @@ const resumeBars = [
   <div class="appwin" data-sim>
     <div class="flex items-center justify-between gap-3 border-b border-line px-4 py-2.5">
       <div class="flex min-w-0 items-center gap-2.5">
-        <img src="/logo.png" width="20" height="20" alt="" class="size-5 rounded-md" />
+        <img src={sitePath('/logo.png')} width="20" height="20" alt="" class="size-5 rounded-md" />
         <span class="truncate text-[0.8125rem] font-medium">HH-Auto-Response</span>
         <span class="hidden font-mono text-xs text-fg-3 sm:inline" data-version>{version}</span>
       </div>

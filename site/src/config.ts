@@ -26,11 +26,15 @@ export const contacts = {
   github: { label: 'BlazeStudio', url: 'https://github.com/BlazeStudio' },
 };
 
+// На GitHub Pages сайт лежит в подпапке, поэтому все внутренние ссылки и файлы из public/ идут через эту функцию.
+const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
+export const sitePath = (target: string) => `${basePath}${target}`;
+
 export const nav = [
-  { label: 'Возможности', href: '/#features' },
-  { label: 'Установка', href: '/#install' },
-  { label: 'Анализ резюме', href: '/#analysis' },
-  { label: 'FAQ', href: '/#faq' },
+  { label: 'Возможности', href: sitePath('/#features') },
+  { label: 'Установка', href: sitePath('/#install') },
+  { label: 'Анализ резюме', href: sitePath('/#analysis') },
+  { label: 'FAQ', href: sitePath('/#faq') },
 ];
 
 // Версия на случай, если GitHub API недоступен при сборке.
