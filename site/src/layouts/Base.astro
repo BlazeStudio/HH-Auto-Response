@@ -5,7 +5,7 @@ import '../styles/global.css';
 import onestCyrillic from '@fontsource-variable/onest/files/onest-cyrillic-wght-normal.woff2?url';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
-import { contacts, links } from '../config';
+import { contacts, links, sitePath } from '../config';
 import { getRepoSnapshot } from '../lib/github';
 
 interface Props {
@@ -18,9 +18,25 @@ interface Props {
 const { title, description, noindex = false, showFooterContact = true } = Astro.props;
 const { version } = await getRepoSnapshot();
 
-const site = Astro.site ?? new URL('https://hh-auto-response.vercel.app');
+const site = Astro.site!;
+const home = new URL(sitePath('/'), site);
 const canonical = new URL(Astro.url.pathname.replace(/(index)?(\.html)?$/, ''), site);
-const ogImage = new URL('/og.png', site);
+const ogImage = new URL(sitePath('/og.png'), site);
+
+// GitHub Pages не даёт задать заголовки ответа, поэтому защита описана прямо в странице.
+// При разработке она помешала бы горячей перезагрузке. Директива frame-ancestors в meta не работает.
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self' https://api.github.com",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'none'",
+  'upgrade-insecure-requests',
+].join('; ');
 
 const structuredData = {
   '@context': 'https://schema.org',
@@ -30,7 +46,7 @@ const structuredData = {
   operatingSystem: 'Windows, macOS, Linux, Docker',
   softwareVersion: version,
   description,
-  url: site.href,
+  url: home.href,
   downloadUrl: links.latest,
   license: 'https://polyformproject.org/licenses/noncommercial/1.0.0',
   offers: { '@type': 'Offer', price: '0', priceCurrency: 'RUB' },
@@ -42,6 +58,8 @@ const structuredData = {
 <html lang="ru" data-release={version}>
   <head>
     <meta charset="utf-8" />
+    {import.meta.env.PROD && <meta http-equiv="Content-Security-Policy" content={contentSecurityPolicy} />}
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>{title}</title>
     <meta name="description" content={description} />
@@ -49,9 +67,9 @@ const structuredData = {
     {noindex && <meta name="robots" content="noindex" />}
 
     <meta name="theme-color" content="#070a12" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="sitemap" href="/sitemap-index.xml" />
+    <link rel="icon" type="image/png" sizes="32x32" href={sitePath('/favicon-32.png')} />
+    <link rel="apple-touch-icon" href={sitePath('/apple-touch-icon.png')} />
+    <link rel="sitemap" href={sitePath('/sitemap-index.xml')} />
     <link rel="preload" as="font" type="font/woff2" href={onestCyrillic} crossorigin />
 
     <meta property="og:type" content="website" />

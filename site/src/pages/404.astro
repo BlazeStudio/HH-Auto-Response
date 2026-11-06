@@ -1,5 +1,6 @@
 ---
 import Base from '../layouts/Base.astro';
+import { sitePath } from '../config';
 ---
 
 <Base title="Страница не найдена: HH-Auto-Response" description="Такой страницы на сайте нет." noindex>
@@ -11,8 +12,8 @@ import Base from '../layouts/Base.astro';
     </div>
     <h1 class="h1 mt-8 text-[clamp(2.25rem,5vw,3.5rem)]!">Такой страницы нет</h1>
     <div class="mt-8 flex flex-wrap gap-3">
-      <a class="btn btn-primary" href="/">На главную</a>
-      <a class="btn btn-ghost" href="/contacts">Сообщить о битой ссылке</a>
+      <a class="btn btn-primary" href={sitePath('/')}>На главную</a>
+      <a class="btn btn-ghost" href={sitePath('/contacts')}>Сообщить о битой ссылке</a>
     </div>
   </div>
 </Base>

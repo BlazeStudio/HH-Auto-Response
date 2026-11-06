@@ -1,6 +1,6 @@
 ---
 import Icon from './Icon.astro';
-import { links, nav } from '../config';
+import { links, nav, sitePath } from '../config';
 import { getRepoSnapshot } from '../lib/github';
 
 const { stars } = await getRepoSnapshot();
@@ -8,8 +8,8 @@ const { stars } = await getRepoSnapshot();
 
 <header class="site-header" data-header>
   <div class="wrap flex h-16 items-center justify-between gap-4">
-    <a href="/" class="flex items-center gap-2.5 rounded-lg" aria-label="HH Auto, на главную">
-      <img src="/logo.png" width="30" height="30" alt="" class="size-7.5 rounded-lg" />
+    <a href={sitePath('/')} class="flex items-center gap-2.5 rounded-lg" aria-label="HH Auto, на главную">
+      <img src={sitePath('/logo.png')} width="30" height="30" alt="" class="size-7.5 rounded-lg" />
       <span class="text-[1.0625rem] font-semibold tracking-tight whitespace-nowrap">HH Auto</span>
     </a>
 
@@ -38,8 +38,8 @@ const { stars } = await getRepoSnapshot();
         <summary aria-label="Открыть меню"><Icon name="menu" class="size-5" /></summary>
         <nav class="menu-panel" aria-label="Разделы сайта">
           {nav.map((item) => <a href={item.href}>{item.label}</a>)}
-          <a href="/safety">Безопасность</a>
-          <a href="/contacts">Контакты</a>
+          <a href={sitePath('/safety')}>Безопасность</a>
+          <a href={sitePath('/contacts')}>Контакты</a>
         </nav>
       </details>
     </div>
