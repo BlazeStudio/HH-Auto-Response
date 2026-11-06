@@ -1,26 +1,22 @@
 ---
 import Base from '../layouts/Base.astro';
+import ContactTile from '../components/ContactTile.astro';
 import Icon from '../components/Icon.astro';
 import { contacts, links } from '../config';
 
-const direct = [
-  { icon: 'telegram', title: 'Telegram', value: contacts.telegram.label, href: contacts.telegram.url, text: 'Вопросы, идеи, коммерческая лицензия.' },
-  { icon: 'mail', title: 'Почта', value: contacts.email, href: `mailto:${contacts.email}`, text: 'Если вопрос длинный или нужны вложения.' },
-  { icon: 'globe', title: 'Сайт автора', value: contacts.website.label, href: contacts.website.url, text: 'Кто это написал и какие ещё есть проекты.' },
-] as const;
-
 const project = [
-  { icon: 'bug', title: 'Нашли ошибку', action: 'Создать отчёт', href: links.bugReport, text: 'Сначала проверьте, что у вас последняя версия. Убирайте из логов личные данные перед отправкой.' },
-  { icon: 'idea', title: 'Есть идея', action: 'Предложить', href: links.featureRequest, text: 'Опишите, что хотите получить и зачем. Перед крупной доработкой лучше обсудить её в Issues.' },
-  { icon: 'merge', title: 'Хотите доработать', action: 'Как это устроено', href: links.contributing, text: 'Сделайте форк и пришлите pull request. Условия приёма вклада описаны в CONTRIBUTING.' },
+  { icon: 'bug', tone: 'warn', title: 'Нашли ошибку', action: 'Создать отчёт', href: links.bugReport, text: 'Сначала проверьте, что у вас последняя версия. Убирайте из логов личные данные перед отправкой.' },
+  { icon: 'idea', tone: 'ai', title: 'Есть идея', action: 'Предложить', href: links.featureRequest, text: 'Опишите, что хотите получить и зачем. Перед крупной доработкой лучше обсудить её в Issues.' },
+  { icon: 'merge', tone: 'hh', title: 'Хотите доработать', action: 'Как это устроено', href: links.contributing, text: 'Сделайте форк и пришлите pull request. Условия приёма вклада описаны в CONTRIBUTING.' },
 ] as const;
 ---
 
 <Base
   title="Контакты: HH-Auto-Response"
   description="Как связаться с автором HH-Auto-Response, сообщить об ошибке, предложить идею или договориться о коммерческой лицензии."
+  showFooterContact={false}
 >
-  <div class="wrap pt-14 pb-[clamp(4.5rem,10vw,7rem)] sm:pt-20">
+  <div class="wrap soft-in pt-14 pb-[clamp(4.5rem,10vw,7rem)] sm:pt-20">
     <p class="kicker">Контакты</p>
     <h1 class="h1 mt-4 max-w-3xl text-[clamp(2.25rem,5vw,3.5rem)]!">Программу пишу я. Напишите, если что-то не так</h1>
     <p class="lead mt-6">
@@ -28,28 +24,57 @@ const project = [
       пользователи.
     </p>
 
-    <div class="mt-12 grid gap-4 md:grid-cols-3">
-      {
-        direct.map((item) => (
-          <a href={item.href} class="card card-hover gap-3 p-6">
-            <Icon name={item.icon} class="size-5 text-hh" />
-            <div class="mt-2">
-              <p class="text-sm text-fg-3">{item.title}</p>
-              <p class="mt-0.5 text-lg font-medium tracking-tight break-words">{item.value}</p>
-            </div>
-            <p class="body-sm">{item.text}</p>
-          </a>
-        ))
-      }
+    <div class="mt-12 grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+      <div class="card card-hover contact-feature" style="--tone: var(--color-hh)">
+        <span class="contact-clip" aria-hidden="true"><Icon name="telegram" class="contact-watermark" /></span>
+        <span class="contact-icon contact-icon-lg"><Icon name="telegram" class="size-6" /></span>
+        <div class="mt-auto">
+          <p class="text-sm text-fg-3">Telegram</p>
+          <a class="contact-link contact-link-lg" href={contacts.telegram.url}>{contacts.telegram.label}</a>
+          <p class="body-sm mt-2 max-w-sm">Вопросы, идеи, коммерческая лицензия.</p>
+          <span class="contact-go">Написать <Icon name="arrow" class="contact-arrow size-4" /></span>
+        </div>
+      </div>
+
+      <div class="grid gap-4">
+        <ContactTile
+          icon="mail"
+          tone="ai"
+          label="Почта"
+          value={contacts.email}
+          href={`mailto:${contacts.email}`}
+          note="Если вопрос длинный или нужны вложения."
+          copy={contacts.email}
+        />
+        <ContactTile
+          icon="github"
+          tone="ok"
+          label="GitHub"
+          value={contacts.github.label}
+          href={links.repo}
+          note="Код, версии и обсуждения."
+        />
+        <ContactTile
+          icon="globe"
+          tone="warn"
+          label="Мой сайт"
+          value={contacts.website.label}
+          href={contacts.website.url}
+          note="Обо мне и других проектах."
+        />
+      </div>
     </div>
 
     <h2 class="h3 mt-16 text-2xl!">Про саму программу</h2>
     <div class="mt-6 grid gap-x-10 gap-y-8 border-t border-line pt-8 md:grid-cols-3">
       {
         project.map((item) => (
-          <div>
-            <p class="flex items-center gap-2.5 font-medium"><Icon name={item.icon} class="size-4.5 text-fg-3" />{item.title}</p>
-            <p class="body-sm mt-2">{item.text}</p>
+          <div style={`--tone: var(--color-${item.tone})`}>
+            <p class="flex items-center gap-3 font-medium">
+              <span class="contact-icon contact-icon-sm"><Icon name={item.icon} class="size-4" /></span>
+              {item.title}
+            </p>
+            <p class="body-sm mt-3">{item.text}</p>
             <a href={item.href} class="link mt-3 inline-flex items-center gap-1.5 text-[0.9375rem]">
               {item.action} <Icon name="arrow" class="size-3.5" />
             </a>

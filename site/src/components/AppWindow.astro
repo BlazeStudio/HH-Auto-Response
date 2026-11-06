@@ -52,7 +52,6 @@ const resumeBars = [
         <span class="truncate text-[0.8125rem] font-medium">HH-Auto-Response</span>
         <span class="hidden font-mono text-xs text-fg-3 sm:inline" data-version>{version}</span>
       </div>
-      <span class="tag tag-mute">демо-данные</span>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-[12.5rem_minmax(0,1fr)]">
@@ -61,7 +60,7 @@ const resumeBars = [
           role="tablist"
           aria-label="Страницы приложения"
           aria-orientation="vertical"
-          class="no-scrollbar flex gap-1 overflow-x-auto md:flex-col md:overflow-visible"
+          class="tabs-win no-scrollbar flex gap-1 overflow-x-auto md:flex-col md:overflow-visible"
         >
           {
             tabs.map((tab, index) => (
@@ -92,7 +91,7 @@ const resumeBars = [
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p class="text-[1.375rem] leading-tight font-semibold tracking-tight sm:text-[1.625rem]">
-                Отправлено <span class="text-ok tabular-nums" data-sent>{sent}</span> <span data-sent-word>отклика</span>
+                Отправлено <span class="inline-block text-ok tabular-nums" data-sent>{sent}</span> <span data-sent-word>отклика</span>
               </p>
               <p class="mt-1 text-[0.8125rem] text-fg-3">
                 этот запуск: <span class="tabular-nums" data-sent-run>{sent}</span> из 100, лимит hh около 200 в сутки
@@ -131,15 +130,17 @@ const resumeBars = [
 
           <div class="inset-panel p-3.5">
             <p class="mb-1 text-xs text-fg-3">Журнал</p>
-            <div class="log" data-sim-log aria-hidden="true">
-              {
-                responseLog.map((line) => (
-                  <div class="log-line">
-                    <time>{line.time}</time>
-                    <span class={line.kind}>{line.text}</span>
-                  </div>
-                ))
-              }
+            <div class="log" aria-hidden="true">
+              <div class="flex-none" data-sim-log>
+                {
+                  responseLog.map((line) => (
+                    <div class="log-line">
+                      <time>{line.time}</time>
+                      <span class={line.kind}>{line.text}</span>
+                    </div>
+                  ))
+                }
+              </div>
             </div>
           </div>
         </div>

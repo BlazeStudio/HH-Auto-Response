@@ -19,11 +19,11 @@ const shots = [
 ];
 ---
 
-<section class="pb-[clamp(4.5rem,10vw,8rem)]">
+<section id="gallery" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
   <div class="wrap">
     <div class="reveal max-w-3xl">
       <p class="kicker">Живое приложение</p>
-      <h2 class="h2">Так оно выглядит на самом деле. <span class="dim">Снимки экрана без прикрас.</span></h2>
+      <h2 class="h2">Так оно выглядит на самом деле. <span class="dim">Да. Это буквально скриншоты из приложения.</span></h2>
     </div>
 
     <div class="mt-10 grid gap-6 lg:mt-14 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-8">
@@ -31,7 +31,7 @@ const shots = [
         role="tablist"
         aria-label="Снимки экрана приложения"
         aria-orientation="vertical"
-        class="no-scrollbar flex gap-1 overflow-x-auto lg:flex-col lg:gap-0.5 lg:overflow-visible"
+        class="tabs-shot no-scrollbar flex gap-1 overflow-x-auto lg:flex-col lg:gap-0.5 lg:overflow-visible"
       >
         {
           shots.map((shot, index) => (
@@ -72,7 +72,7 @@ const shots = [
             </div>
           ))
         }
-        <p class="demo-note mt-3">На снимках демо-данные: резюме и компании вымышленные.</p>
+        <p class="demo-note mt-3">Резюме и компании на снимках вымышленные.</p>
       </div>
     </div>
   </div>

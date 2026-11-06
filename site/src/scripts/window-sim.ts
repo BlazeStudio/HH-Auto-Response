@@ -2,6 +2,8 @@
 // Строки журнала взяты из настоящего приложения, компании вымышленные.
 // Страница полностью готова и без этого скрипта: в HTML уже лежит состояние «Отправлено 42 отклика».
 
+import { EASE, bump } from './motion';
+
 type Tone = '' | 'l-ai' | 'l-ok' | 'l-skip' | 'l-dim';
 type Effect = 'sent' | 'letter' | 'skip';
 
@@ -129,12 +131,18 @@ export function initWindowSim() {
     line.append(time, body);
     log!.append(line);
     while (log!.children.length > MAX_LINES) log!.firstElementChild?.remove();
+    // Весь журнал мягко поднимается на высоту новой строки, а не прыгает
+    log!.animate(
+      [{ transform: `translateY(${line.getBoundingClientRect().height}px)` }, { transform: 'none' }],
+      { duration: 520, easing: EASE },
+    );
   }
 
   function applyEffect(effect?: Effect) {
     if (effect === 'skip') {
       skipped += 1;
       if (skipEl) skipEl.textContent = String(skipped);
+      bump(skipEl);
       return;
     }
     if (!effect) return;
@@ -144,6 +152,8 @@ export function initWindowSim() {
     if (sentWord) sentWord.textContent = plural(sent);
     if (sentRun) sentRun.textContent = String(sent);
     if (letterEl) letterEl.textContent = String(letters);
+    bump(sentEl);
+    bump(letterEl);
     segments.forEach((segment, index) => segment.classList.toggle('on', (index + 1) * 4 <= sent));
   }
 

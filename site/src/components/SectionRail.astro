@@ -1,0 +1,25 @@
+---
+// Быстрый переход по разделам главной. В покое это тонкие штрихи у края экрана,
+// при наведении появляются подписи. Текущий раздел отмечает ui.ts.
+const stops = [
+  { id: 'top', label: 'Начало' },
+  { id: 'features', label: 'Возможности' },
+  { id: 'analysis', label: 'Анализ резюме' },
+  { id: 'gallery', label: 'Снимки экрана' },
+  { id: 'safety', label: 'Безопасность' },
+  { id: 'install', label: 'Установка' },
+  { id: 'faq', label: 'FAQ' },
+  { id: 'contact', label: 'Связаться' },
+];
+---
+
+<nav class="rail" aria-label="Быстрый переход по разделам" data-rail>
+  {
+    stops.map((stop) => (
+      <a href={`#${stop.id}`} class="rail-link">
+        <span class="rail-label">{stop.label}</span>
+        <i class="rail-tick" />
+      </a>
+    ))
+  }
+</nav>

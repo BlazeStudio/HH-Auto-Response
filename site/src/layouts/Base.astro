@@ -12,9 +12,10 @@ interface Props {
   title: string;
   description: string;
   noindex?: boolean;
+  showFooterContact?: boolean;
 }
 
-const { title, description, noindex = false } = Astro.props;
+const { title, description, noindex = false, showFooterContact = true } = Astro.props;
 const { version } = await getRepoSnapshot();
 
 const site = Astro.site ?? new URL('https://hh-auto-response.vercel.app');
@@ -73,11 +74,13 @@ const structuredData = {
     >
       К содержанию
     </a>
+    <canvas class="facets facets-left" data-facets="left" aria-hidden="true"></canvas>
+    <canvas class="facets facets-right" data-facets="right" aria-hidden="true"></canvas>
     <Header />
     <main id="main">
       <slot />
     </main>
-    <Footer />
+    <Footer showContact={showFooterContact} />
     <script>
       import '../scripts/site.ts';
     </script>

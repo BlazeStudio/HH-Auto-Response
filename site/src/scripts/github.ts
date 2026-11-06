@@ -1,10 +1,11 @@
 // Определяет систему посетителя и подтягивает с GitHub свежую версию и звёзды.
+// Прямые ссылки на архивы есть только в разделе установки.
 // Если GitHub недоступен, на странице просто останутся значения из сборки.
 
 import { REPO, assetUrl, type AssetKey } from '../config';
 import { activateTab } from './tabs';
 
-type Os = 'windows' | 'macos' | 'linux' | 'mobile';
+type Os = 'windows' | 'macos' | 'linux';
 
 const CACHE_KEY = 'hh-auto:github';
 const CACHE_TTL = 30 * 60 * 1000;
@@ -17,40 +18,16 @@ interface Snapshot {
 
 function detectOs(): Os {
   const agent = navigator.userAgent;
-  if (/Android|iPhone|iPad|iPod/i.test(agent)) return 'mobile';
+  // Сборок для телефонов нет. В их адресе бывают слова Linux и Mac OS X, поэтому отсекаем их первыми
+  if (/Android|iPhone|iPad|iPod/i.test(agent)) return 'windows';
   if (/Windows/i.test(agent)) return 'windows';
   if (/Macintosh|Mac OS X/i.test(agent)) return 'macos';
   if (/Linux|X11|CrOS/i.test(agent)) return 'linux';
   return 'windows';
 }
 
+// Кнопка «Скачать» ведёт к разделу установки, а он сразу открыт на вкладке системы посетителя
 function applyOs(os: Os) {
-  const labels: Record<Os, string> = {
-    windows: 'Скачать для Windows',
-    macos: 'Скачать для macOS',
-    linux: 'Скачать для Linux',
-    mobile: 'Как установить на компьютер',
-  };
-  const assets: Partial<Record<Os, AssetKey>> = {
-    windows: 'windows',
-    macos: 'macos-arm64',
-    linux: 'linux',
-  };
-  const version = document.documentElement.dataset.release ?? '';
-
-  document.querySelectorAll<HTMLAnchorElement>('[data-download-cta]').forEach((link) => {
-    const label = link.querySelector('[data-cta-label]');
-    if (label) label.textContent = labels[os];
-    const asset = assets[os];
-    if (asset) {
-      link.dataset.asset = asset;
-      link.href = assetUrl(version, asset);
-    } else {
-      delete link.dataset.asset;
-      link.href = '/#install';
-    }
-  });
-
   if (os === 'macos' || os === 'linux') {
     const tab = document.querySelector<HTMLElement>(`[data-install] [data-os="${os}"]`);
     if (tab) activateTab(tab);
