@@ -1,0 +1,218 @@
+---
+import Icon from './Icon.astro';
+import { getRepoSnapshot } from '../lib/github';
+
+const { version } = await getRepoSnapshot();
+
+const tabs = [
+  { id: 'responses', label: 'Отклики', icon: 'send' },
+  { id: 'chats', label: 'Чаты', icon: 'message' },
+  { id: 'resume', label: 'Анализ резюме', icon: 'file' },
+] as const;
+
+const sent = 42;
+const segments = Array.from({ length: 25 }, (_, index) => (index + 1) * 4 <= sent);
+
+const responseLog = [
+  { time: '14:03:30', text: '[стр. 3, 5/20] ▶ «Senior Python Engineer» — ООО «Тест Системс»' },
+  { time: '14:03:39', text: 'реакция hh: вопросы работодателя' },
+  { time: '14:03:39', text: '… ИИ заполняет анкету (3 вопр.)', kind: 'l-ai' },
+  { time: '14:04:24', text: '✓ ОТКЛИК ОТПРАВЛЕН с ответами ИИ на анкету и письмом', kind: 'l-ok' },
+  { time: '14:04:33', text: '[стр. 3, 6/20] ▶ «Преподаватель Python» — ООО «Учебный Центр»' },
+  { time: '14:04:33', text: 'пропущена: в названии «преподаватель»', kind: 'l-skip' },
+  { time: '14:04:42', text: '[стр. 3, 7/20] ▶ «Backend Developer (Python)» — АО «Демо Лаб»' },
+  { time: '14:04:47', text: 'реакция hh: вакансия в другом регионе, работа удалённая, соглашаюсь' },
+  { time: '14:04:51', text: '✓ ОТКЛИК ОТПРАВЛЕН с сопроводительным письмом', kind: 'l-ok' },
+];
+
+const chatLog = [
+  { time: '14:02:18', text: '[1/7] «Python-разработчик» — ООО «Пример Софт»: отказ, прочитано' },
+  { time: '14:02:27', text: '[2/7] «Backend Developer» — АО «Демо Лаб»: отказ, прочитано' },
+  { time: '14:02:36', text: '[3/7] «Python Developer» — ООО «Тест Системс»: Робот-рекрутер' },
+  { time: '14:02:45', text: 'Робот-рекрутер: Какой у вас опыт работы с Kafka?' },
+  { time: '14:02:54', text: 'ИИ: С Kafka напрямую не работал, но строил обмен сообщениями на RabbitMQ. Принципы те же, освоюсь быстро.', kind: 'l-ai' },
+  { time: '14:03:03', text: 'Робот-рекрутер: Когда готовы приступить?' },
+  { time: '14:03:12', text: 'ИИ: Готов выйти через 2 недели.', kind: 'l-ai' },
+  { time: '14:03:30', text: '[4/7] «Middle Python» — ООО «Демо Ритейл»: приглашение на собеседование, оставляю вам', kind: 'l-skip' },
+];
+
+const resumeBars = [
+  { label: 'Опыт', value: 93, note: 'хватает для 93% вакансий' },
+  { label: 'Название', value: 100, note: 'слова должности есть в названиях подходящих вакансий' },
+  { label: 'Навыки', value: 85, note: '16 из 25 самых востребованных' },
+  { label: 'Оформление', value: 75, note: 'в порядке 3 из 5 пунктов' },
+];
+---
+
+<figure class="stage" aria-label="Демонстрация работы приложения на вымышленных данных">
+  <div class="appwin" data-sim>
+    <div class="flex items-center justify-between gap-3 border-b border-line px-4 py-2.5">
+      <div class="flex min-w-0 items-center gap-2.5">
+        <img src="/logo.png" width="20" height="20" alt="" class="size-5 rounded-md" />
+        <span class="truncate text-[0.8125rem] font-medium">HH-Auto-Response</span>
+        <span class="hidden font-mono text-xs text-fg-3 sm:inline" data-version>{version}</span>
+      </div>
+      <span class="tag tag-mute">демо-данные</span>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-[12.5rem_minmax(0,1fr)]">
+      <aside class="flex min-w-0 flex-col gap-4 border-b border-line p-3 md:border-r md:border-b-0">
+        <div
+          role="tablist"
+          aria-label="Страницы приложения"
+          aria-orientation="vertical"
+          class="no-scrollbar flex gap-1 overflow-x-auto md:flex-col md:overflow-visible"
+        >
+          {
+            tabs.map((tab, index) => (
+              <button
+                type="button"
+                role="tab"
+                id={`win-tab-${tab.id}`}
+                aria-controls={`win-panel-${tab.id}`}
+                aria-selected={index === 0 ? 'true' : 'false'}
+                tabindex={index === 0 ? 0 : -1}
+                class="appwin-tab"
+              >
+                <Icon name={tab.icon} class="hidden size-4 sm:block" />
+                {tab.label}
+              </button>
+            ))
+          }
+        </div>
+
+        <div class="mt-auto hidden gap-2 text-xs text-fg-3 md:grid">
+          <p class="flex items-center gap-2"><Icon name="clock" class="size-3.5" /> Автозапуск пн в 10:00</p>
+          <p class="flex items-center gap-2"><Icon name="arrowUp" class="size-3.5" /> Подъём резюме через 3 ч</p>
+        </div>
+      </aside>
+
+      <div class="min-w-0">
+        <div id="win-panel-responses" role="tabpanel" aria-labelledby="win-tab-responses" class="grid gap-4 p-4 sm:p-5">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[1.375rem] leading-tight font-semibold tracking-tight sm:text-[1.625rem]">
+                Отправлено <span class="text-ok tabular-nums" data-sent>{sent}</span> <span data-sent-word>отклика</span>
+              </p>
+              <p class="mt-1 text-[0.8125rem] text-fg-3">
+                этот запуск: <span class="tabular-nums" data-sent-run>{sent}</span> из 100, лимит hh около 200 в сутки
+              </p>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="flex items-center gap-2 text-[0.8125rem] text-ok" data-sim-status-wrap>
+                <span class="live-dot"></span>
+                <span data-sim-status>Идёт работа</span>
+              </span>
+              <button type="button" class="btn btn-ghost btn-sm min-h-8! px-2.5! py-1!" data-sim-toggle hidden>
+                <Icon name="pause" class="size-3.5" />
+                <span data-sim-toggle-label>Пауза</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="segs" data-segs aria-hidden="true">
+            {segments.map((on) => <i class={on ? 'on' : ''} />)}
+          </div>
+
+          <dl class="grid grid-cols-3 gap-2.5">
+            <div class="stat-tile">
+              <dt>С письмом</dt>
+              <dd class="text-hh" data-sim-letter>40</dd>
+            </div>
+            <div class="stat-tile">
+              <dt>Пропущено</dt>
+              <dd class="text-warn" data-sim-skip>13</dd>
+            </div>
+            <div class="stat-tile">
+              <dt>Ошибок</dt>
+              <dd>0</dd>
+            </div>
+          </dl>
+
+          <div class="inset-panel p-3.5">
+            <p class="mb-1 text-xs text-fg-3">Журнал</p>
+            <div class="log" data-sim-log aria-hidden="true">
+              {
+                responseLog.map((line) => (
+                  <div class="log-line">
+                    <time>{line.time}</time>
+                    <span class={line.kind}>{line.text}</span>
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        </div>
+
+        <div id="win-panel-chats" role="tabpanel" aria-labelledby="win-tab-chats" class="grid gap-4 p-4 sm:p-5" hidden>
+          <div>
+            <p class="text-[1.375rem] leading-tight font-semibold tracking-tight sm:text-[1.625rem]">
+              Отказы прочитаны, роботу ответила нейросеть
+            </p>
+            <p class="mt-1 text-[0.8125rem] text-fg-3">Что важно решать самому, программа оставляет вам</p>
+          </div>
+
+          <dl class="grid grid-cols-3 gap-2.5">
+            <div class="stat-tile">
+              <dt>Отказов прочитано</dt>
+              <dd>6</dd>
+            </div>
+            <div class="stat-tile">
+              <dt>Ответов ИИ</dt>
+              <dd class="text-ai">2</dd>
+            </div>
+            <div class="stat-tile">
+              <dt>Ждут вашего ответа</dt>
+              <dd class="text-warn">1</dd>
+            </div>
+          </dl>
+
+          <div class="inset-panel p-3.5">
+            <p class="mb-1 text-xs text-fg-3">Журнал</p>
+            <div class="log" aria-hidden="true">
+              {
+                chatLog.map((line) => (
+                  <div class="log-line">
+                    <time>{line.time}</time>
+                    <span class={line.kind}>{line.text}</span>
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        </div>
+
+        <div id="win-panel-resume" role="tabpanel" aria-labelledby="win-tab-resume" class="grid gap-5 p-4 sm:p-5" hidden>
+          <div class="grid gap-5 sm:grid-cols-[auto_minmax(0,1fr)] sm:gap-8">
+            <div>
+              <p class="text-[4rem] leading-none font-semibold tracking-tighter text-ok tabular-nums">87</p>
+              <p class="mt-1.5 text-[0.8125rem] text-fg-3">из 100</p>
+              <p class="mt-1 max-w-32 text-[0.8125rem] leading-snug font-medium text-ok">отличное соответствие рынку</p>
+            </div>
+            <div class="grid gap-3">
+              {
+                resumeBars.map((bar) => (
+                  <div>
+                    <div class="flex items-baseline justify-between gap-3 text-[0.8125rem]">
+                      <span>{bar.label}</span>
+                      <span class="font-medium tabular-nums">{bar.value}</span>
+                    </div>
+                    <div class="bar-track mt-1">
+                      <span class="bar-fill" style={`--v: ${bar.value}%`} />
+                    </div>
+                    <p class="mt-1 text-xs text-fg-3">{bar.note}</p>
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+          <div class="inset-panel p-3.5 text-[0.8125rem] leading-relaxed text-fg-2">
+            <span class="tag tag-warn mr-1.5">Важно</span>
+            Добавьте в «Ключевые навыки» то, что уже есть в вашем опыте: Apache Kafka (19%), CI/CD (14%), Asyncio (8%).
+          </div>
+          <a href="#analysis" class="link w-fit text-[0.8125rem]">Как считается оценка</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</figure>

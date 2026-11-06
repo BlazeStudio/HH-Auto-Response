@@ -1,0 +1,58 @@
+---
+import AppWindow from './AppWindow.astro';
+import Icon from './Icon.astro';
+import { assetUrl, links } from '../config';
+import { getRepoSnapshot } from '../lib/github';
+
+const { version } = await getRepoSnapshot();
+---
+
+<section class="relative isolate">
+  <div class="hero-sky" aria-hidden="true"></div>
+
+  <div class="wrap pt-12 sm:pt-16 lg:pt-20">
+    <a href={links.changelog} class="release-pill">
+      <span class="size-1.5 rounded-full bg-ok"></span>
+      <span>Версия <span data-version>{version}</span>, смотреть что нового</span>
+      <Icon name="arrow" class="size-3.5" />
+    </a>
+
+    <h1 class="h1 mt-6">
+      Хватит откликаться руками.
+      <span class="grad block">Пусть ИИ найдёт работу за&nbsp;вас.</span>
+    </h1>
+
+    <div class="mt-7 grid gap-7 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end lg:gap-12">
+      <p class="lead">
+        Автоматический поиск вакансий, письма под требования, умные ответы в чатах и бесплатный подъём резюме.
+        Прямо на вашем компьютере.
+      </p>
+
+      <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+        <a
+          class="btn btn-primary"
+          href={assetUrl(version, 'windows')}
+          data-download-cta
+          data-asset="windows"
+        >
+          <Icon name="download" />
+          <span data-cta-label>Скачать для Windows</span>
+        </a>
+        <a class="btn btn-ghost" href={links.repo}>
+          <Icon name="github" />
+          Смотреть код на GitHub
+        </a>
+      </div>
+    </div>
+
+    <p class="mt-6 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-fg-3">
+      <a href="#install" class="transition-colors hover:text-fg">Windows, macOS, Linux и Docker</a>
+      <span>Бесплатно для личного использования</span>
+      <span>Python ставить не нужно</span>
+    </p>
+  </div>
+
+  <div class="wrap rise-in mt-12 lg:mt-14">
+    <AppWindow />
+  </div>
+</section>

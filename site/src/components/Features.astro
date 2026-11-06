@@ -1,0 +1,178 @@
+---
+import Icon from './Icon.astro';
+
+const vacancies = [
+  { time: '14:04', title: 'Senior Python Engineer', company: 'ООО «Тест Системс»', status: 'отправлен с письмом', tag: 'tag-ok' },
+  { time: '14:04', title: 'Backend Developer (Python)', company: 'АО «Демо Лаб»', status: 'отправлен с письмом', tag: 'tag-ok' },
+  { time: '14:03', title: 'Преподаватель Python', company: 'ООО «Учебный Центр»', status: 'пропущена: не та профессия', tag: 'tag-warn' },
+  { time: '14:02', title: 'Python-разработчик (FastAPI)', company: 'ООО «Пример Софт»', status: 'отправлен с письмом', tag: 'tag-ok' },
+];
+
+const chats = [
+  { who: 'Робот-рекрутер', text: 'Какой у вас опыт с Kafka?', status: 'ответил ИИ', tag: 'tag-ai' },
+  { who: 'АО «Демо Лаб»', text: 'Вынуждены отказать', status: 'прочитано', tag: 'tag-mute' },
+  { who: 'ООО «Демо Ритейл»', text: 'Приглашаем на собеседование', status: 'ждёт вас', tag: 'tag-warn' },
+];
+
+const raises = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'];
+
+const extras = [
+  { icon: 'filter', title: 'ИИ-фильтр', text: '«Ищу удалёнку на Python, без продаж и 1С». Нейросеть читает карточку и отсеивает то, что словами не поймать.' },
+  { icon: 'calendar', title: 'Расписание', text: 'Например, по будням в 10:00 и 15:00. Лимит откликов на запуск задаёте вы.' },
+  { icon: 'heart', title: 'Компании мечты', text: 'Свежая вакансия из вашего списка получает отклик раньше остальных.' },
+  { icon: 'bell', title: 'Приглашения', text: 'Пришло приглашение, и вы сразу знаете: на компьютере или в Telegram.' },
+  { icon: 'table', title: 'Отчёт в Excel', text: 'Куда откликнулись, где были вопросы, что пропущено и почему.' },
+  { icon: 'chart', title: 'Статистика', text: 'Отклики, пропуски и отказы по дням. Хранятся только числа.' },
+  { icon: 'corner', title: 'Мини-окно', text: 'Маленькое окно в углу экрана показывает ход работы, пока вы заняты другим.' },
+  { icon: 'sparkles', title: 'Проверка ИИ', text: 'Пишете за работодателя и смотрите, что ответит модель. В hh ничего не уходит.' },
+] as const;
+---
+
+<section id="features" class="section scroll-mt-10">
+  <div class="wrap">
+    <div class="reveal max-w-3xl">
+      <p class="kicker">Что умеет робот</p>
+      <h2 class="h2">Всё, на что раньше уходили вечера. <span class="dim">Один раз настроили, дальше он сам.</span></h2>
+    </div>
+
+    <div class="mt-12 grid gap-4 md:grid-cols-6 lg:mt-16">
+      <!-- Автоотклики -->
+      <article class="card card-hover reveal gap-6 p-6 md:col-span-6 lg:col-span-4">
+        <div>
+          <h3 class="h3 flex items-center gap-2.5"><Icon name="send" class="size-4.5 text-hh" /> Автоотклики по фильтрам</h3>
+          <p class="body-sm mt-2 max-w-xl">
+            Идёт по выдаче «подходящие к резюме» или по вашим запросам, страница за страницей. Между вакансиями
+            делает паузы, как человек. Вечные вакансии, просьбы написать в Telegram и чужой уровень отсеивает без клика.
+          </p>
+        </div>
+        <div class="inset-panel mt-auto divide-y divide-line">
+          {
+            vacancies.map((row) => (
+              <div class="grid items-center gap-x-3 gap-y-1 px-3.5 py-2.5 text-[0.8125rem] sm:grid-cols-[auto_minmax(0,1fr)_auto]">
+                <time class="hidden font-mono text-xs text-fg-3 sm:block">{row.time}</time>
+                <p class="min-w-0 sm:truncate">
+                  {row.title} <span class="text-fg-3">{row.company}</span>
+                </p>
+                <span class:list={['tag w-fit', row.tag]}>{row.status}</span>
+              </div>
+            ))
+          }
+        </div>
+      </article>
+
+      <!-- Подъём резюме -->
+      <article class="card card-hover reveal gap-6 p-6 md:col-span-6 lg:col-span-2">
+        <div>
+          <h3 class="h3 flex items-center gap-2.5"><Icon name="arrowUp" class="size-4.5 text-hh" /> Бесплатный автоподъём</h3>
+          <p class="body-sm mt-2">
+            hh разрешает поднимать резюме раз в 4 часа, но кто об этом помнит? Программа нажмёт эту кнопку за вас.
+          </p>
+        </div>
+        <div class="inset-panel mt-auto p-4">
+          <div class="flex items-baseline justify-between gap-3">
+            <span class="text-[0.8125rem] text-fg-2">Следующий подъём</span>
+            <span class="font-mono text-[0.8125rem] text-hh tabular-nums">через 3:12</span>
+          </div>
+          <ol class="mt-4 grid grid-cols-6 gap-1.5" aria-label="Подъёмы за сутки">
+            {
+              raises.map((time, index) => (
+                <li class="min-w-0">
+                  <span
+                    class:list={[
+                      'block h-7 rounded-md',
+                      index < 3 ? 'bg-hh/70' : index === 3 ? 'bg-hh/20 ring-1 ring-hh/70' : 'bg-white/6',
+                    ]}
+                  />
+                  <span class="mt-1 block text-center font-mono text-[0.625rem] text-fg-3">{time.slice(0, 2)}</span>
+                </li>
+              ))
+            }
+          </ol>
+        </div>
+      </article>
+
+      <!-- Письма -->
+      <article class="card card-hover reveal gap-6 p-6 md:col-span-3 lg:col-span-2">
+        <div>
+          <h3 class="h3 flex items-center gap-2.5"><Icon name="sparkles" class="size-4.5 text-ai" /> Письмо под каждую вакансию</h3>
+          <p class="body-sm mt-2">
+            Нейросеть читает описание и ваше резюме и пишет 3–5 предложений по делу. Подойдут и кнопка hh, и свой
+            шаблон. Можно откликаться совсем без письма.
+          </p>
+        </div>
+        <div class="inset-panel mt-auto p-4 text-[0.875rem] leading-relaxed text-fg-2">
+          Здравствуйте! Зацепило, что вы переводите сервис на <mark class="rounded bg-ai/15 px-1 text-ai">FastAPI</mark>:
+          последние два года я занимаюсь тем же. Строил API на
+          <mark class="rounded bg-ai/15 px-1 text-ai">PostgreSQL</mark> и очереди на Celery.<span class="caret" aria-hidden="true"></span>
+        </div>
+      </article>
+
+      <!-- Анкеты -->
+      <article class="card card-hover reveal gap-6 p-6 md:col-span-3 lg:col-span-2">
+        <div>
+          <h3 class="h3 flex items-center gap-2.5"><Icon name="file" class="size-4.5 text-ai" /> Анкеты без выдумок</h3>
+          <p class="body-sm mt-2">
+            Технологии отмечает строго по резюме, зарплату и сроки выхода берёт из настроек. Нет опыта? Так и напишет
+            или подаст смежный.
+          </p>
+        </div>
+        <div class="inset-panel mt-auto grid gap-3 p-4 text-[0.8125rem]">
+          <div>
+            <p class="text-fg-3">Отметьте, с чем работали</p>
+            <p class="mt-1.5 flex flex-wrap gap-1.5">
+              <span class="tag tag-ok">✓ Python</span>
+              <span class="tag tag-ok">✓ Docker</span>
+              <span class="tag tag-mute">Airflow</span>
+            </p>
+          </div>
+          <div>
+            <p class="text-fg-3">Опыт с Airflow?</p>
+            <p class="mt-0.5 text-fg">Напрямую не работал, но строил ETL на Celery.</p>
+          </div>
+          <div>
+            <p class="text-fg-3">Зарплатные ожидания</p>
+            <p class="mt-0.5 text-fg">Ожидаю от 150 000 ₽</p>
+          </div>
+        </div>
+      </article>
+
+      <!-- Чаты -->
+      <article class="card card-hover reveal gap-6 p-6 md:col-span-6 lg:col-span-2">
+        <div>
+          <h3 class="h3 flex items-center gap-2.5"><Icon name="message" class="size-4.5 text-ai" /> Чаты разбирает сам</h3>
+          <p class="body-sm mt-2">
+            Читает отказы и отвечает «Роботу-рекрутеру». Приглашения, звонки, документы и деньги оставит вам. Ответы
+            живым рекрутерам можно отключить одной галочкой.
+          </p>
+        </div>
+        <div class="inset-panel mt-auto divide-y divide-line">
+          {
+            chats.map((chat) => (
+              <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2.5 text-[0.8125rem]">
+                <p class="min-w-0">
+                  <span class="block font-medium">{chat.who}</span>
+                  <span class="block text-fg-3">{chat.text}</span>
+                </p>
+                <span class:list={['tag', chat.tag]}>{chat.status}</span>
+              </div>
+            ))
+          }
+        </div>
+      </article>
+    </div>
+
+    <dl class="reveal mt-14 grid gap-x-8 gap-y-8 sm:grid-cols-2 lg:grid-cols-4">
+      {
+        extras.map((item) => (
+          <div class="min-w-0">
+            <dt class="flex items-center gap-2 text-[0.9375rem] font-medium">
+              <Icon name={item.icon} class="size-4 text-fg-3" />
+              {item.title}
+            </dt>
+            <dd class="mt-1.5 text-sm leading-relaxed text-fg-3 text-pretty">{item.text}</dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+</section>
