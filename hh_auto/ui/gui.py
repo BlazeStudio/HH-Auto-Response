@@ -39,6 +39,7 @@ from ..reports.results import HH_DAILY_LIMIT, ResultsBook, Summary, load_summary
 from ..hh.search import describe_search
 from ..reports.stats import FILE as STATS_FILE, METRICS, SKIP_KINDS, StatsStore, buckets, totals
 from ..hh.negotiations import FILE as NEGOTIATIONS_FILE, funnel as funnel_rows
+from ..hh.resume import has_city
 from ..hh.vacancy_meta import SKILLS_FILE, SkillStats
 from ..core.logger import SUCCESS, log, setup_logging
 from ..core.paths import app_root, bundled, is_frozen
@@ -48,8 +49,9 @@ from ..hh import raising, watch
 from ..core import updater
 from .mini import BrowserPreview, MiniWindow
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
-from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, QuietToplevel, RichText, SelectableText,
-                      TextLabel, flush_paint, frozen, install_editing, precise_timer, set_titlebar_dark, theme_switch)
+from .widgets import (Chart, ChipGroup, ItemList, MENU_BUTTONS, crossfade, PlainFrame, QuietToplevel, RichText,
+                      SelectableText, TextLabel, flush_paint, frozen, install_editing, precise_timer, set_titlebar_dark,
+                      theme_switch)
 from .theme import (ACCENT, ACCENT_FILL, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, CARD_LINE, FILL,
                     FILL_HOVER, GREEN, GREEN_FILL, GREEN_HOVER, LINK, MAIN_BG, MUTED, NAV_HOVER, RED, RED_ON_SOFT,
                     RED_SOFT, RED_SOFT_HOVER, SEG_THUMB, SIDEBAR_BG, TEXT, apply_app_icon, apply_ctk_theme, icon,
@@ -325,7 +327,7 @@ class LogView(ctk.CTkTextbox):
         self._menu.add_separator()
         self._menu.add_command(label="Выделить всё", command=self.select_all)
         text = self._textbox
-        for button in ("<Button-3>", "<Button-2>") if sys.platform == "darwin" else ("<Button-3>",):
+        for button in MENU_BUTTONS:
             text.bind(button, self._popup)
         text.bind("<Command-KeyPress>" if sys.platform == "darwin" else "<Control-KeyPress>", self._on_ctrl)
         text.bind("<Button-1>", lambda _e: text.focus_set(), add="+")  # иначе Ctrl+C уйдёт в другое поле
@@ -907,7 +909,8 @@ class AiTestPage(Page):
         resume_path = self.app.root_dir / "data" / "resume.txt"
         if resume_path.exists():
             when = datetime.fromtimestamp(resume_path.stat().st_mtime).strftime("%d.%m.%Y %H:%M")
-            resume = f"{len(resume_path.read_text(encoding='utf-8'))} симв., загружено {when}"
+            text = resume_path.read_text(encoding="utf-8")
+            resume = f"{len(text)} симв., загружено {when}" + ("" if has_city(text) else ", города в нём нет")
         else:
             resume = "не загружено — нажмите «Загрузить резюме с hh»"
         context = cfg.ai.context.strip()
@@ -1016,6 +1019,8 @@ class AiTestPage(Page):
                 for answer in fill.answers:
                     self.view.append(f"  {answer.question.text}", "info")
                     self.view.append(f"    → {answer.describe()}", "ok")
+                for note in self.pg.client.notes if self.pg else ():
+                    self.view.append(f"  страховка: {note}", "warn")
         else:
             turn = payload
             d = turn.decision
@@ -1167,8 +1172,15 @@ SETTINGS = [
          "Ollama на другом компьютере: http://192.168.1.50:11434 (или http://localhost:11434 через SSH-туннель). "
          "Пусто — Ollama на этом компьютере. Подробно — docs/ollama.md"),
         ("ai", "context", "Что ещё знать о вас, кроме резюме", "text",
-         "Зарплатные ожидания, формат работы, город, когда готовы выйти, готовность к переезду и т.п. Требования "
-         "к письму удобнее писать на вкладке «Отклики» → «Свой промпт для письма нейросети»"),
+         "Здесь вы говорите нейросети, что отвечать работодателю: если в этом тексте есть ответ на вопрос, она ответит "
+         "так, как вы написали. Зарплатные ожидания, формат работы, город, когда готовы выйти, готовность к переезду "
+         "и т.п. Например: Живу в Москве, гражданство РФ. Могу выйти через 2 недели. Проверить ответы — «Тест анкеты» "
+         "на странице «Проверка ИИ». Требования к письму удобнее писать на вкладке «Отклики» → «Свой промпт для "
+         "письма нейросети»"),
+        ("ai", "documents_ready", "Готов предоставить документы по запросу работодателя", "bool",
+         "На вопрос «Готовы ли вы предоставить документы?» (выписка из ЭТК, договоры ГПХ, справки) нейросеть ответит "
+         "«да». Выключено — такие анкеты пропускаются, а чаты остаются вам. Сами документы программа никуда не "
+         "отправляет; если просят приложить их сейчас или сообщить паспортные данные, решаете вы"),
         ("ai", "only_robot", "Отвечать только ботам hh (Робот-рекрутер, ИИ-помощник), живым людям — вы", "bool",
          "Выключено — отвечает всем. Встречи, собеседования и звонки в любом случае остаются вам"),
         ("ai", "max_answer_chars", "Максимальная длина ответа, символов", "int", ""),

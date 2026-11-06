@@ -95,6 +95,7 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
 - грейд — Junior / Middle / Senior, а не цифры;
 - варианты копируй ДОСЛОВНО из списка; для «выбери один» — ровно один вариант;
 - только факты из резюме и контекста; не выдумывай опыт, сроки, суммы, компании и ссылки;
+- если ответ на вопрос есть в контексте соискателя, отвечай именно так;
 - стаж: общий — из строки «Опыт работы» в ключевых фактах; по отдельной технологии — только если он прямо
   следует из резюме. Навыкам «из списка» и тому, что «изучаю в свободное время», коммерческий стаж не приписывай;
 - список технологий/навыков: выбирай ТОЛЬКО то, что прямо написано в резюме, остальное не выбирай;
@@ -109,7 +110,7 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
 - пиши своими словами, живо и по делу; не копируй строки резюме дословно и не перечисляй весь стек подряд;
 - ты говоришь как сам соискатель: никогда не пиши «в резюме не указано» / «в резюме нет» — пиши «опыта с X не было»;
 - can_answer = false — ТОЛЬКО если просят: тестовое задание, код, решение задачи, ссылку на портфолио/GitHub,
-  документы, контакты, персональные данные или оплату."""
+  документы, телефон, почту, паспортные данные или оплату. Город, гражданство и образование сюда не относятся."""
 
 
 LETTER_PROMPT = """Ты пишешь сопроводительное письмо соискателя к отклику на вакансию hh.ru.
@@ -585,7 +586,8 @@ def review(decision: Decision, transcript: str, sent: list[str]) -> str:
         decision.kind = "human"
         return f"в сообщении «{sensitive.group(0)}» — такие вопросы решаете вы"
     meeting = MEETING.search(tail) or (MEETING.search(decision.question) if decision.question else None)
-    if meeting and decision.kind != "human":
+    # «Готовы ли вы после интервью предоставить документы?» — про документы, а не приглашение на интервью
+    if meeting and decision.kind != "human" and not documents_question(tail):
         decision.kind = "human"
         return f"предлагают {meeting.group(0)} — время согласуете вы"
     if decision.kind in ("info", "wait") and tail.rstrip().endswith("?"):
@@ -729,7 +731,7 @@ class AiClient:
         fresh = new_messages(transcript, sent or [])
         parts = [
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
-            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
+            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{self._full_context(context) or '(нет)'}",
             f"ПЕРЕПИСКА (последние сообщения внизу):\n{transcript}",
             "НОВЫЕ СООБЩЕНИЯ РАБОТОДАТЕЛЯ (реши, что с ними делать):\n" + "\n".join(fresh or [last_message(transcript)]),
         ]
@@ -757,6 +759,15 @@ class AiClient:
             return Decision("info")
         buttons = buttons or []
         self.notes = []
+        fresh = new_messages(transcript, sent)
+        about_documents = [m for m in fresh if documents_question(m)]
+        if about_documents:  # обещание от вашего имени: решает ваше разрешение, а не модель
+            self.last_raw = ""
+            if not self._documents_allowed(context):
+                return Decision("human", about_documents[0])
+            if len([m for m in fresh if m.rstrip().endswith("?")]) <= 1:
+                button = next((b for b in buttons if _YES_OPTION.search(b) and not _NO_OPTION.search(b)), "")
+                return Decision("question", about_documents[0], "" if button else DOCUMENTS_REPLY, button)
         messages = self.build_messages(resume, context, transcript, sent, buttons=buttons)
         self.last_raw = self.complete(messages, json_mode=True)
         try:
@@ -857,6 +868,9 @@ class AiClient:
         if _START_Q.search(decision.question) and not _TIMING_CTX.search(context):
             decision.reply = "Готов обсудить на собеседовании."
             return decision
+        if _CITY_Q.search(decision.question) and not knows_city(resume, context):
+            decision.reply = UNKNOWN_FACT_REPLY
+            return decision
         if _SALARY_Q.search(decision.question):
             phrase = salary_phrase(context)
             if not phrase:
@@ -910,6 +924,22 @@ class AiClient:
                 self.notes.append(f"вопрос {n} — ловушка для нейросетей, не отмечаю")
                 answers.append(trap)
                 continue
+            # «Готовы ли предоставить документы?» — обещание от вашего имени: только с вашего разрешения
+            if documents_question(q.text):
+                if not self._documents_allowed(context):
+                    return FormFill(False, f"вопрос {n}: спрашивают, готовы ли вы предоставить документы. Если "
+                                           "готовы, включите «Настройки» → «ИИ-ответы в чатах» → "
+                                           "«Готов предоставить документы по запросу работодателя»")
+                agreed = documents_answer(q)
+                if agreed is not None:
+                    answers.append(agreed)
+                    continue
+            if _ATTACH_NOW.search(q.text):  # приложить файл программа не может, а общая фраза тут — не ответ
+                return FormFill(False, f"вопрос {n}: просят приложить документ — это решаете вы")
+            # Город, который нейросети неоткуда узнать: иначе она берёт его из строки о вузе или работе
+            if q.kind == "text" and _CITY_Q.search(q.text) and not knows_city(resume, context):
+                answers.append(FormAnswer(q, text=UNKNOWN_FACT_REPLY))
+                continue
             # «Отметьте технологии»: короткие варианты отмечаем по резюме сами — точно и без выдумок
             picked = skills_from_resume(q, f"{resume}\n{context}")
             if picked is not None:
@@ -946,10 +976,23 @@ class AiClient:
                 self.notes.append(f"вопрос {n}: {e} — ответил осторожно")
                 answers.append(fallback)
         answers = [drop_trap_choices(self._no_invented_tech(resume, context, vacancy, a)) for a in answers]
-        for answer in answers:
+        for n, answer in enumerate(answers, 1):
             if answer.question.kind == "text":
                 answer.text = fix_text_answer(answer.question, answer.text, resume, context)
+                if _VAGUE_ANSWER.search(answer.text):  # вопрос без ответа: человеку видно, что дописать
+                    self.notes.append(f"вопрос {n}: ответа нет в резюме и контексте, поэтому ответил общей фразой. "
+                                      "Чтобы отвечать точнее, допишите это в «Настройки» → «Что ещё знать о вас»")
         return FormFill(True, answers=answers)
+
+    def _documents_allowed(self, context: str) -> bool:
+        """Можно ли обещать документы: галочка в настройках или ваши слова в контексте."""
+        return self.cfg.documents_ready or bool(_DOCS_CONSENT.search(context))
+
+    def _full_context(self, context: str) -> str:
+        """Контекст для нейросети: ваш текст и то, что вы разрешили галочками."""
+        if not self.cfg.documents_ready:
+            return context
+        return f"{context}\nГотов предоставить документы по запросу работодателя.".strip()
 
     def _no_invented_tech(self, resume: str, context: str, vacancy: str, answer: FormAnswer) -> FormAnswer:
         """Вопрос про технологию, которой нет в резюме, а модель «вспомнила» опыт с ней — не пропускаем выдумку."""
@@ -1046,7 +1089,7 @@ class AiClient:
             pass
         if q.kind == "text":  # «нет опыта» — только на вопрос про опыт с чем-то; на «по ТК или ГПХ?» это чепуха
             return FormAnswer(q, text="Опыта с этим не было, но готов быстро освоить." if _EXPERIENCE_WITH.search(q.text)
-                              else "Готов рассказать подробнее на собеседовании.")
+                              else UNKNOWN_FACT_REPLY)
         k = _modest_option(q)
         if k is None:
             k = _neutral_option(q)
@@ -1061,7 +1104,7 @@ class AiClient:
         user = "\n\n".join([
             f"КЛЮЧЕВЫЕ ФАКТЫ ИЗ РЕЗЮМЕ:\n{key_facts(resume) or '(нет)'}",
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
-            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
+            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{self._full_context(context) or '(нет)'}",
             f"ВАКАНСИЯ: {vacancy}",
         ])
         hints = program_hints(q, resume, context)
@@ -1126,7 +1169,8 @@ class AiClient:
 
 
 _KEY_FACT = re.compile(r"^(?:Опыт работы|Формат работы|Тип занятости|Уровень дохода|Командировки|Переезд|"
-                       r"Гражданство|Проживает|Желательное время в пути)", re.I)
+                       r"Готовность к переезду|Гражданство|Разрешение на работу|Проживает|"
+                       r"Желательное время в пути)", re.I)
 
 
 def key_facts(resume: str) -> str:
@@ -1325,10 +1369,56 @@ def language_answer(q: FormQuestion, resume: str, context: str) -> FormAnswer | 
 
 
 _NEUTRAL = re.compile(r"готов обсудить|обсудим|по договор[её]нности|обсуждается|на собеседовании", re.I)
+# Общая фраза вместо ответа: в резюме и контексте его не нашлось
+UNKNOWN_FACT_REPLY = "Готов рассказать подробнее на собеседовании."
+_VAGUE_ANSWER = re.compile(r"готов\w*\s+(?:обсудить|рассказать)[^.!?]*на\s+собеседовании", re.I)
+# Вопрос о городе проживания. Город известен, если он есть в строке резюме о проживании или вы написали о нём сами
+_CITY_Q = re.compile(r"(?:в\s+каком|ваш|какой)\s+город|город\w*\s+(?:проживания|жительства)|"
+                     r"где\s+(?:вы\s+)?(?:живёте|живете|проживаете)|место\s+(?:проживания|жительства)", re.I)
+_CITY_FACT = re.compile(r"^\s*(?:проживает|город(?:\s+проживания)?|место\s+(?:проживания|жительства))\s*:", re.I | re.M)
+# В контексте: «Живу в Москве», «Москва, гибрид» или название посреди предложения. «Ожидаю от 150 000» — не город
+_CITY_CONTEXT = re.compile(r"жив[уёе]|прожива|город|(?:^|[.!?]\s+)[А-ЯЁ][а-яё]{2,}(?:[- ][А-ЯЁ][а-яё]+)?\s*(?:[.!?,]|$)|"
+                           r"[а-яё,]\s+[А-ЯЁ][а-яё]{3,}", re.M)
+
+
+def knows_city(resume: str, context: str) -> bool:
+    return bool(_CITY_FACT.search(resume) or _CITY_CONTEXT.search(context))
 
 
 def _neutral_option(q: FormQuestion) -> int | None:
     return next((k for k, o in enumerate(q.options) if _NEUTRAL.search(o)), None)
+
+
+# Вопрос о готовности показать документы позже: «Готовы ли вы предоставить выписку из ЭТК?». Это не просьба
+# прислать их сейчас: такое («приложите скан», паспорт) по-прежнему остаётся человеку
+_DOCS_WORD = re.compile(r"документ|выписк|\bэтк\b|трудов\w*\s+книжк|2-?ндфл|справк\w*\s+о\s+доход", re.I)
+_DOCS_GIVE = re.compile(r"предостав|предъяв|показа|подтверд|присла|выслать|отправить|направить", re.I)
+_DOCS_READY = re.compile(r"готов|соглас|сможете|можете|есть\s+ли\s+возможность|возможно\s+ли", re.I)
+_DOCS_NOW = re.compile(r"\b(?:приложите|прикрепите|пришлите|загрузите|отправьте|вышлите|укажите)\b", re.I)
+# Просьба приложить файл прямо в анкете
+_ATTACH_NOW = re.compile(r"\b(?:приложите|прикрепите|пришлите|загрузите|вышлите)\b[^.?!\n]*"
+                         r"(?:документ|скан|фото|копи|диплом|выписк|справк|трудов\w*\s+книжк|файл)", re.I)
+# Ваши слова в контексте: «Готов предоставить все необходимые документы». «Не готов…» разрешением не считается
+_DOCS_CONSENT = re.compile(
+    r"(?<!не )готов\w*(?:\s+\S+){0,3}?\s+(?:предостав|предъяв|показа|присла|отправ)\w*(?:\s+\S+){0,4}?\s+документ|"
+    r"документ\w*(?:\s+\S+){0,3}?\s+(?<!не )готов", re.I)
+_YES_OPTION = re.compile(r"^\s*(?:да\b|конечно|готов|согласен|согласна|могу)", re.I)
+_NO_OPTION = re.compile(r"^\s*нет\b|\bне\s+(?:готов|соглас|могу|буду)", re.I)
+DOCUMENTS_REPLY = "Да, готов предоставить документы по запросу."
+
+
+def documents_question(text: str) -> bool:
+    """Спрашивают о готовности предоставить документы — а не просят прислать их сейчас."""
+    return bool(_DOCS_WORD.search(text) and _DOCS_GIVE.search(text) and _DOCS_READY.search(text)
+                and not _DOCS_NOW.search(text) and not SENSITIVE.search(text))
+
+
+def documents_answer(q: FormQuestion) -> FormAnswer | None:
+    """Ответ «да» на вопрос о документах. None — среди вариантов нет согласия: решает нейросеть."""
+    if q.kind == "text":
+        return FormAnswer(q, text=DOCUMENTS_REPLY)
+    k = next((k for k, o in enumerate(q.options) if _YES_OPTION.search(o) and not _NO_OPTION.search(o)), None)
+    return FormAnswer(q, choices=[k]) if k is not None else None
 
 
 _HUMAN_OPTION = re.compile(r"^\s*нет\b|человек|не (?:нейросеть|ии|бот|ai)\b", re.I)
