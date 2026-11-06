@@ -1,0 +1,47 @@
+---
+import Icon from './Icon.astro';
+import { assetUrl, contacts, links } from '../config';
+import { getRepoSnapshot } from '../lib/github';
+
+const { version } = await getRepoSnapshot();
+---
+
+<section class="pb-[clamp(4.5rem,10vw,7rem)]">
+  <div class="wrap">
+    <div class="reveal relative isolate overflow-hidden rounded-3xl border border-line bg-ink-900 px-6 py-14 sm:px-12 lg:py-20">
+      <div
+        class="absolute inset-0 -z-10"
+        style="background: radial-gradient(40rem 22rem at 90% 110%, rgb(139 92 246 / 0.22), transparent 70%), radial-gradient(36rem 20rem at 0% 110%, rgb(14 165 233 / 0.16), transparent 70%)"
+        aria-hidden="true"
+      >
+      </div>
+
+      <div class="grid gap-10 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] lg:items-end lg:gap-16">
+        <div>
+          <h2 class="h2 mt-0!">
+            Займитесь собеседованиями.
+            <span class="grad block">Откликами займётся робот.</span>
+          </h2>
+          <div class="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            <a class="btn btn-primary" href={assetUrl(version, 'windows')} data-download-cta data-asset="windows">
+              <Icon name="download" />
+              <span data-cta-label>Скачать для Windows</span>
+            </a>
+            <a class="btn btn-ghost" href="/#install">Другие системы и Docker</a>
+          </div>
+        </div>
+
+        <figure class="border-l border-line-strong pl-5">
+          <blockquote class="text-pretty text-fg-2">
+            Я устал вручную откликаться на сотню вакансий в день, поэтому написал эту программу.
+          </blockquote>
+          <figcaption class="mt-3 text-sm text-fg-3">
+            {contacts.author}, автор.
+            <a class="link" href="/contacts">Написать</a> или
+            <a class="link" href={links.repo}>поставить звезду</a>
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>

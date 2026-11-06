@@ -7,6 +7,7 @@ build
 dist
 docs
 packaging
+site
 # данные: в образ не попадают, на сервере подключаются как volume
 hh-data
 browser-profile

@@ -1,0 +1,167 @@
+---
+import Icon from './Icon.astro';
+
+const bars = [
+  { key: 'exp', label: 'Опыт', weight: 20, value: 93, note: 'хватает для 93% вакансий' },
+  { key: 'title', label: 'Название', weight: 15, value: 100, note: 'слова должности есть в названиях подходящих вакансий' },
+  { key: 'skills', label: 'Навыки', weight: 45, value: 85, note: '16 из 25 самых востребованных' },
+  { key: 'format', label: 'Оформление', weight: 20, value: 75, note: 'в порядке 3 из 5 пунктов' },
+];
+
+const todo = [
+  { level: 'Важно', tag: 'tag-warn', text: 'Перенесите в «Ключевые навыки» то, что уже есть в опыте: Apache Kafka (19%), CI/CD (14%), Asyncio (8%).' },
+  { level: 'Полезно', tag: 'tag-hh', text: 'Чаще всего из того, чего нет в резюме, просят RabbitMQ (13% вакансий) и Kubernetes (12%).' },
+  { level: 'Полезно', tag: 'tag-hh', text: '«Обо мне» всего 178 символов. Лучше 3–5 предложений: кто вы, в чём сильны, чем полезны.' },
+  { level: 'Мелочь', tag: 'tag-mute', text: 'Часто просят «Работу в команде». Если это про вас, добавьте в навыки: hh учитывает их в совпадении.' },
+];
+
+const skills = [
+  { name: 'ETL', gain: 20, salary: '+41%' },
+  { name: 'Apache Airflow', gain: 14, salary: '+8%' },
+  { name: 'Spark', gain: 14, salary: '+35%' },
+  { name: 'ClickHouse', gain: 8, salary: '+10%' },
+];
+
+const funnel = [
+  { label: 'Письмо нейросетью', sent: 612, invited: 41 },
+  { label: 'Кнопка hh', sent: 430, invited: 22 },
+  { label: 'Свой шаблон', sent: 254, invited: 7 },
+];
+const funnelMax = 8; // процентов приглашений: правый край шкалы
+const percent = (row: { sent: number; invited: number }) => (row.invited / row.sent) * 100;
+---
+
+<section id="analysis" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
+  <div class="wrap">
+    <div class="reveal relative overflow-hidden rounded-3xl border border-line bg-ink-900">
+      <div
+        class="pointer-events-none absolute inset-x-0 top-0 h-96"
+        style="background: radial-gradient(48rem 20rem at 85% -10%, rgb(139 92 246 / 0.2), transparent 70%), radial-gradient(36rem 16rem at 5% -10%, rgb(14 165 233 / 0.1), transparent 70%)"
+        aria-hidden="true"
+      >
+      </div>
+
+      <div class="relative p-6 sm:p-10 lg:p-14">
+        <p class="kicker" style="--kicker: var(--color-ai)">Анализ резюме и рынка</p>
+        <h2 class="h2 max-w-3xl">Сравните резюме со всей выдачей. <span class="dim">И узнайте, что поправить до отклика.</span></h2>
+        <p class="lead mt-5">
+          Программа смотрит, какие навыки просят в вашей профессии, сколько за них платят и на какую долю вакансий
+          хватает вашего опыта. Считает по числам и прямо на компьютере. Резюме никуда не отправляется, а разбор
+          нейросетью включается только по желанию.
+        </p>
+
+        <div class="mt-10 grid gap-4 lg:mt-12 lg:grid-cols-12" data-analysis>
+          <!-- Оценка -->
+          <article class="inset-panel flex flex-col p-5 sm:p-6 lg:col-span-5 lg:row-span-2">
+            <div class="flex items-end gap-4">
+              <p class="text-[4.75rem] leading-[0.9] font-semibold tracking-tighter text-ok tabular-nums" data-score>87</p>
+              <div class="pb-1 text-[0.8125rem] leading-snug">
+                <p class="text-fg-3">из 100</p>
+                <p class="font-medium text-ok">отличное соответствие рынку</p>
+              </div>
+            </div>
+
+            <div class="mt-6 mb-6 grid gap-3.5 lg:gap-5">
+              {
+                bars.map((bar) => (
+                  <div>
+                    <div class="flex items-baseline justify-between gap-3 text-sm">
+                      <span>
+                        {bar.label} <span class="ml-0.5 font-mono text-xs text-fg-3">вес {bar.weight}</span>
+                      </span>
+                      <span class="font-medium tabular-nums" data-bar-value={bar.key}>{bar.value}</span>
+                    </div>
+                    <div class="bar-track mt-1.5">
+                      <span class="bar-fill" style={`--v: ${bar.value}%`} data-bar-fill={bar.key} />
+                    </div>
+                    <p class="mt-1 text-xs text-fg-3" data-bar-note={bar.key}>{bar.note}</p>
+                  </div>
+                ))
+              }
+            </div>
+
+            <p class="mt-6 border-t border-line pt-4 text-[0.8125rem] leading-relaxed text-fg-3 lg:mt-auto">
+              Сравнение с 668 вакансиями. Ваш рынок: 456 вакансий той же профессии, где у вас есть хотя бы 30% навыков.
+            </p>
+          </article>
+
+          <!-- Что сделать -->
+          <article class="inset-panel p-5 sm:p-6 lg:col-span-7">
+            <h3 class="h3">Что сделать, по пользе</h3>
+            <ul class="mt-4 grid gap-3.5">
+              {
+                todo.map((item) => (
+                  <li class="grid gap-x-3 gap-y-1 text-[0.9063rem] leading-relaxed text-fg-2 sm:grid-cols-[4.5rem_minmax(0,1fr)]">
+                    <span><span class:list={['tag', item.tag]}>{item.level}</span></span>
+                    <span class="text-pretty">{item.text}</span>
+                  </li>
+                ))
+              }
+            </ul>
+          </article>
+
+          <!-- Что изучить -->
+          <article class="inset-panel p-5 sm:p-6 lg:col-span-7">
+            <div class="grid gap-x-6 gap-y-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <div>
+                <h3 class="h3">Что подучить, чтобы открылось больше вакансий</h3>
+                <p class="mt-1.5 text-sm text-fg-3">Отметьте навыки. Каждый следующий считается с учётом предыдущих.</p>
+              </div>
+              <p class="sm:text-right">
+                <span class="block text-[2rem] leading-none font-semibold tracking-tight text-ok tabular-nums" data-matched>366</span>
+                <span class="mt-1 block text-xs text-fg-3">подходящих вакансий</span>
+              </p>
+            </div>
+            <div class="mt-5 grid gap-2 sm:grid-cols-2">
+              {
+                skills.map((skill) => (
+                  <button type="button" class="skill-toggle" aria-pressed="false" data-skill={skill.name} data-gain={skill.gain}>
+                    <span class="flex min-w-0 items-center gap-2.5">
+                      <span class="box"><Icon name="check" class="size-3" /></span>
+                      <span class="truncate">{skill.name}</span>
+                    </span>
+                    <span class="flex shrink-0 items-baseline gap-2 font-mono text-xs">
+                      <span class="text-fg-3" title="Насколько больше платят там, где просят этот навык">{skill.salary}</span>
+                      <span class="text-hh tabular-nums" data-skill-gain>+{skill.gain}</span>
+                    </span>
+                  </button>
+                ))
+              }
+            </div>
+          </article>
+
+          <!-- Воронка -->
+          <article class="inset-panel grid gap-x-10 gap-y-5 p-5 sm:p-6 lg:col-span-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,2.4fr)]">
+            <div>
+              <h3 class="h3">Воронка: что работает</h3>
+              <p class="mt-1.5 text-sm text-fg-3">
+                Приглашений на 100 откликов, по виду письма. То же видно по каждому запросу и по совпадению навыков.
+              </p>
+            </div>
+            <div class="grid gap-x-8 gap-y-4 sm:grid-cols-3">
+              {
+                funnel.map((row) => (
+                  <div>
+                    <div class="flex items-baseline justify-between gap-3 text-sm">
+                      <span>{row.label}</span>
+                      <span class="font-medium tabular-nums">{percent(row).toFixed(1).replace('.', ',')}</span>
+                    </div>
+                    <div class="bar-track mt-1.5">
+                      <span class="bar-fill" style={`--v: ${(percent(row) / funnelMax) * 100}%; --bar: linear-gradient(90deg, var(--color-hh), var(--color-ai))`} />
+                    </div>
+                    <p class="mt-1 text-xs text-fg-3 tabular-nums">{row.sent} откликов, приглашений: {row.invited}</p>
+                  </div>
+                ))
+              }
+            </div>
+          </article>
+        </div>
+
+        <p class="demo-note mt-5 flex items-center gap-2">
+          <Icon name="alert" class="size-3.5" />
+          Демо-данные: резюме и вакансии вымышленные, на ваших данных числа будут свои.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>

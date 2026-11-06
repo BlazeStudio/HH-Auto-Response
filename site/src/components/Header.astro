@@ -1,0 +1,47 @@
+---
+import Icon from './Icon.astro';
+import { links, nav } from '../config';
+import { getRepoSnapshot } from '../lib/github';
+
+const { stars } = await getRepoSnapshot();
+---
+
+<header class="site-header" data-header>
+  <div class="wrap flex h-16 items-center justify-between gap-4">
+    <a href="/" class="flex items-center gap-2.5 rounded-lg" aria-label="HH Auto, на главную">
+      <img src="/logo.png" width="30" height="30" alt="" class="size-7.5 rounded-lg" />
+      <span class="text-[1.0625rem] font-semibold tracking-tight whitespace-nowrap">HH Auto</span>
+    </a>
+
+    <nav class="hidden items-center gap-0.5 whitespace-nowrap lg:flex" aria-label="Разделы сайта">
+      {nav.map((item) => <a href={item.href} class="nav-link">{item.label}</a>)}
+    </nav>
+
+    <div class="flex items-center gap-2">
+      <a
+        href={links.repo}
+        class="btn btn-ghost btn-sm"
+        aria-label={stars === null ? 'Поставить звезду на GitHub' : `Поставить звезду на GitHub, сейчас звёзд: ${stars}`}
+      >
+        <Icon name="star" class="size-4 text-warn" />
+        <span class="hidden whitespace-nowrap sm:inline">Star на GitHub</span>
+        <span
+          data-stars
+          class="rounded-md bg-white/8 px-1.5 text-[0.8125rem] tabular-nums"
+          hidden={stars === null}
+        >
+          {stars ?? ''}
+        </span>
+      </a>
+
+      <details class="menu lg:hidden" data-menu>
+        <summary aria-label="Открыть меню"><Icon name="menu" class="size-5" /></summary>
+        <nav class="menu-panel" aria-label="Разделы сайта">
+          {nav.map((item) => <a href={item.href}>{item.label}</a>)}
+          <a href="/safety">Безопасность</a>
+          <a href="/contacts">Контакты</a>
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>
