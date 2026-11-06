@@ -149,5 +149,5 @@ def write_sample_letter(pg: Playground) -> tuple[str, float]:
     started = time.monotonic()
     title, company, description = SAMPLE_VACANCY
     text = pg.client.write_letter(pg.resume, pg.cfg.ai.context, title, company, description, pg.cfg.letter.ai_max_chars,
-                                  pg.cfg.letter.experience_first)
+                                  pg.cfg.letter.experience_first, pg.cfg.letter.ai_prompt)
     return text, time.monotonic() - started

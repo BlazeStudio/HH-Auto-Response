@@ -789,7 +789,8 @@ class Responder:
         started = time.monotonic()
         try:
             text = self.ai.write_letter(self.resume_text, self.cfg.ai.context, vac.title, vac.company, description,
-                                        self.cfg.letter.ai_max_chars, self.cfg.letter.experience_first)
+                                        self.cfg.letter.ai_max_chars, self.cfg.letter.experience_first,
+                                        self.cfg.letter.ai_prompt)
         except AiError as e:
             log.warning(f"  ! нейросеть не написала письмо: {e}")
             return False

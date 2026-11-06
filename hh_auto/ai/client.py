@@ -112,29 +112,45 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
 
 
 LETTER_PROMPT = """Ты пишешь сопроводительное письмо соискателя к отклику на вакансию hh.ru.
-Тебе дают резюме соискателя, его дополнительный контекст и вакансию (название, компания, описание).
+Тебе дают резюме соискателя, его дополнительный контекст и данные о вакансии.
 
 Как писать:
 - от первого лица, по-русски, живо и по-деловому, без канцелярита и штампов («динамично развивающаяся компания»);
-- вакансию называй в кавычках, компанию — по имени: «вакансия «Python-разработчик» в Ромашке»
-  (если компания не указана — просто «ваша компания»);
+{naming}
 {structure}
 - если требования вакансии шире опыта — сделай упор на смежный опыт и быстрое обучение, но опыт,
   которого нет в резюме, не приписывай;
 - никаких контактов, ссылок, подписи с именем, заполнителей в квадратных скобках, темы письма и markdown;
 - зарплату упоминай только если о ней просят в вакансии и она есть в контексте;
-- до {max_chars} символов.
+- до {max_chars} символов;
+- пожелания к письму в контексте соискателя (тон, что упоминать, а что нет) важнее правил выше.
 
 Верни только текст письма."""
+# Как называть вакансию и компанию: (не упоминать вакансию, не упоминать компанию) → правило
+LETTER_NAMING = {
+    (False, False): """- вакансию называй в кавычках, компанию — по имени: «вакансия «Python-разработчик» в Ромашке»
+  (если компания не указана — просто «ваша компания»);""",
+    (False, True): "- вакансию называй в кавычках; компанию не называй и не пиши «ваша компания»;",
+    (True, False): "- компанию можно назвать по имени; вакансию не называй и не пиши слово «вакансия», пиши о самих задачах;",
+    (True, True): "- не называй ни вакансию, ни компанию и не пиши слова «вакансия» и «ваша компания»: "
+                  "пиши только о задачах и своём опыте;",
+}
 # Порядок письма. По опыту откликов (339 откликов, 26 приглашений) письма, которые начинаются с опыта под
 # вакансию, а не с пересказа компании, чаще приводят к приглашению — это вариант по умолчанию
 LETTER_EXPERIENCE_FIRST = """- начни с «Здравствуйте!» и сразу — 2–3 факта из резюме, которые совпадают с требованиями вакансии
-  (своими словами, с конкретикой: задачи, результаты, технологии), затем одно предложение, чем интересна
-  именно эта вакансия, и короткое предложение обсудить детали — всего 3–5 предложений;
+  (своими словами, с конкретикой: задачи, результаты, технологии), затем одно предложение, чем {interest},
+  и короткое предложение обсудить детали — всего 3–5 предложений;
 - не начинай с пересказа компании или вакансии («Ваша компания — лидер…», «Меня заинтересовала…»);"""
-LETTER_INTEREST_FIRST = """- начни с «Здравствуйте!», затем 3–5 предложений: чем заинтересовала именно эта вакансия, 2–3 факта из резюме,
+LETTER_INTEREST_FIRST = """- начни с «Здравствуйте!», затем 3–5 предложений: чем {interest}, 2–3 факта из резюме,
   которые совпадают с требованиями вакансии (своими словами, с конкретикой: задачи, результаты, технологии),
   и короткое предложение обсудить детали;"""
+# Свой промпт соискателя ([letter] ai_prompt) — последним: при расхождении он важнее правил выше
+LETTER_USER_RULES = """
+
+ТРЕБОВАНИЯ СОИСКАТЕЛЯ К ПИСЬМУ. Они важнее всех правил выше: если требование расходится с правилом, выполняй требование.
+Это его собственные слова: что он здесь пишет о себе, считай фактом наравне с резюме. Сам опыт не придумывай.
+
+{rules}"""
 
 
 FILTER_PROMPT = """Ты помогаешь соискателю отбирать вакансии на hh.ru.
@@ -956,34 +972,56 @@ class AiClient:
         return FormAnswer(q, text=text)
 
     def write_letter(self, resume: str, context: str, title: str, company: str, description: str,
-                     max_chars: int = 900, experience_first: bool = True) -> str:
+                     max_chars: int = 900, experience_first: bool = True, ai_prompt: str = "") -> str:
         """Сопроводительное письмо под вакансию — для тех, у кого нет подписки hh (кнопки «Сгенерировать»).
-        experience_first — начинать с опыта под вакансию ([letter] experience_first)."""
-        user = "\n\n".join([
+        experience_first — начинать с опыта под вакансию ([letter] experience_first);
+        ai_prompt — свои требования соискателя ([letter] ai_prompt), они важнее встроенных правил."""
+        rules = ai_prompt.strip()
+        hide_vacancy, hide_company = forbidden_mentions(f"{rules}\n{context}")
+        no_think = "\n\n/no_think" if "qwen3" in self.model.lower() else ""
+        user = "\n\n".join(filter(None, [
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
             f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
-            f"ВАКАНСИЯ: «{title}», компания {company}",
-            f"ОПИСАНИЕ ВАКАНСИИ:\n{description or '(не загрузилось — пиши по названию вакансии)'}",
-        ])
-        if "qwen3" in self.model.lower():
-            user += "\n\n/no_think"
+            letter_vacancy(title, company, description, hide_vacancy, hide_company),
+            f"ТРЕБОВАНИЯ СОИСКАТЕЛЯ К ПИСЬМУ:\n{rules}" if rules else "",  # и последним: небольшие модели слушают конец
+        ])) + no_think
         structure = LETTER_EXPERIENCE_FIRST if experience_first else LETTER_INTEREST_FIRST
-        prompt = LETTER_PROMPT.replace("{structure}", structure).replace("{max_chars}", str(max_chars))
+        interest = "интересны такие задачи" if hide_vacancy else "интересна именно эта вакансия"
+        prompt = (LETTER_PROMPT.replace("{naming}", LETTER_NAMING[hide_vacancy, hide_company])
+                  .replace("{structure}", structure).replace("{interest}", interest)
+                  .replace("{max_chars}", str(max_chars)))
+        if rules:
+            prompt += LETTER_USER_RULES.replace("{rules}", rules)
+        signature = bool(rules and _WANTS_SIGNATURE.search(rules))  # подпись обычно вырезаем, но её могли попросить
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user}]
         self.last_raw = self.complete(messages, max_tokens=900)
-        text = clean_letter(self.last_raw, max_chars)
-        known = f"{resume}\n{context}\n{title}\n{company}"
-        invented = letter_invented_tech(text, known)
-        if invented:  # технологии из вакансии, которых нет в резюме, модель записала себе в опыт — переписываем
-            names = ", ".join(invented)
+        text = clean_letter(self.last_raw, max_chars, signature)
+        known = f"{resume}\n{context}\n{rules}\n{title}\n{company}"
+
+        def problems(letter: str) -> tuple[list[str], list[str]]:
+            return (letter_invented_tech(letter, known),
+                    letter_mentions(letter, title, company, hide_vacancy, hide_company, resume))
+
+        invented, mentioned = problems(text)
+        if invented or mentioned:  # выдуманный опыт или то, что просили не упоминать — переписываем
+            asks = []
+            if invented:
+                asks.append(f"В резюме НЕТ {', '.join(invented)}. Не упоминай их как свой опыт — только то, что есть "
+                            "в резюме.")
+            if mentioned:
+                asks.append(f"Соискатель просил этого не упоминать, а в письме есть: {', '.join(mentioned)}. Убери это, "
+                            "пиши о задачах и своём опыте.")
             messages += [{"role": "assistant", "content": self.last_raw},
-                         {"role": "user", "content": f"В резюме НЕТ {names}. Перепиши письмо: не упоминай их как свой "
-                                                     "опыт — только то, что есть в резюме. Верни только текст письма."}]
-            self.last_raw = self.complete(messages, max_tokens=900)
-            text = clean_letter(self.last_raw, max_chars)
-            invented = letter_invented_tech(text, known)
-            if invented:  # снова — убираем предложения с выдуманным опытом
-                text = drop_sentences_with(text, invented)
+                         {"role": "user", "content": f"Перепиши письмо. {' '.join(asks)} Верни только текст письма."
+                                                     + no_think}]
+            try:
+                self.last_raw = self.complete(messages, max_tokens=900)
+                text = clean_letter(self.last_raw, max_chars, signature) or text
+            except AiError:  # черновик уже есть: лишнее вырежем сами
+                pass
+            invented, mentioned = problems(text)
+            if invented or mentioned:  # снова — убираем такие предложения
+                text = drop_sentences_with(text, invented + mentioned)
         return text
 
     def _honest_fallback(self, resume: str, context: str, vacancy: str, q: FormQuestion) -> FormAnswer | None:
@@ -1339,17 +1377,20 @@ def _clean_reply(text: str, max_chars: int) -> str:
 
 
 _LETTER_JUNK = re.compile(r"\[[^\]]{2,40}\]|^\s*(?:Тема|Subject)\s*:|^\s*С уважением|^\s*---", re.I | re.M)
+_WANTS_SIGNATURE = re.compile(r"(?<!не )(?<!без )(?:подпис|с уважением)", re.I)
 
 
-def clean_letter(text: str, max_chars: int) -> str:
-    """Письмо от нейросети: без markdown, подписи, заполнителей «[Ваше имя]» и с абзацами как в hh."""
+def clean_letter(text: str, max_chars: int, signature: bool = False) -> str:
+    """Письмо от нейросети: без markdown, заполнителей «[Ваше имя]», подписи (если её не просили в своём промпте)
+    и с абзацами как в hh."""
     text = text.replace("**", "").replace("__", "").strip().strip('"«»').strip()
     lines = []
     for line in text.splitlines():
         if _LETTER_JUNK.search(line):
-            if re.match(r"\s*С уважением", line, re.I):
+            if not re.match(r"\s*С уважением", line, re.I):
+                continue
+            if not signature:
                 break  # дальше подпись — имя и контакты не нужны
-            continue
         lines.append(line.strip().lstrip("#").strip())
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     text = re.sub(r"^(Здравствуйте[!,.]|Добрый день[!,.])\s*(?=\S)", r"\1\n\n", text)  # приветствие — отдельной строкой
@@ -1358,6 +1399,98 @@ def clean_letter(text: str, max_chars: int) -> str:
     cut = text[:max_chars]
     end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
     return cut[: end + 1] if end > max_chars * 0.5 else cut.rstrip() + "…"
+
+
+# Просьба не упоминать вакансию или компанию — в своём промпте или в контексте соискателя
+_VACANCY_NOUN = r"ваканси|должност|позици"
+_COMPANY_NOUN = r"компани|работодател|фирм|организаци"
+_NOUN = rf"\b(?:{_VACANCY_NOUN}|{_COMPANY_NOUN})\w*"
+# Только просьбы: «не указывай», «не упоминать». «В вакансии не указана зарплата» — не запрет
+_SAY = (r"(?:упомина(?:й|йте|ть)|упомян(?:и|ите|уть)|(?:на)?пиш(?:и|ите)|(?:на)?писать|назов(?:и|ите)|называ(?:й|йте|ть)|"
+        r"назвать|указыва(?:й|йте|ть)|укаж(?:и|ите)|указать|вставля(?:й|йте|ть)|добавля(?:й|йте|ть)|приводи(?:те|ть)?)\b")
+_NEVER = (rf"(?:\bне\s+(?:\w+\s+){{0,2}}?{_SAY}|\bнельзя\s+(?:\w+\s+)?{_SAY}|\bизбега\w*|\bубер\w*|\bубра\w*|"
+          r"\bбез\s+(?:упоминани|названи|указани)\w*)")
+_GAP = r"[^.!?\n,;]{0,40}?"
+_NO_MENTION = re.compile(
+    rf"{_NEVER}{_GAP}{_NOUN}(?:(?:\s*,\s*|\s+(?:и|или)\s+){_GAP}{_NOUN})*|"  # не упоминай компанию и вакансию
+    rf"{_NOUN}(?:\s+(?:и|или)\s+{_NOUN})?{_GAP}{_NEVER}|"  # компанию и вакансию не упоминай
+    rf"\b{_SAY}{_GAP}{_NOUN}{_GAP}(?:\bне\s+(?:нужно|надо|стоит|следует)|\bнельзя)",  # упоминать компанию не нужно
+    re.I,
+)
+# Слова, которые и без названия выдают вакансию и компанию. «В этой компании» не берём: это бывает и о прошлой работе
+_VACANCY_WORD = re.compile(r"\bваканси\w*|\b(?:эт|данн|ваш)\w+\s+(?:позици|должност)\w*", re.I)
+_COMPANY_WORD = re.compile(r"\b(?:ваш|данн)\w*\s+(?:компани|организаци|фирм)\w*", re.I)
+_NAME_WORD = re.compile(r"\w[\w+#.-]*[\w+#]|\w")
+_LEGAL_FORM = re.compile(r"^(?:ооо|оао|зао|пао|ао|нао|ип|гк|нпо|ltd|llc|inc|gmbh)$", re.I)
+_QUOTED = re.compile(r"[«\"„“]([^«»\"„“”\n]{3,80})[»\"”“]")
+
+
+def forbidden_mentions(rules: str) -> tuple[bool, bool]:
+    """Что соискатель просит не упоминать в письме: (название вакансии, компанию). Ошибка здесь безобидна:
+    письмо без названия компании всё равно хорошее."""
+    found = " ".join(m.group(0) for m in _NO_MENTION.finditer(rules))
+    return bool(re.search(_VACANCY_NOUN, found, re.I)), bool(re.search(_COMPANY_NOUN, found, re.I))
+
+
+def letter_vacancy(title: str, company: str, description: str, hide_vacancy: bool, hide_company: bool) -> str:
+    """Вакансия для письма. Что просили не упоминать, нейросеть и не получает: запрет «не пиши X» небольшие модели
+    пропускают мимо, а то, чего не знаешь, не напишешь. Название показываем, только если описание не загрузилось."""
+    parts = []
+    if not hide_vacancy:
+        parts.append(f"ВАКАНСИЯ: «{title}»" + ("" if hide_company else f", компания {company}"))
+    else:
+        if not description:
+            parts.append(f"ЧТО ЗА РАБОТА (только чтобы понять задачи, в письме это не упоминай): {title}")
+        if not hide_company:
+            parts.append(f"КОМПАНИЯ: {company}")
+    empty = "(не загрузилось)" if hide_vacancy else "(не загрузилось — пиши по названию вакансии)"
+    parts.append(f"ОПИСАНИЕ ВАКАНСИИ:\n{description or empty}")
+    return "\n\n".join(parts)
+
+
+def _with_endings(word: str) -> str:
+    """Слово с любым окончанием: «Ромашка» найдёт и «Ромашке», «Ozon» — и «Ozon'е»."""
+    if len(word) > 3 and re.search(r"[а-яё]$", word, re.I):
+        stem = re.sub(r"(?:ая|яя|ое|ее|ый|ий|ой|[аяоеиыуюйь])$", "", word, flags=re.I)
+        return re.escape(stem) + r"[а-яё]{0,4}"
+    return re.escape(word) + r"(?:['’]?[а-яё]{1,3})?"
+
+
+def _name_regex(words: list[str]) -> re.Pattern | None:
+    """Название в тексте: слова по порядку, с окончаниями, между ними пробелы и скобки."""
+    if not words:
+        return None
+    return re.compile(r"(?<!\w)" + r"[^\w\n]{1,3}".join(map(_with_endings, words)) + r"(?!\w)", re.I)
+
+
+def _company_regex(company: str) -> re.Pattern | None:
+    """Компания без «ООО». Название из одного слова — с большой буквы: компания «Рост» — не «рост продаж»."""
+    words = [w for w in _NAME_WORD.findall(company) if not _LEGAL_FORM.match(w)]
+    if len(words) != 1:
+        return _name_regex(words)
+    first, rest = words[0][0], _with_endings(words[0])[len(re.escape(words[0][0])):]
+    return re.compile(rf"(?<!\w)[{re.escape(first + first.upper())}](?i:{rest})(?!\w)")
+
+
+def letter_mentions(text: str, title: str, company: str, hide_vacancy: bool, hide_company: bool, resume: str) -> list[str]:
+    """Что из запрещённого соискателем попало в письмо. Своя должность и прошлая работа из резюме — это факты о себе,
+    а не название вакансии: «работаю backend-разработчиком» остаётся, если так написано в резюме."""
+    patterns = []
+    if hide_vacancy:
+        patterns.append(_VACANCY_WORD)
+        name = _name_regex(_NAME_WORD.findall(title))
+        if name is not None and not name.search(resume):
+            patterns.append(name)
+    if hide_company:
+        patterns.append(_COMPANY_WORD)
+        name = _company_regex(company)
+        if name is not None and not name.search(resume):
+            patterns.append(name)
+    found = [m.group(0) for pattern in patterns for m in pattern.finditer(text)]
+    if hide_vacancy:  # в кавычках — часть названия вакансии: «Backend-разработчик» при «Backend-разработчик (Python)»
+        wanted = _words(title)
+        found += [m.group(0) for m in _QUOTED.finditer(text) if _words(m.group(1)) and _words(m.group(1)) <= wanted]
+    return list(dict.fromkeys(found))
 
 
 def letter_invented_tech(text: str, known: str) -> list[str]:
