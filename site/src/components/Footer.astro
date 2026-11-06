@@ -43,7 +43,7 @@ const columns = [
           <div>
             <p class="kicker">Связаться</p>
             <h2 class="h2 text-[clamp(1.75rem,3vw,2.5rem)]!">
-              Есть вопрос или идея? <span class="dim">Пишите автору напрямую.</span>
+              Есть вопрос или идея? <span class="dim">Пишите мне напрямую.</span>
             </h2>
             <a href="/contacts" class="link mt-5 inline-flex items-center gap-1.5 text-[0.9375rem]">
               Все контакты и лицензия <Icon name="arrow" class="size-3.5" />
@@ -54,7 +54,7 @@ const columns = [
             <ContactTile icon="telegram" tone="hh" label="Telegram" value={contacts.telegram.label} href={contacts.telegram.url} />
             <ContactTile icon="mail" tone="ai" label="Почта" value={contacts.email} href={`mailto:${contacts.email}`} copy={contacts.email} />
             <ContactTile icon="bug" tone="warn" label="GitHub Issues" value="Сообщить об ошибке" href={links.bugReport} />
-            <ContactTile icon="globe" tone="ok" label="Сайт автора" value={contacts.website.label} href={contacts.website.url} />
+            <ContactTile icon="globe" tone="ok" label="Мой сайт" value={contacts.website.label} href={contacts.website.url} />
           </div>
         </div>
       </section>

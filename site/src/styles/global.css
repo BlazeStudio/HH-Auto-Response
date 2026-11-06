@@ -64,6 +64,34 @@
     background: rgb(56 189 248 / 0.32);
   }
 
+  /* Полоса прокрутки страницы: шире обычной и в цветах сайта. На телефонах остаётся системная. */
+  @media (hover: hover) and (pointer: fine) {
+    html::-webkit-scrollbar {
+      width: 1rem;
+    }
+
+    html::-webkit-scrollbar-track {
+      background: var(--color-ink-950);
+    }
+
+    html::-webkit-scrollbar-thumb {
+      border: 2px solid var(--color-ink-950);
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgb(56 189 248 / 0.5), rgb(139 92 246 / 0.5)) padding-box;
+    }
+
+    html::-webkit-scrollbar-thumb:hover {
+      background: linear-gradient(180deg, rgb(56 189 248 / 0.8), rgb(139 92 246 / 0.8)) padding-box;
+    }
+
+    /* В Firefox ширину задать нельзя, поэтому только цвета */
+    @supports not selector(::-webkit-scrollbar) {
+      html {
+        scrollbar-color: rgb(120 140 220 / 0.6) var(--color-ink-950);
+      }
+    }
+  }
+
   :focus-visible {
     outline: 2px solid var(--color-hh);
     outline-offset: 3px;
@@ -241,7 +269,7 @@
     transition-duration: 0.14s;
   }
 
-  /* Пара значков «обычное состояние» и «готово»: для копирования и скачивания */
+  /* Пара значков на кнопках копирования: «обычное состояние» и «готово» */
   .is-done {
     display: none;
   }
@@ -786,9 +814,9 @@
   .rail-tick {
     position: relative;
     display: block;
-    width: 0.625rem;
-    height: 2px;
-    border-radius: 2px;
+    width: 0.75rem;
+    height: 3px;
+    border-radius: 3px;
     background: rgb(150 175 220 / 0.3);
     transition:
       width 0.5s var(--ease-soft),
@@ -811,7 +839,7 @@
   }
 
   .rail-link:hover .rail-tick {
-    width: 1.125rem;
+    width: 1.25rem;
     background: var(--color-fg-2);
   }
 
@@ -820,7 +848,7 @@
   }
 
   .rail-link[aria-current] .rail-tick {
-    width: 1.125rem;
+    width: 1.25rem;
   }
 
   .rail-link[aria-current] .rail-tick::after {
@@ -843,16 +871,16 @@
     }
 
     .rail-link {
-      width: 2.25rem;
+      width: 2.75rem;
     }
 
     .rail-tick {
-      width: 0.875rem;
+      width: 1.125rem;
     }
 
     .rail-link:hover .rail-tick,
     .rail-link[aria-current] .rail-tick {
-      width: 1.625rem;
+      width: 2.25rem;
     }
   }
 

@@ -1,7 +1,7 @@
 ---
 import AppWindow from './AppWindow.astro';
 import Icon from './Icon.astro';
-import { assetUrl, links } from '../config';
+import { links } from '../config';
 import { getRepoSnapshot } from '../lib/github';
 
 const { version } = await getRepoSnapshot();
@@ -29,15 +29,9 @@ const { version } = await getRepoSnapshot();
       </p>
 
       <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-        <a
-          class="btn btn-primary"
-          href={assetUrl(version, 'windows')}
-          data-download-cta
-          data-asset="windows"
-        >
-          <Icon name="download" class="is-idle size-4" />
-          <Icon name="check" class="is-done size-4" />
-          <span data-cta-label aria-live="polite">Скачать для Windows</span>
+        <a class="btn btn-primary" href="#install">
+          <Icon name="download" />
+          Скачать
         </a>
         <a class="btn btn-ghost" href={links.repo}>
           <Icon name="github" />
@@ -47,9 +41,8 @@ const { version } = await getRepoSnapshot();
     </div>
 
     <p class="soft-in mt-6 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-fg-3" style="--d: 320ms">
-      <a href="#install" class="transition-colors hover:text-fg">Windows, macOS, Linux и Docker</a>
+      <span>Windows, macOS, Linux и Docker</span>
       <span>Бесплатно для личного использования</span>
-      <span>Python ставить не нужно</span>
     </p>
   </div>
 

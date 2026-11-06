@@ -123,8 +123,8 @@ function draw(mesh: Mesh, time: number) {
     vertex.z = vertex.z0 + Math.sin(pace * 0.11 + vertex.phase * 2.3) * LIFT;
   }
 
-  // Свет ходит по кругу сам и чуть сдвигается при прокрутке страницы
-  const angle = time * 0.06 + window.scrollY * 0.0012 + seed;
+  // Свет медленно ходит по кругу и не зависит от прокрутки: грани не должны дёргаться вместе со страницей
+  const angle = time * 0.06 + seed;
   const lightX = Math.cos(angle) * 0.72;
   const lightY = Math.sin(angle) * 0.72;
   const lightZ = 0.69;

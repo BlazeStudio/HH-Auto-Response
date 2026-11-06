@@ -1,5 +1,5 @@
 // Мелочи интерфейса: граница шапки, световое пятно на карточках, копирование, меню на телефоне,
-// плавная прокрутка к разделам, боковая навигация и отклик кнопки скачивания.
+// плавная прокрутка к разделам и боковая навигация.
 
 import { reducedMotion } from './motion';
 
@@ -67,23 +67,6 @@ function initMenu() {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') menu.open = false;
-  });
-}
-
-// Кнопка скачивания ведёт прямо на файл, поэтому со страницы никто не уходит.
-// Подпись на пару секунд подтверждает, что щелчок сработал.
-function initDownload() {
-  document.addEventListener('click', (event) => {
-    const link = (event.target as HTMLElement).closest<HTMLElement>('[data-download-cta][data-asset]');
-    const label = link?.querySelector('[data-cta-label]');
-    if (!link || !label || link.hasAttribute('data-done')) return;
-    const idleText = label.textContent;
-    link.setAttribute('data-done', '');
-    label.textContent = 'Скачивание началось';
-    window.setTimeout(() => {
-      link.removeAttribute('data-done');
-      label.textContent = idleText;
-    }, 3200);
   });
 }
 
@@ -188,7 +171,6 @@ export function initUi() {
   initSpotlight();
   initCopy();
   initMenu();
-  initDownload();
   initAnchors();
   initRail();
 }

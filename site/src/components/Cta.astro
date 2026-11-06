@@ -1,9 +1,6 @@
 ---
 import Icon from './Icon.astro';
-import { assetUrl, contacts, links } from '../config';
-import { getRepoSnapshot } from '../lib/github';
-
-const { version } = await getRepoSnapshot();
+import { contacts, links } from '../config';
 ---
 
 <section class="pb-[clamp(4.5rem,10vw,7rem)]">
@@ -23,12 +20,14 @@ const { version } = await getRepoSnapshot();
             <span class="grad block">Откликами займётся робот.</span>
           </h2>
           <div class="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-            <a class="btn btn-primary" href={assetUrl(version, 'windows')} data-download-cta data-asset="windows">
-              <Icon name="download" class="is-idle size-4" />
-              <Icon name="check" class="is-done size-4" />
-              <span data-cta-label aria-live="polite">Скачать для Windows</span>
+            <a class="btn btn-primary" href="#install">
+              <Icon name="download" />
+              Скачать
             </a>
-            <a class="btn btn-ghost" href="/#install">Другие системы и Docker</a>
+            <a class="btn btn-ghost" href={links.repo}>
+              <Icon name="github" />
+              Смотреть код на GitHub
+            </a>
           </div>
         </div>
 
