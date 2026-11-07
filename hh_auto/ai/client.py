@@ -860,8 +860,8 @@ class AiClient:
             return True
 
     def _fix_reply(self, decision: Decision, messages: list[dict], resume: str, context: str) -> Decision:
-        """Страховка ответа в чате: без «в резюме не указано» и без опыта с технологиями, которых нет в резюме.
-        Сначала просим модель переписать, не вышло — правим сами."""
+        """Страховка ответа в чате: без «в резюме не указано», без опыта с технологиями, которых нет в резюме, и без
+        цифр, которых нет в резюме и контексте. Сначала просим модель переписать, не вышло — правим сами."""
         if decision.kind != "question" or not decision.reply:
             return decision
         # Срок выхода и зарплата — только из вашего контекста, как в анкетах при отклике
@@ -875,12 +875,14 @@ class AiClient:
             phrase = salary_phrase(context)
             if not phrase:
                 decision.reply = "Готов обсудить на собеседовании."
-            elif re.sub(r"\D", "", phrase) not in re.sub(r"\D", "", decision.reply):
-                decision.reply = f"Ожидаю {phrase}."
+            elif (re.sub(r"\D", "", phrase) not in re.sub(r"\D", "", decision.reply)
+                  or reply_invented_numbers(decision.reply, decision.question, resume, context)):
+                decision.reply = f"Ожидаю {phrase}."  # сумму считает программа: переспрашивать незачем
             return decision
         techs = unbacked_tech(FormQuestion(0, decision.question, "text"), resume, context)
         known = f"{resume}\n{context}\n{decision.question}"
         invented = letter_invented_tech(decision.reply, known)  # «работал с AWS», а в резюме AWS нет
+        numbers = reply_invented_numbers(decision.reply, decision.question, resume, context)  # «ускорил в 8 раз»
         problem = ""
         if _ABOUT_RESUME.search(decision.reply):
             problem = "не упоминай резюме — говори от первого лица («опыта с X не было, но …»)"
@@ -889,6 +891,8 @@ class AiClient:
                        "или честно скажи, что его не было")
         elif invented:
             problem = f"в резюме НЕТ {', '.join(invented)} — убери их, пиши только про опыт из резюме"
+        if numbers:
+            problem += f"{'; ' if problem else ''}в резюме НЕТ таких цифр: {', '.join(numbers)}. {_NUMBERS_RULE}"
         if not problem:
             return decision
         retry = messages + [{"role": "assistant", "content": self.last_raw[:2000]},
@@ -897,7 +901,8 @@ class AiClient:
             self.last_raw = self.complete(retry, json_mode=True)
             fixed = self._parse(self.last_raw)
             if (fixed.kind == "question" and fixed.reply and not _ABOUT_RESUME.search(fixed.reply)
-                    and not claims_experience(fixed.reply, techs) and not letter_invented_tech(fixed.reply, known)):
+                    and not claims_experience(fixed.reply, techs) and not letter_invented_tech(fixed.reply, known)
+                    and not reply_invented_numbers(fixed.reply, decision.question, resume, context)):
                 return fixed
         except AiError:
             pass
@@ -911,6 +916,9 @@ class AiClient:
         else:
             kept = [x for x in re.split(r"(?<=[.!?])\s+", decision.reply) if not _ABOUT_RESUME.search(x)]
             decision.reply = " ".join(kept) or "Такого опыта не было, но готов быстро освоить."
+        if numbers:
+            self.notes.append(f"цифр нет в резюме и контексте, убрал: {', '.join(numbers)}")
+            decision.reply = drop_invented_numbers(decision.reply, decision.question, resume, context)
         return decision
 
     def fill_form(self, resume: str, context: str, vacancy: str, questions: list[FormQuestion]) -> FormFill:
@@ -976,6 +984,7 @@ class AiClient:
                 self.notes.append(f"вопрос {n}: {e} — ответил осторожно")
                 answers.append(fallback)
         answers = [drop_trap_choices(self._no_invented_tech(resume, context, vacancy, a)) for a in answers]
+        answers = [self._no_invented_numbers(resume, context, vacancy, a) for a in answers]
         for n, answer in enumerate(answers, 1):
             if answer.question.kind == "text":
                 answer.text = fix_text_answer(answer.question, answer.text, resume, context)
@@ -1019,6 +1028,32 @@ class AiClient:
             text = f"С {names} напрямую не работал, но готов быстро освоить."
         return FormAnswer(q, text=text)
 
+    def _no_invented_numbers(self, resume: str, context: str, vacancy: str, answer: FormAnswer) -> FormAnswer:
+        """Текстовый ответ с цифрами, которых нет в резюме и контексте: просим переписать, не вышло — убираем предложения."""
+        q = answer.question
+        if q.kind != "text":
+            return answer
+        numbers = reply_invented_numbers(answer.text, q.text, resume, context, vacancy)
+        if not numbers:
+            return answer
+        computed = fix_text_answer(q, "", resume, context)  # доход и грейд считает программа: переспрашивать незачем
+        if computed:
+            return FormAnswer(q, text=computed)
+        # На qwen3:8b такая просьба срабатывает чаще общего правила: вопрос «на сколько процентов?» тянет модель считать
+        forced = FormQuestion(q.index, f"{q.text}\n(Цифр «{', '.join(numbers)}» в резюме НЕТ, считать их самому нельзя. "
+                                       "Ответь тем, что есть в резюме, теми же словами и цифрами, без пересчёта. Если в "
+                                       "резюме такого нет — ответь без цифр.)", "text")
+        try:
+            item = self._answer_question(resume, context, vacancy, forced)
+            text = _clean_reply(str(item.get("text") or item.get("answer") or ""), self.cfg.max_answer_chars)
+        except AiError:
+            text = ""
+        if (text and not claims_experience(text, unbacked_tech(q, resume, context))
+                and not reply_invented_numbers(text, q.text, resume, context, vacancy)):
+            return FormAnswer(q, text=text)
+        self.notes.append(f"вопрос {q.index + 1}: цифр нет в резюме и контексте, убрал: {', '.join(numbers)}")
+        return FormAnswer(q, text=drop_invented_numbers(answer.text, q.text, resume, context, vacancy))
+
     def write_letter(self, resume: str, context: str, title: str, company: str, description: str,
                      max_chars: int = 900, experience_first: bool = True, ai_prompt: str = "") -> str:
         """Сопроводительное письмо под вакансию — для тех, у кого нет подписки hh (кнопки «Сгенерировать»).
@@ -1058,8 +1093,7 @@ class AiClient:
                 asks.append(f"В резюме НЕТ {', '.join(invented)}. Не упоминай их как свой опыт — только то, что есть "
                             "в резюме.")
             if numbers:
-                asks.append(f"В резюме НЕТ таких цифр: {', '.join(numbers)}. Не пересчитывай результаты в проценты "
-                            "и разы и не округляй: пиши цифры теми же словами, что в резюме, или совсем без цифр.")
+                asks.append(f"В резюме НЕТ таких цифр: {', '.join(numbers)}. {_NUMBERS_RULE}.")
             if mentioned:
                 asks.append(f"Соискатель просил этого не упоминать, а в письме есть: {', '.join(mentioned)}. Убери это, "
                             "пиши о задачах и своём опыте.")
@@ -1739,6 +1773,13 @@ _RESULT_PHRASES = [(re.compile(rf"(?<!\w)(?:{pattern})(?!\w)", re.I), key) for p
 # Порядок без числа: «тысячи запросов», «сотни сервисов»
 _MAGNITUDE = re.compile(r"(?<!\w)(?:десятк\w*|сотн\w*|сотен|тысяч\w*|миллион\w*|миллиард\w*)(?!\w)", re.I)
 _LIST_MARK = re.compile(r"^\s*\d{1,2}[.)](?:\s+|$)", re.M)  # нумерованный список — не утверждение о цифре
+# Согласие с условием работодателя — не рассказ о себе: «готов работать 5 дней в неделю». «Вёл команду из 5 человек» — рассказ
+_AGREES = re.compile(r"(?<!\w)(?:готов\w*|согласен|согласна|могу|смогу|устраива\w+|устроит|подходит)(?!\w)", re.I)
+_ONE_PERIOD = re.compile(r"(?<!\w)(через|за|в\s+течение)\s+(месяц\w*|недел\w+|год\w*|день|дня)(?!\w)", re.I)
+# Ответ без содержания: то, что может остаться, когда убрали предложение с цифрой
+_BARE_REPLY = re.compile(r"(?:(?:да|нет|конечно|разумеется|верно|есть|здравствуйте|добрый день|спасибо)[\s,.!]*)+", re.I)
+_NUMBERS_RULE = ("Не пересчитывай результаты в проценты и разы и не округляй: пиши цифры теми же словами, что в резюме, "
+                 "или совсем без цифр")
 
 
 @dataclass
@@ -1824,25 +1865,46 @@ def _number_claims(text: str) -> list[tuple[tuple, str]]:
     return claims
 
 
-def letter_invented_numbers(text: str, known: str, title: str = "", company: str = "") -> list[str]:
+def letter_invented_numbers(text: str, known: str, title: str = "", company: str = "", offered: str = "") -> list[str]:
     """Цифры в письме, которых нет в известном о соискателе (резюме, контекст, свой промпт) — как они написаны в письме.
     Требования из вакансии сюда не входят: «от 2 лет» оттуда — не стаж соискателя. Цифры из названий вакансии и компании,
     когда письмо их называет, не проверяем. После оговорки («опыта от 2 лет нет») обычные числа — не утверждение
-    о себе, а кратность и проценты проверяем всегда: «с Kafka не работал, но ускорил в 10 раз»."""
+    о себе, а кратность и проценты проверяем всегда: «с Kafka не работал, но ускорил в 10 раз».
+    offered — условия работодателя: фактом о соискателе они не становятся, но принять их можно («готов к 5 дням в офисе»)."""
     facts = {key for key, _ in _number_claims(known)}
+    terms = {key for key, _ in _number_claims(offered)}
+    agrees = bool(terms and _AGREES.search(text))  # «Да, устроит. Срок 3 месяца — обычное условие»: согласие в другом предложении
     found: list[str] = []
     for part, honest in _letter_parts(_LIST_MARK.sub("", text), title, company):
         for key, label in _number_claims(part):
             if honest and key[0] not in ("times", "percent"):
                 continue
-            allowed = key in facts or (key[0] == "plain" and any(f[0] == "unit" and f[1] == key[1] for f in facts))
+            allowed = (key in facts or (key[0] == "plain" and any(f[0] == "unit" and f[1] == key[1] for f in facts))
+                       or (agrees and key in terms))
             if not allowed and label not in found:
                 found.append(label)
     return found
 
 
+def reply_invented_numbers(reply: str, question: str, resume: str, context: str, vacancy: str = "") -> list[str]:
+    """Цифры в ответе работодателю (чат, анкета), которых нет в резюме и контексте. Вопрос фактом не считается:
+    «Есть 5 лет опыта?» не разрешает «у меня 5 лет опыта». Условие из него принять можно, если спрашивают не об опыте и
+    не о сроке выхода: «Можете выйти через 3 дня?» — обещание, а срок знаете только вы. Доход сверяем и с расчётом программы: «от 150» в контексте — это «от 150 000 ₽» в ответе, а срок словом — с цифрой:
+    «через месяц» в контексте — это «через 1 месяц» в ответе."""
+    known = _ONE_PERIOD.sub(r"\1 1 \2", f"{resume}\n{context}\n{salary_phrase(context) or ''}")
+    about_you = _EXPERIENCE_Q.search(question) or _START_Q.search(question)
+    return letter_invented_numbers(reply, known, vacancy, offered="" if about_you else question)
+
+
+def drop_invented_numbers(reply: str, question: str, resume: str, context: str, vacancy: str = "") -> str:
+    """Ответ без предложений с чужими цифрами. Осталось только «Да.» — оно подтверждало бы число из вопроса, поэтому
+    общая фраза. «Такого опыта не было» здесь не годится: опыт может быть, неверной была только цифра."""
+    kept = drop_sentences_if(reply, lambda sentence: bool(reply_invented_numbers(sentence, question, resume, context, vacancy)))
+    return kept if kept and not _BARE_REPLY.fullmatch(kept) else UNKNOWN_FACT_REPLY
+
+
 def drop_sentences_if(text: str, bad: Callable[[str], bool]) -> str:
-    """Убирает из письма предложения, для которых bad(предложение) истинно (абзацы сохраняются)."""
+    """Убирает из письма или ответа предложения, для которых bad(предложение) истинно (абзацы сохраняются)."""
     paragraphs = [" ".join(s for s in re.split(r"(?<=[.!?])\s+", paragraph) if not bad(s))
                   for paragraph in text.split("\n")]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(paragraphs)).strip()

@@ -1,18 +1,19 @@
-"""Проверка фактов в письме нейросети: цифры и технологии. Нейросеть здесь не нужна.
+"""Проверка фактов в письме нейросети (цифры и технологии) и цифр в ответах в чатах и анкетах. Нейросеть здесь не нужна.
 
     python -m unittest discover -s tests
 """
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # пакет hh_auto лежит в папке проекта
 
-from hh_auto.ai.client import (AiClient, AiError, drop_sentences_with, letter_invented_numbers,  # noqa: E402
-                               letter_invented_tech)
+from hh_auto.ai.client import (AiClient, AiError, Decision, FormQuestion, drop_sentences_with,  # noqa: E402
+                               letter_invented_numbers, letter_invented_tech, reply_invented_numbers)
 from hh_auto.core.config import Ai  # noqa: E402
 
 RESUME = """Желаемая должность: Go-разработчик
@@ -264,6 +265,221 @@ class WriteLetter(unittest.TestCase):
 class ChatRepliesStillWork(unittest.TestCase):
     def test_drop_sentences_with(self):
         self.assertEqual(drop_sentences_with("Работал с AWS. Работал с Go.", ["AWS"]), "Работал с Go.")
+
+
+SALARY = "Уровень дохода от 150"  # в ответе это «от 150 000 ₽»: сумму считает salary_phrase
+VAGUE = "Готов рассказать подробнее на собеседовании."
+
+
+def said(reply: str, question: str = "") -> str:
+    """Ответ модели в чате — в том JSON, какой она возвращает."""
+    return json.dumps({"kind": "question", "question": question, "reply": reply}, ensure_ascii=False)
+
+
+def chat(client: FakeClient, question: str, reply: str, context: str = "") -> str:
+    client.last_raw = said(reply, question)  # как после запроса в decide
+    return client._fix_reply(Decision("question", question, reply), [], RESUME, context).reply
+
+
+class ChatNumbers(unittest.TestCase):
+    QUESTION = "Какие результаты вы можете назвать?"
+    GOOD = "Сократил обновление каталога с двух часов до 15 минут."
+
+    def test_distorted_number_asks_to_rewrite(self):
+        client = FakeClient(said(self.GOOD))
+        self.assertEqual(chat(client, self.QUESTION, "Ускорил обновление каталога в 8 раз."), self.GOOD)
+        self.assertIn("в 8 раз", client.requests[0][-1]["content"])
+        self.assertEqual(client.notes, [])
+
+    def test_cut_only_bad_sentences_when_rewrite_did_not_help(self):
+        stubborn = "Работаю с Go 4 года. Ускорил обновление в 8 раз. Снизил задержки на 90%. Вёл код-ревью."
+        client = FakeClient(said(stubborn))
+        self.assertEqual(chat(client, self.QUESTION, stubborn), "Работаю с Go 4 года. Вёл код-ревью.")
+        self.assertIn("в 8 раз", client.notes[0])
+
+    def test_cut_draft_when_rewrite_failed_or_invented_again(self):
+        draft = "Работаю с Go. Ускорил обновление вдвое."
+        for rewrite in (AiError("нет связи"), said("Работаю с Go. Ускорил обновление на 300%."), "не JSON"):
+            with self.subTest(rewrite=rewrite):
+                self.assertEqual(chat(FakeClient(rewrite), self.QUESTION, draft), "Работаю с Go.")
+
+    def test_nothing_left_is_honest_and_not_empty(self):
+        """На вопрос про Go нельзя ответить «такого опыта не было»: опыт есть, неверной была только цифра."""
+        stubborn = "Запустил 7 сервисов на Go."
+        self.assertEqual(chat(FakeClient(said(stubborn)), self.QUESTION, stubborn), VAGUE)
+
+    def test_bare_yes_does_not_confirm_the_number_from_the_question(self):
+        stubborn = "Да. У меня 5 лет опыта с Go."
+        self.assertEqual(chat(FakeClient(said(stubborn)), "Есть ли у вас 5 лет опыта с Go?", stubborn), VAGUE)
+
+    def test_numbers_from_the_question_are_not_facts(self):
+        for question, reply in (("Есть ли у вас 5 лет опыта с Go?", "Да, 5 лет опыта с Go."),
+                                ("Сколько запустили сервисов: 5 или 10?", "Запустил 10 сервисов."),
+                                ("Готовы ли вы вести команду из 5 человек?", "Да, вёл команду из 5 человек."),
+                                ("Устроит ли вас команда из 5 человек?", "Команда из 5 человек у меня уже была."),
+                                ("Можете ли ускорить сборку в 2 раза?", "Да, уже ускорял в 2 раза.")):
+            with self.subTest(question):
+                self.assertEqual(chat(FakeClient(said(self.GOOD)), question, reply), self.GOOD)
+
+    def test_start_date_from_the_question_is_not_a_promise_to_repeat(self):
+        client = FakeClient(said("Могу выйти через месяц."))
+        self.assertEqual(chat(client, "Можете выйти на работу через 3 дня?", "Да, могу выйти на работу через 3 дня.",
+                              "Выйти могу через месяц"), "Могу выйти через месяц.")
+
+    def test_honest_answers_are_not_rewritten(self):
+        """Лишних запросов нет: заготовленных ответов у клиента нет, и обращение к модели здесь уронит тест."""
+        for question, reply, context in (
+                ("Сколько лет у вас опыта с Go?", "4 года", ""),
+                ("Сколько лет у вас опыта с Go?", "Более 4 лет, ещё 2 месяца сверху.", ""),
+                ("Какой результат?", "Обновление каталога с двух часов до 15 минут.", ""),
+                ("Какой результат?", "Готов обсудить на собеседовании.", ""),
+                ("Когда сможете приступить к работе?", "Смогу выйти через 2 недели.", "Выйду через две недели"),
+                ("Когда сможете приступить к работе?", "Через 1 месяц.", "Выйти могу через месяц"),
+                ("Сколько вы хотите?", "Рассчитываю на 200 000 ₽.", "Ожидаю 200 000 ₽ на руки"),
+                ("Есть ли у вас 5 лет опыта с Kafka?", "Опыта 5 лет с Kafka нет, но готов освоить.", ""),
+                ("Готовы ли вы работать в офисе 5 дней в неделю?", "Да, готов работать в офисе 5 дней в неделю.", ""),
+                ("График 5/2 с 9 до 18 вам подходит?", "Да, график 5/2 с 9 до 18 подходит.", ""),
+                ("Готовы ли вы к испытательному сроку 3 месяца?", "Да, испытательный срок 3 месяца устраивает.", ""),
+                ("Устроит ли вас испытательный срок 3 месяца?", "Да, устроит. Срок 3 месяца — обычное условие.", ""),
+        ):
+            with self.subTest(reply):
+                client = FakeClient()
+                self.assertEqual(chat(client, question, reply, context), reply)
+                self.assertEqual(client.requests, [])
+
+    def test_salary_from_context_passes(self):
+        for reply in ("Ожидаю от 150 000 ₽.", "Мои ожидания — от 150 000 ₽, это обсуждаемо."):
+            with self.subTest(reply):
+                client = FakeClient()
+                self.assertEqual(chat(client, "Какие у вас зарплатные ожидания?", reply, SALARY), reply)
+                self.assertEqual(client.requests, [])
+
+    def test_salary_is_counted_by_the_program_without_asking(self):
+        question = "Какие у вас зарплатные ожидания?"
+        client = FakeClient()
+        self.assertEqual(chat(client, question, "От 150 000 до 200 000 ₽ при 7 годах опыта.", SALARY), "Ожидаю от 150 000 ₽.")
+        self.assertEqual(chat(client, question, "Ожидаю 300 000 ₽."), "Готов обсудить на собеседовании.")
+        self.assertEqual(client.requests, [])
+
+    def test_sum_from_context_passes_in_any_question(self):
+        client = FakeClient()
+        reply = "Да, при доходе от 150 000 ₽ готов рассмотреть."
+        self.assertEqual(chat(client, "Рассматриваете ли вы удалённую работу?", reply, SALARY), reply)
+        self.assertEqual(client.requests, [])
+
+    def test_grade_has_no_numbers_to_object_to(self):
+        for reply in ("Оцениваю свой уровень как Middle.", "Middle, опыт 4 года 2 месяца."):
+            with self.subTest(reply):
+                self.assertEqual(reply_invented_numbers(reply, "Какой у вас грейд?", RESUME, ""), [])
+
+    def test_start_date_without_context_needs_no_model(self):
+        client = FakeClient()
+        self.assertEqual(chat(client, "Когда сможете приступить к работе?", "Через 3 недели."),
+                         "Готов обсудить на собеседовании.")
+        self.assertEqual(client.requests, [])
+
+    def test_whole_chat_turn(self):
+        transcript = "Робот-рекрутер\nКакие результаты вы можете назвать?"
+        client = FakeClient(said("Ускорил обновление в 10 раз.", self.QUESTION), said(self.GOOD, self.QUESTION), '{"ok": true}')
+        decision = client.decide(RESUME, "", transcript, [])
+        self.assertEqual((decision.kind, decision.reply), ("question", self.GOOD))
+
+
+def form(client: FakeClient, question: str, context: str = "", vacancy: str = "вакансия"):
+    return client.fill_form(RESUME, context, vacancy, [FormQuestion(0, question, "text")]).answers[0]
+
+
+def wrote(text: str) -> str:
+    return json.dumps({"can_answer": True, "text": text}, ensure_ascii=False)
+
+
+class FormNumbers(unittest.TestCase):
+    QUESTION = "Какие результаты вы можете назвать?"
+    GOOD = "Сократил обновление каталога с двух часов до 15 минут."
+
+    def test_distorted_number_asks_to_rewrite(self):
+        client = FakeClient(wrote("Ускорил обновление каталога в 8 раз."), wrote(self.GOOD))
+        self.assertEqual(form(client, self.QUESTION).text, self.GOOD)
+        self.assertEqual(len(client.requests), 2)
+        self.assertIn("в 8 раз", client.requests[1][-1]["content"])
+        self.assertEqual(client.notes, [])
+
+    def test_cut_only_bad_sentences_when_rewrite_did_not_help(self):
+        stubborn = "Работаю с Go 4 года. Ускорил обновление в 8 раз."
+        client = FakeClient(wrote(stubborn), wrote(stubborn))
+        self.assertEqual(form(client, self.QUESTION).text, "Работаю с Go 4 года.")
+        self.assertIn("в 8 раз", client.notes[0])
+
+    def test_cut_draft_when_rewrite_failed(self):
+        client = FakeClient(wrote("Работаю с Go. Ускорил обновление вдвое."), AiError("нет связи"))
+        self.assertEqual(form(client, self.QUESTION).text, "Работаю с Go.")
+
+    def test_nothing_left_is_honest_and_says_what_to_add(self):
+        client = FakeClient(wrote("Запустил 7 сервисов."), wrote("Запустил 9 сервисов."))
+        self.assertEqual(form(client, self.QUESTION).text, VAGUE)
+        self.assertTrue(any("Что ещё знать о вас" in note for note in client.notes))
+
+    def test_number_from_the_question_is_not_a_fact(self):
+        client = FakeClient(wrote("Да, 5 лет опыта с Go."), wrote("С Go работаю 4 года."))
+        self.assertEqual(form(client, "Есть ли у вас 5 лет опыта с Go?").text, "С Go работаю 4 года.")
+
+    def test_rewrite_cannot_bring_back_experience_with_unknown_tech(self):
+        client = FakeClient(wrote("С Kafka не работал, но запустил 7 сервисов."), wrote("С Kafka работал на всех сервисах."))
+        self.assertEqual(form(client, "Какой у вас опыт с Kafka?").text, VAGUE)
+
+    def test_honest_answers_are_not_rewritten(self):
+        for question, text, context in (("Сколько лет у вас опыта с Go?", "4 года", ""),
+                                        ("Какой результат?", self.GOOD, ""),
+                                        ("Когда сможете приступить к работе?", "Через 2 недели.", "Выйду через 2 недели"),
+                                        ("Готовы ли вы работать в офисе 5 дней в неделю?", "Да, готов работать 5 дней.", "")):
+            with self.subTest(text):
+                client = FakeClient(wrote(text))
+                self.assertEqual(form(client, question, context).text, text)
+                self.assertEqual(len(client.requests), 1)
+
+    def test_vacancy_name_is_not_a_claim(self):
+        text = "Вакансия «Инженер 7 категории» подходит мне по задачам."
+        client = FakeClient(wrote(text))
+        self.assertEqual(form(client, "Почему вас заинтересовала вакансия?", vacancy="«Инженер 7 категории» — Завод").text, text)
+        self.assertEqual(len(client.requests), 1)
+
+    def test_salary_and_timing_without_context_need_no_model(self):
+        for question in ("Ваши зарплатные ожидания?", "Когда сможете приступить к работе?"):
+            with self.subTest(question):
+                client = FakeClient()
+                self.assertEqual(form(client, question).text, "Готов обсудить на собеседовании.")
+                self.assertEqual(client.requests, [])
+
+    def test_salary_from_context_passes(self):
+        for text in ("Ожидаю от 150 000 ₽.", "От 150 тысяч."):
+            with self.subTest(text):
+                client = FakeClient(wrote(text))
+                self.assertEqual(form(client, "Ваши зарплатные ожидания?", SALARY).text, text)
+                self.assertEqual(len(client.requests), 1)
+
+    def test_salary_is_counted_by_the_program_without_asking(self):
+        client = FakeClient(wrote("Ожидаю от 150 000 до 200 000 ₽."))
+        self.assertEqual(form(client, "Ваши зарплатные ожидания?", SALARY).text, "Ожидаю доход от 150 000 ₽.")
+        self.assertEqual(len(client.requests), 1)
+
+    def test_grade_passes(self):
+        for text in ("Оцениваю себя как Middle.", "Middle, опыт 4 года 2 месяца."):
+            with self.subTest(text):
+                client = FakeClient(wrote(text))
+                self.assertEqual(form(client, "Какой у вас грейд?").text, text)
+                self.assertEqual(len(client.requests), 1)
+
+    def test_grade_is_counted_by_the_program_without_asking(self):
+        client = FakeClient(wrote("Middle, опыт 7 лет."))
+        self.assertEqual(form(client, "Какой у вас грейд?").text, "Оцениваю свой уровень как Middle.")
+        self.assertEqual(len(client.requests), 1)
+
+    def test_options_are_not_touched(self):
+        question = FormQuestion(0, "Сколько лет опыта с Go?", "single", ["До 1 года", "1–3 года", "3–5 лет", "Более 5 лет"])
+        client = FakeClient(json.dumps({"can_answer": True, "choice": "Более 5 лет"}, ensure_ascii=False))
+        answer = client.fill_form(RESUME, "", "вакансия", [question]).answers[0]
+        self.assertEqual(answer.describe(), "Более 5 лет")
+        self.assertEqual(len(client.requests), 1)
 
 
 if __name__ == "__main__":
