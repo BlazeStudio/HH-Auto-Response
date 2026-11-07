@@ -1,0 +1,112 @@
+---
+import Icon from './Icon.astro';
+import { sitePath } from '../config';
+
+const tree = [
+  { path: 'HH-Auto-Response/', note: 'папка данных на вашем диске', depth: 0 },
+  { path: 'config.toml', note: 'настройки', depth: 1 },
+  { path: 'browser-profile/', note: 'вход в hh', depth: 1 },
+  { path: 'logs/', note: 'журналы и отчёт Excel', depth: 1 },
+  { path: 'data/', note: 'история откликов, числа', depth: 1 },
+];
+
+const pace = [
+  { time: '14:04:24', text: '✓ отклик отправлен', kind: 'l-ok' },
+  { time: '14:04:33', text: 'пауза, идём дальше', kind: 'l-dim' },
+  { time: '14:04:51', text: '✓ отклик отправлен', kind: 'l-ok' },
+  { time: '14:05:12', text: '! Нужна капча. Решите её в окне браузера', kind: 'l-skip' },
+  { time: '14:06:40', text: 'капча решена, повторяю ту же вакансию', kind: '' },
+  { time: '19:32:08', text: 'hh сообщил о лимите, останавливаюсь', kind: 'l-skip' },
+];
+---
+
+<section id="safety" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
+  <div class="wrap">
+    <div class="reveal max-w-3xl">
+      <p class="kicker" style="--kicker: var(--color-ok)">Безопасность и легальность</p>
+      <h2 class="h2">Ваш компьютер, ваш аккаунт, ваши данные. <span class="dim">Серверов у проекта нет.</span></h2>
+    </div>
+
+    <div class="mt-12 grid gap-4 lg:mt-16 lg:grid-cols-2">
+      <article class="card card-hover reveal gap-6 p-6 sm:p-7">
+        <div>
+          <h3 class="h3 flex items-center gap-2.5"><Icon name="lock" class="size-4.5 text-ok" /> Всё остаётся у вас</h3>
+          <ul class="list-check mt-5">
+            <li>
+              <Icon name="check" class="size-4 text-ok" />
+              <span><b>Пароль программе не нужен.</b> В hh вы входите сами, сессия хранится в профиле браузера.</span>
+            </li>
+            <li>
+              <Icon name="check" class="size-4 text-ok" />
+              <span><b>Нейросеть видит минимум.</b> Резюме к ней уходит без телефона и почты.</span>
+            </li>
+            <li>
+              <Icon name="check" class="size-4 text-ok" />
+              <span><b>С Ollama ИИ работает без интернета.</b> Письма и анкеты не покидают компьютер, и это бесплатно.</span>
+            </li>
+          </ul>
+        </div>
+        <div class="inset-panel mt-auto p-4 font-mono text-[0.8125rem] leading-relaxed">
+          {
+            tree.map((row) => (
+              <p class:list={['flex flex-wrap justify-between gap-x-4', row.depth && 'pl-4']}>
+                <span class={row.depth ? 'text-fg-2' : 'text-fg'}>{row.path}</span>
+                <span class="text-fg-3">{row.note}</span>
+              </p>
+            ))
+          }
+        </div>
+      </article>
+
+      <article class="card card-hover reveal gap-6 p-6 sm:p-7">
+        <div>
+          <h3 class="h3 flex items-center gap-2.5"><Icon name="clock" class="size-4.5 text-ok" /> Темп живого человека</h3>
+          <ul class="list-check mt-5">
+            <li>
+              <Icon name="check" class="size-4 text-ok" />
+              <span><b>Паузы между действиями.</b> Длину задаёте вы, но слишком маленькие ставить не стоит.</span>
+            </li>
+            <li>
+              <Icon name="check" class="size-4 text-ok" />
+              <span><b>Остановка на лимите.</b> У hh это около 200 откликов в сутки.</span>
+            </li>
+            <li>
+              <Icon name="check" class="size-4 text-ok" />
+              <span><b>Капчу решаете вы.</b> Программа не обходит защиту: дождётся вас и продолжит с той же вакансии.</span>
+            </li>
+          </ul>
+        </div>
+        <div class="inset-panel mt-auto p-4">
+          <div class="log h-auto! mask-none!">
+            {
+              pace.map((line) => (
+                <div class="log-line">
+                  <time>{line.time}</time>
+                  <span class={line.kind}>{line.text}</span>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </article>
+    </div>
+
+    <div class="reveal mt-4 grid gap-5 rounded-2xl border border-warn/25 bg-warn/5 p-6 sm:p-7 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center lg:gap-10">
+      <div class="flex gap-4">
+        <Icon name="alert" class="mt-1 size-5 text-warn" />
+        <div>
+          <h3 class="h3">Законно, но решение за вами</h3>
+          <p class="body-sm mt-1.5 max-w-3xl">
+            Программа нажимает те же кнопки, что и вы, в вашем аккаунте, ничего не взламывая. При этом соглашение
+            hh.ru может ограничивать автоматизацию, и в худшем случае аккаунт ограничат или заблокируют. Прочитайте его
+            и откликайтесь только на то, что вам правда подходит.
+          </p>
+        </div>
+      </div>
+      <a href={sitePath('/safety')} class="btn btn-ghost btn-sm w-fit">
+        Куда уходят данные и что с правилами
+        <Icon name="arrow" />
+      </a>
+    </div>
+  </div>
+</section>

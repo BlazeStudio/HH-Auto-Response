@@ -1,0 +1,38 @@
+---
+import Icon from './Icon.astro';
+
+interface Line {
+  cmd?: string;
+  note?: string;
+}
+
+interface Props {
+  title: string;
+  lines: Line[];
+  prompt?: string;
+}
+
+const { title, lines, prompt = '$' } = Astro.props;
+---
+
+<div class="term">
+  <div class="term-bar"><span>{title}</span></div>
+  <div class="term-body">
+    {
+      lines.map((line) =>
+        line.note ? (
+          <p class="term-note"># {line.note}</p>
+        ) : (
+          <div class="term-line">
+            <span class="term-prompt" aria-hidden="true">{prompt}</span>
+            <code class="term-code" data-release-text>{line.cmd}</code>
+            <button type="button" class="term-copy" data-copy="" aria-label="Скопировать команду">
+              <Icon name="copy" class="is-idle size-3.5" />
+              <Icon name="check" class="is-done size-3.5" />
+            </button>
+          </div>
+        ),
+      )
+    }
+  </div>
+</div>

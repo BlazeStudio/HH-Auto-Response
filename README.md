@@ -758,6 +758,7 @@ PyInstaller собирает только под ту систему, на ко�
 | `packaging/` | сборка приложения: `build.bat`, `build.sh`, `build-macos.sh`, `build-linux.sh`, настройки PyInstaller, иконки |
 | `docker/` | `Dockerfile`, `entrypoint.sh` и `docker-compose.yml` для сервера |
 | `docs/` | гайд по [Ollama на другом компьютере](docs/ollama.md), [что нового в версии](docs/release-notes.md), скриншоты (светлые и `dark/`), баннер для GitHub (`social-preview.png`, тёмный — `social-preview-dark.png`) |
+| `site/` | сайт программы на GitHub Pages, отдельный проект на Astro: в сборку приложения и Docker-образ не попадает ([как запустить](site/README.md)) |
 | `hh-data/` | ваши данные при запуске из исходников и в Docker (в git не попадает) |
 | `config.example.toml` | все настройки с пояснениями |
 

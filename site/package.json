@@ -1,0 +1,24 @@
+{
+  "name": "hh-auto-response-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Сайт HH-Auto-Response. Живёт отдельно от приложения и в его сборку не попадает.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.23.4"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "3.7.4",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@fontsource-variable/onest": "5.3.1",
+    "@tailwindcss/vite": "4.3.5",
+    "astro": "7.4.7",
+    "sharp": "0.35.5",
+    "tailwindcss": "4.3.5"
+  }
+}

@@ -1,0 +1,107 @@
+---
+import ContactTile from './ContactTile.astro';
+import Icon from './Icon.astro';
+import { contacts, links, sitePath } from '../config';
+
+interface Props {
+  /** На странице контактов этот блок повторял бы её саму */
+  showContact?: boolean;
+}
+
+const { showContact = true } = Astro.props;
+const year = new Date().getFullYear();
+
+const columns = [
+  {
+    title: 'Сайт',
+    items: [
+      { label: 'Возможности', href: sitePath('/#features') },
+      { label: 'Анализ резюме', href: sitePath('/#analysis') },
+      { label: 'Установка', href: sitePath('/#install') },
+      { label: 'Безопасность', href: sitePath('/safety') },
+      { label: 'Контакты', href: sitePath('/contacts') },
+    ],
+  },
+  {
+    title: 'Проект',
+    items: [
+      { label: 'GitHub', href: links.repo },
+      { label: 'Все версии', href: links.releases },
+      { label: 'CHANGELOG', href: links.changelog },
+      { label: 'Инструкция', href: links.readme },
+      { label: 'Лицензия PolyForm Noncommercial', href: links.license },
+    ],
+  },
+];
+---
+
+<footer class="border-t border-line">
+  {
+    showContact && (
+      <section id="contact" class="scroll-mt-10 border-b border-line">
+        <div class="wrap grid gap-8 py-14 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.9fr)] lg:items-center lg:gap-14 lg:py-20">
+          <div>
+            <p class="kicker">Связаться</p>
+            <h2 class="h2 text-[clamp(1.75rem,3vw,2.5rem)]!">
+              Есть вопрос или идея? <span class="dim">Пишите мне напрямую.</span>
+            </h2>
+            <a href={sitePath('/contacts')} class="link mt-5 inline-flex items-center gap-1.5 text-[0.9375rem]">
+              Все контакты и лицензия <Icon name="arrow" class="size-3.5" />
+            </a>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <ContactTile icon="telegram" tone="hh" label="Telegram" value={contacts.telegram.label} href={contacts.telegram.url} />
+            <ContactTile icon="mail" tone="ai" label="Почта" value={contacts.email} href={`mailto:${contacts.email}`} copy={contacts.email} />
+            <ContactTile icon="bug" tone="warn" label="GitHub Issues" value="Сообщить об ошибке" href={links.bugReport} />
+            <ContactTile icon="globe" tone="ok" label="Мой сайт" value={contacts.website.label} href={contacts.website.url} />
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  <div class="wrap grid gap-12 py-14 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.4fr)]">
+    <div class="max-w-sm">
+      <a href={sitePath('/')} class="inline-flex items-center gap-2.5 rounded-lg">
+        <img src={sitePath('/logo.png')} width="28" height="28" alt="" class="size-7 rounded-lg" loading="lazy" />
+        <span class="font-semibold tracking-tight">HH Auto</span>
+      </a>
+      <p class="body-sm mt-4">
+        Программа для автоматических откликов на hh.ru. Работает на вашем компьютере или своём сервере.
+      </p>
+    </div>
+
+    <div class="grid gap-10 sm:grid-cols-2">
+      {
+        columns.map((column) => (
+          <div>
+            <h2 class="text-sm font-medium text-fg-3">{column.title}</h2>
+            <ul class="mt-3 grid gap-2">
+              {column.items.map((item) => (
+                <li>
+                  <a href={item.href} class="footer-link">
+                    {item.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="border-t border-line">
+    <div class="wrap flex flex-col gap-3 py-6 text-[0.8125rem] leading-relaxed text-fg-3 md:flex-row md:items-start md:justify-between md:gap-10">
+      <p>
+        © {year} BlazeStudio. Неофициальный проект: он не связан с HeadHunter и не одобрен им.
+        За использование программы и соблюдение правил hh.ru отвечает пользователь.
+      </p>
+      <p class="flex shrink-0 items-center gap-2">
+        <Icon name="lock" class="size-3.5" />
+        Сайт без cookies и счётчиков
+      </p>
+    </div>
+  </div>
+</footer>

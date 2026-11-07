@@ -1,0 +1,37 @@
+---
+import type { ComponentProps } from 'astro/types';
+import Icon from './Icon.astro';
+
+interface Props {
+  icon: ComponentProps<typeof Icon>['name'];
+  /** Цвет из темы: hh, ai, ok, warn */
+  tone: 'hh' | 'ai' | 'ok' | 'warn';
+  label: string;
+  value: string;
+  href: string;
+  note?: string;
+  /** Если задано, вместо стрелки будет кнопка, копирующая это значение */
+  copy?: string;
+}
+
+const { icon, tone, label, value, href, note, copy } = Astro.props;
+---
+
+<div class="card card-hover contact-tile" style={`--tone: var(--color-${tone})`}>
+  <span class="contact-icon"><Icon name={icon} class="size-5" /></span>
+  <div class="min-w-0">
+    <p class="text-[0.8125rem] leading-snug text-fg-3">{label}</p>
+    <a class="contact-link" href={href}>{value}</a>
+    {note && <p class="mt-1 text-sm leading-snug text-fg-3">{note}</p>}
+  </div>
+  {
+    copy ? (
+      <button type="button" class="term-copy contact-copy" data-copy={copy} aria-label="Скопировать адрес">
+        <Icon name="copy" class="is-idle size-4" />
+        <Icon name="check" class="is-done size-4" />
+      </button>
+    ) : (
+      <Icon name="arrow" class="contact-arrow size-4" />
+    )
+  }
+</div>

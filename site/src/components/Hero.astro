@@ -1,0 +1,52 @@
+---
+import AppWindow from './AppWindow.astro';
+import Icon from './Icon.astro';
+import { links } from '../config';
+import { getRepoSnapshot } from '../lib/github';
+
+const { version } = await getRepoSnapshot();
+---
+
+<section id="top" class="relative isolate">
+  <div class="hero-sky soft-fade" aria-hidden="true"></div>
+
+  <div class="wrap pt-12 sm:pt-16 lg:pt-20">
+    <a href={links.changelog} class="release-pill soft-in" style="--d: 60ms">
+      <span class="size-1.5 rounded-full bg-ok"></span>
+      <span>Версия <span data-version>{version}</span>, смотреть что нового</span>
+      <Icon name="arrow" class="size-3.5" />
+    </a>
+
+    <h1 class="h1 soft-in mt-6" style="--d: 140ms">
+      Хватит откликаться руками.
+      <span class="grad block">Пусть ИИ найдёт работу за&nbsp;вас.</span>
+    </h1>
+
+    <div class="soft-in mt-7 grid gap-7 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end lg:gap-12" style="--d: 240ms">
+      <p class="lead">
+        Автоматический поиск вакансий, письма под требования, умные ответы в чатах и бесплатный подъём резюме.
+        Прямо на вашем компьютере.
+      </p>
+
+      <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+        <a class="btn btn-primary" href="#install">
+          <Icon name="download" />
+          Скачать
+        </a>
+        <a class="btn btn-ghost" href={links.repo}>
+          <Icon name="github" />
+          Смотреть код на GitHub
+        </a>
+      </div>
+    </div>
+
+    <p class="soft-in mt-6 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-fg-3" style="--d: 320ms">
+      <span>Windows, macOS, Linux и Docker</span>
+      <span>Бесплатно для личного использования</span>
+    </p>
+  </div>
+
+  <div class="wrap soft-rise mt-12 lg:mt-14" style="--d: 380ms">
+    <AppWindow />
+  </div>
+</section>

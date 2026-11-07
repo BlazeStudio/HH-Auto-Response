@@ -1,0 +1,79 @@
+---
+import { Image } from 'astro:assets';
+import responses from '../assets/shots/responses.png';
+import chats from '../assets/shots/chats.png';
+import analysis from '../assets/shots/analysis.png';
+import skills from '../assets/shots/analysis-skills.png';
+import stats from '../assets/shots/stats.png';
+import ai from '../assets/shots/ai.png';
+import settings from '../assets/shots/settings.png';
+
+const shots = [
+  { id: 'responses', title: 'Отклики', text: 'Сколько ушло сегодня, что пропущено и почему. Журнал работы на виду.', image: responses },
+  { id: 'chats', title: 'Чаты', text: 'Отказы прочитаны, на анкету робота ответила нейросеть, важное оставлено вам.', image: chats },
+  { id: 'analysis', title: 'Анализ резюме', text: 'Оценка против открытых вакансий и список дел, начиная с самых полезных.', image: analysis },
+  { id: 'skills', title: 'Навыки рынка', text: 'Спрос, зарплата, есть ли навык в резюме и сколько вакансий он откроет.', image: skills },
+  { id: 'stats', title: 'Статистика', text: 'Отклики и отказы по дням, неделям и месяцам. Графики настраиваются.', image: stats },
+  { id: 'ai', title: 'Проверка ИИ', text: 'Пишете за работодателя и смотрите, что ответит модель. В hh ничего не уходит.', image: ai },
+  { id: 'settings', title: 'Настройки', text: 'Все фильтры hh по вкладкам. Заполняются одной ссылкой с сайта.', image: settings },
+];
+---
+
+<section id="gallery" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
+  <div class="wrap">
+    <div class="reveal max-w-3xl">
+      <p class="kicker">Живое приложение</p>
+      <h2 class="h2">Так оно выглядит на самом деле. <span class="dim">Да. Это буквально скриншоты из приложения.</span></h2>
+    </div>
+
+    <div class="mt-10 grid gap-6 lg:mt-14 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-8">
+      <div
+        role="tablist"
+        aria-label="Снимки экрана приложения"
+        aria-orientation="vertical"
+        class="tabs-shot no-scrollbar flex gap-1 overflow-x-auto lg:flex-col lg:gap-0.5 lg:overflow-visible"
+      >
+        {
+          shots.map((shot, index) => (
+            <button
+              type="button"
+              role="tab"
+              id={`shot-tab-${shot.id}`}
+              aria-controls={`shot-panel-${shot.id}`}
+              aria-selected={index === 0 ? 'true' : 'false'}
+              tabindex={index === 0 ? 0 : -1}
+              class="shot-tab w-auto! shrink-0 lg:w-full!"
+            >
+              <span class="block text-[0.9375rem] font-medium whitespace-nowrap">{shot.title}</span>
+              <span class="mt-0.5 hidden text-sm leading-snug text-fg-3 lg:block">{shot.text}</span>
+            </button>
+          ))
+        }
+      </div>
+
+      <div class="min-w-0">
+        {
+          shots.map((shot, index) => (
+            <div id={`shot-panel-${shot.id}`} role="tabpanel" aria-labelledby={`shot-tab-${shot.id}`} hidden={index !== 0}>
+              <div class="shot-frame">
+                <Image
+                  src={shot.image}
+                  alt={`Страница «${shot.title}» в приложении HH-Auto-Response`}
+                  widths={[640, 960, 1240]}
+                  sizes="(min-width: 1024px) 50vw, 100vw"
+                  format="webp"
+                  quality={82}
+                  loading="lazy"
+                  decoding="async"
+                  class="block h-auto w-full"
+                />
+              </div>
+              <p class="body-sm mt-3 lg:hidden">{shot.text}</p>
+            </div>
+          ))
+        }
+        <p class="demo-note mt-3">Резюме и компании на снимках вымышленные.</p>
+      </div>
+    </div>
+  </div>
+</section>

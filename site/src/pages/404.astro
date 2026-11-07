@@ -1,0 +1,19 @@
+---
+import Base from '../layouts/Base.astro';
+import { sitePath } from '../config';
+---
+
+<Base title="Страница не найдена: HH-Auto-Response" description="Такой страницы на сайте нет." noindex>
+  <div class="wrap soft-in py-24 sm:py-32">
+    <div class="inset-panel max-w-xl p-5 font-mono text-[0.8125rem] leading-relaxed">
+      <p class="text-fg-2">[стр. 404] ▶ «Эта страница» — сайт HH Auto</p>
+      <p class="l-skip">пропущена: такой страницы нет</p>
+      <p class="text-fg-3">дальше: возвращаюсь на главную</p>
+    </div>
+    <h1 class="h1 mt-8 text-[clamp(2.25rem,5vw,3.5rem)]!">Такой страницы нет</h1>
+    <div class="mt-8 flex flex-wrap gap-3">
+      <a class="btn btn-primary" href={sitePath('/')}>На главную</a>
+      <a class="btn btn-ghost" href={sitePath('/contacts')}>Сообщить о битой ссылке</a>
+    </div>
+  </div>
+</Base>

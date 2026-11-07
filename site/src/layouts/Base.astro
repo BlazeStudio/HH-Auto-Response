@@ -1,0 +1,106 @@
+---
+import '@fontsource-variable/onest';
+import '@fontsource-variable/jetbrains-mono';
+import '../styles/global.css';
+import onestCyrillic from '@fontsource-variable/onest/files/onest-cyrillic-wght-normal.woff2?url';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import { contacts, links, sitePath } from '../config';
+import { getRepoSnapshot } from '../lib/github';
+
+interface Props {
+  title: string;
+  description: string;
+  noindex?: boolean;
+  showFooterContact?: boolean;
+}
+
+const { title, description, noindex = false, showFooterContact = true } = Astro.props;
+const { version } = await getRepoSnapshot();
+
+const site = Astro.site!;
+const home = new URL(sitePath('/'), site);
+const canonical = new URL(Astro.url.pathname.replace(/(index)?(\.html)?$/, ''), site);
+const ogImage = new URL(sitePath('/og.png'), site);
+
+// GitHub Pages не даёт задать заголовки ответа, поэтому защита описана прямо в странице.
+// При разработке она помешала бы горячей перезагрузке. Директива frame-ancestors в meta не работает.
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self' https://api.github.com",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'none'",
+  'upgrade-insecure-requests',
+].join('; ');
+
+const structuredData = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'HH-Auto-Response',
+  applicationCategory: 'UtilitiesApplication',
+  operatingSystem: 'Windows, macOS, Linux, Docker',
+  softwareVersion: version,
+  description,
+  url: home.href,
+  downloadUrl: links.latest,
+  license: 'https://polyformproject.org/licenses/noncommercial/1.0.0',
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'RUB' },
+  author: { '@type': 'Person', name: contacts.author, url: contacts.github.url },
+};
+---
+
+<!doctype html>
+<html lang="ru" data-release={version}>
+  <head>
+    <meta charset="utf-8" />
+    {import.meta.env.PROD && <meta http-equiv="Content-Security-Policy" content={contentSecurityPolicy} />}
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical.href} />
+    {noindex && <meta name="robots" content="noindex" />}
+
+    <meta name="theme-color" content="#070a12" />
+    <link rel="icon" type="image/png" sizes="32x32" href={sitePath('/favicon-32.png')} />
+    <link rel="apple-touch-icon" href={sitePath('/apple-touch-icon.png')} />
+    <link rel="sitemap" href={sitePath('/sitemap-index.xml')} />
+    <link rel="preload" as="font" type="font/woff2" href={onestCyrillic} crossorigin />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="ru_RU" />
+    <meta property="og:site_name" content="HH-Auto-Response" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical.href} />
+    <meta property="og:image" content={ogImage.href} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <script type="application/ld+json" is:inline set:html={JSON.stringify(structuredData)} />
+  </head>
+  <body>
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-lg focus:bg-ink-800 focus:px-4 focus:py-2"
+    >
+      К содержанию
+    </a>
+    <canvas class="facets facets-left" data-facets="left" aria-hidden="true"></canvas>
+    <canvas class="facets facets-right" data-facets="right" aria-hidden="true"></canvas>
+    <Header />
+    <main id="main">
+      <slot />
+    </main>
+    <Footer showContact={showFooterContact} />
+    <script>
+      import '../scripts/site.ts';
+    </script>
+  </body>
+</html>

@@ -1,0 +1,208 @@
+---
+import Icon from './Icon.astro';
+import Terminal from './Terminal.astro';
+import { assetLatestUrl, assetName, assetUrl, links } from '../config';
+import { getRepoSnapshot } from '../lib/github';
+
+const { version } = await getRepoSnapshot();
+
+const winFile = assetName(version, 'windows');
+const macFile = assetName(version, 'macos-arm64');
+const linuxFile = assetName(version, 'linux');
+---
+
+<section id="install" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
+  <div class="wrap">
+    <div class="reveal max-w-3xl">
+      <p class="kicker" style="--kicker: var(--color-ok)">Установка за 1 минуту</p>
+      <h2 class="h2">Скачали, распаковали, запустили. <span class="dim">Python и настройка окружения не нужны.</span></h2>
+    </div>
+
+    <div class="mt-10 lg:mt-14" data-install>
+      <div
+        role="tablist"
+        aria-label="Система"
+        class="tabs-pill no-scrollbar flex w-full gap-1 overflow-x-auto rounded-[0.875rem] border border-line bg-white/[0.02] p-1 sm:inline-flex sm:w-auto"
+      >
+        <button type="button" role="tab" id="os-tab-windows" data-os="windows" aria-controls="os-panel-windows" aria-selected="true" class="pill-tab">
+          <Icon name="windows" class="hidden size-4 sm:block" /> Windows
+        </button>
+        <button type="button" role="tab" id="os-tab-macos" data-os="macos" aria-controls="os-panel-macos" aria-selected="false" tabindex="-1" class="pill-tab">
+          <Icon name="apple" class="hidden size-4 sm:block" /> macOS
+        </button>
+        <button type="button" role="tab" id="os-tab-linux" data-os="linux" aria-controls="os-panel-linux" aria-selected="false" tabindex="-1" class="pill-tab">
+          <Icon name="terminal" class="hidden size-4 sm:block" /> Linux
+        </button>
+        <button type="button" role="tab" id="os-tab-docker" data-os="docker" aria-controls="os-panel-docker" aria-selected="false" tabindex="-1" class="pill-tab">
+          <Icon name="box" class="hidden size-4 sm:block" /> Docker
+        </button>
+      </div>
+
+      <!-- Windows -->
+      <div id="os-panel-windows" role="tabpanel" aria-labelledby="os-tab-windows" class="mt-6 grid gap-8 lg:grid-cols-2 lg:gap-12">
+        <div>
+          <ol class="steps">
+            <li>
+              <p class="font-medium">Скачайте архив</p>
+              <a class="btn btn-primary btn-sm mt-3" href={assetUrl(version, 'windows')} data-asset="windows">
+                <Icon name="download" /> Скачать для Windows
+              </a>
+            </li>
+            <li>
+              <p class="font-medium">Распакуйте и запустите</p>
+              <p class="body-sm mt-1">
+                Подойдёт любая своя папка, например «Документы». Запускайте <code class="inline-code">HH-Auto-Response.exe</code>,
+                папка <code class="inline-code">_internal</code> должна лежать рядом. В Program Files лучше не класть: туда не сможет записаться обновление.
+              </p>
+            </li>
+            <li>
+              <p class="font-medium">Если Windows встревожится</p>
+              <p class="body-sm mt-1">
+                Сборка не подписана платным сертификатом, поэтому система может показать «Windows защитил ваш компьютер».
+                Нажмите «Подробнее», затем «Выполнить в любом случае».
+              </p>
+            </li>
+          </ol>
+          <p class="demo-note mt-5">Нужны Windows 10 или 11 и браузер Chrome или Edge. Edge в Windows есть всегда.</p>
+        </div>
+        <Terminal
+          title="PowerShell, если удобнее так"
+          prompt=">"
+          lines={[
+            { cmd: `curl.exe -LO ${assetLatestUrl(version, 'windows')}` },
+            { cmd: `Expand-Archive .\\${winFile} "$HOME\\Documents"` },
+            { cmd: `& "$HOME\\Documents\\HH-Auto-Response\\HH-Auto-Response.exe"` },
+          ]}
+        />
+      </div>
+
+      <!-- macOS -->
+      <div id="os-panel-macos" role="tabpanel" aria-labelledby="os-tab-macos" class="mt-6 grid gap-8 lg:grid-cols-2 lg:gap-12" hidden>
+        <div>
+          <ol class="steps">
+            <li>
+              <p class="font-medium">Скачайте архив под свой процессор</p>
+              <div class="mt-3 flex flex-wrap gap-2.5">
+                <a class="btn btn-primary btn-sm" href={assetUrl(version, 'macos-arm64')} data-asset="macos-arm64">
+                  <Icon name="download" /> Apple Silicon
+                </a>
+                <a class="btn btn-ghost btn-sm" href={assetUrl(version, 'macos-x86_64')} data-asset="macos-x86_64">
+                  <Icon name="download" /> Intel
+                </a>
+              </div>
+            </li>
+            <li>
+              <p class="font-medium">Перенесите в «Программы»</p>
+              <p class="body-sm mt-1">Распакуйте архив и перетащите <code class="inline-code">HH-Auto-Response.app</code> в «Программы».</p>
+            </li>
+            <li>
+              <p class="font-medium">Откройте правой кнопкой</p>
+              <p class="body-sm mt-1">
+                Приложение не подписано, и обычный двойной клик macOS заблокирует. В первый раз нажмите на него правой кнопкой и выберите «Открыть».
+              </p>
+            </li>
+          </ol>
+          <p class="demo-note mt-5">Нужны macOS 11 или новее и Google Chrome.</p>
+        </div>
+        <Terminal
+          title="Терминал, Apple Silicon"
+          lines={[
+            { cmd: `curl -LO ${assetLatestUrl(version, 'macos-arm64')}` },
+            { cmd: `unzip ${macFile}` },
+            { cmd: 'mv HH-Auto-Response.app /Applications/' },
+          ]}
+        />
+      </div>
+
+      <!-- Linux -->
+      <div id="os-panel-linux" role="tabpanel" aria-labelledby="os-tab-linux" class="mt-6 grid gap-8 lg:grid-cols-2 lg:gap-12" hidden>
+        <div>
+          <ol class="steps">
+            <li>
+              <p class="font-medium">Скачайте архив</p>
+              <a class="btn btn-primary btn-sm mt-3" href={assetUrl(version, 'linux')} data-asset="linux">
+                <Icon name="download" /> Скачать для Linux
+              </a>
+            </li>
+            <li>
+              <p class="font-medium">Распакуйте и запустите</p>
+              <p class="body-sm mt-1">Хватит двух команд, они справа. Внутри архива всё, что нужно приложению, кроме браузера.</p>
+            </li>
+          </ol>
+          <p class="demo-note mt-5">
+            Нужен Google Chrome (<code class="inline-code">google-chrome-stable</code>). Для уведомлений понадобится
+            <code class="inline-code">notify-send</code> из пакета <code class="inline-code">libnotify-bin</code>.
+          </p>
+        </div>
+        <Terminal
+          title="bash"
+          lines={[
+            { cmd: `curl -LO ${assetLatestUrl(version, 'linux')}` },
+            { cmd: `tar -xzf ${linuxFile}` },
+            { cmd: './HH-Auto-Response/HH-Auto-Response' },
+          ]}
+        />
+      </div>
+
+      <!-- Docker -->
+      <div id="os-panel-docker" role="tabpanel" aria-labelledby="os-tab-docker" class="mt-6 grid gap-8 lg:grid-cols-2 lg:gap-12" hidden>
+        <div>
+          <ol class="steps">
+            <li>
+              <p class="font-medium">Соберите образ на сервере</p>
+              <p class="body-sm mt-1">Нужны Docker и Docker Compose. Сервер должен быть в России: hh.ru работает только оттуда.</p>
+            </li>
+            <li>
+              <p class="font-medium">Один раз войдите в hh</p>
+              <p class="body-sm mt-1">
+                Браузер запустится на виртуальном экране. Его видно по VNC через SSH-туннель, наружу порт не открыт.
+                Подключитесь клиентом к <code class="inline-code">localhost:5900</code> и войдите как обычно.
+              </p>
+            </li>
+            <li>
+              <p class="font-medium">Проверьте и запустите</p>
+              <p class="body-sm mt-1">
+                Ссылка поиска и нейросеть настраиваются в <code class="inline-code">hh-data/config.toml</code>. Дальше контейнер
+                работает сам: отклики, чаты, пауза на 6 часов и всё сначала.
+              </p>
+            </li>
+          </ol>
+          <p class="demo-note mt-5">
+            Все подробности в <a class="link" href={`${links.repo}#docker-на-сервере`}>разделе про Docker</a>.
+          </p>
+        </div>
+        <Terminal
+          title="сервер"
+          lines={[
+            { cmd: 'git clone https://github.com/BlazeStudio/hh-auto-response.git' },
+            { cmd: 'cd hh-auto-response/docker && docker compose build' },
+            { cmd: 'docker compose run --rm --service-ports hh login' },
+            { note: 'туннель на своём компьютере, в отдельном окне' },
+            { cmd: 'ssh -L 5900:127.0.0.1:5900 user@ваш-сервер' },
+            { note: 'пробный прогон, затем постоянная работа' },
+            { cmd: 'docker compose run --rm hh responses --dry-run' },
+            { cmd: 'docker compose up -d' },
+          ]}
+        />
+      </div>
+    </div>
+
+    <div class="reveal mt-14 border-t border-line pt-10">
+      <h3 class="h3 text-xl!">Первый запуск: сначала посмотрите, потом отправляйте</h3>
+      <ol class="steps mt-6 md:grid-cols-3 md:gap-8">
+        <li>
+          <p class="font-medium">Покажите, что искать</p>
+          <p class="body-sm mt-1">Вставьте ссылку на «подходящие вакансии» из hh или просто впишите запрос.</p>
+        </li>
+        <li>
+          <p class="font-medium">Нажмите «Пробный прогон»</p>
+          <p class="body-sm mt-1">Войдите в hh сами. Программа покажет, на что откликнулась бы, и ничего не отправит.</p>
+        </li>
+        <li>
+          <p class="font-medium">Всё устраивает? Нажмите «Начать»</p>
+          <p class="body-sm mt-1">О новых версиях приложение сообщит само и обновится в один клик. Настройки и вход сохранятся.</p>
+        </li>
+      </ol>
+    </div>
+  </div>
+</section>
