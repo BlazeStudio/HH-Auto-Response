@@ -255,9 +255,9 @@ class MiniWindow(QuietToplevel, ctk.CTkToplevel):
                 return right - width, bottom - height
         if browser_window.supported():  # правый нижний угол рабочей области монитора, где окно программы
             near = int(self.app.wm_frame(), 16)
-            left, top, right, bottom = browser_window._work_area(near)
+            _left, _top, right, bottom = browser_window._work_area(near)
         else:
-            left, top, right, bottom = 0, 0, self.winfo_screenwidth(), self.winfo_screenheight() - 48
+            right, bottom = self.winfo_screenwidth(), self.winfo_screenheight() - 48
         margin = round(self.MARGIN * ctk.ScalingTracker.get_window_scaling(self))
         return right - width - margin, bottom - height - margin
 

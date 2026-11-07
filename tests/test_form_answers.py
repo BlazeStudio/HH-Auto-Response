@@ -15,7 +15,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # пакет hh_auto лежит в папке проекта
 
 from hh_auto.ai.client import (AiClient, Decision, FormQuestion, documents_answer, documents_question,  # noqa: E402
-                               key_facts, review)
+                               key_facts, own_words_about, review)
 from hh_auto.core.config import Ai  # noqa: E402
 from hh_auto.hh import raising, resume  # noqa: E402
 from hh_auto.hh.resume import has_city, personal_lines  # noqa: E402
@@ -158,11 +158,11 @@ class CityQuestion(unittest.TestCase):
         self.assertTrue(any("Что ещё знать о вас" in note for note in ai.notes))
 
     def test_model_answers_when_the_city_is_known(self):
-        for resume, context in ((f"Проживает: Москва\n{self.RESUME}", ""), (self.RESUME, "Живу в Москве"),
+        for text, context in ((f"Проживает: Москва\n{self.RESUME}", ""), (self.RESUME, "Живу в Москве"),
                                 (self.RESUME, "Москва"), (self.RESUME, "Москва, гибрид"), (self.RESUME, "Нижний Новгород."),
                                 (self.RESUME, "Ожидаю от 150 000. Санкт-Петербург."), (self.RESUME, "мой адрес в Туле")):
-            ai, fill = self.fill(resume, context)
-            self.assertEqual(ai.asked, [CITY], (resume, context))
+            ai, fill = self.fill(text, context)
+            self.assertEqual(ai.asked, [CITY], (text, context))
 
     def test_other_words_in_context_do_not_make_the_city_known(self):
         for context in ("Ожидаю от 150 000 ₽ на руки", "Могу выйти через 2 недели. Предпочитаю удалёнку"):
@@ -177,6 +177,64 @@ class CityQuestion(unittest.TestCase):
         ai, _ = self.fill(self.RESUME)
         fill = ai.fill_form(self.RESUME, "", "вакансия", form(FormQuestion(0, "Почему вас интересует вакансия?", "text")))
         self.assertEqual(fill.answers[0].text, "Проживаю в Москве.")
+
+
+class Office(unittest.TestCase):
+    RESUME = "Опыт работы: 3 года\nФормат работы: Удалённо, Гибрид\nPython"
+    OFFICE = "Готовы ли вы работать в офисе 5 дней в неделю?"
+
+    def test_text_answer_comes_from_the_resume(self):
+        ai = FakeAi({"can_answer": True, "text": "Готов работать в офисе 5 дней в неделю."})
+        fill = ai.fill_form(self.RESUME, "", "вакансия", form(FormQuestion(0, self.OFFICE, "text")))
+        self.assertEqual(fill.answers[0].text, "Рассматриваю формат работы: удалённо, гибрид.")
+        self.assertEqual(ai.asked, [])
+
+    def test_options_pick_hybrid_then_remote_then_no(self):
+        for options, wanted in ((["Да", "Гибрид", "Только удалённо"], "Гибрид"), (["Да", "Нет"], "Нет")):
+            fill = FakeAi().fill_form(self.RESUME, "", "вакансия", form(FormQuestion(0, self.OFFICE, "single", options)))
+            self.assertEqual(fill.answers[0].describe(), wanted, options)
+        remote = "Формат работы: Удалённо"
+        fill = FakeAi().fill_form(remote, "", "вакансия",
+                                  form(FormQuestion(0, self.OFFICE, "single", ["Да", "Гибрид", "Только удалённо"])))
+        self.assertEqual(fill.answers[0].describe(), "Только удалённо")
+
+    def test_left_to_the_model_when_office_is_fine(self):
+        for text, context in ((self.RESUME, "Готов ходить в офис каждый день"),
+                              ("Формат работы: На месте работодателя, Гибрид", ""), ("Опыт работы: 3 года", "")):
+            ai = FakeAi()
+            ai.fill_form(text, context, "вакансия", form(FormQuestion(0, self.OFFICE, "text")))
+            self.assertEqual(ai.asked, [self.OFFICE], (text, context))
+
+    def test_chat_too(self):
+        reply = FakeAi()._fix_reply(Decision("question", self.OFFICE, "Да, готов."), [], self.RESUME, "").reply
+        self.assertEqual(reply, "Рассматриваю формат работы: удалённо, гибрид.")
+
+
+class OwnWords(unittest.TestCase):
+    """#19: «опыта с Django не было», когда вы сами написали, что работали с ним."""
+
+    QUESTION = "Сколько лет опыта с Django?"
+
+    def test_found_in_context(self):
+        self.assertEqual(own_words_about(self.QUESTION, "Живу в Москве. С Django работал 2 года."), "С Django работал 2 года.")
+        self.assertEqual(own_words_about(self.QUESTION, "С Django не работал"), "")
+        self.assertEqual(own_words_about(self.QUESTION, ""), "")
+
+    def test_contradiction_is_rewritten(self):
+        ai = FakeAi()
+        ai.last_raw = ""
+        ai.complete = lambda *a, **k: '{"kind": "question", "question": "q", "reply": "С Django работал 2 года."}'
+        decision = ai._fix_reply(Decision("question", self.QUESTION, "Опыта с Django не было, но работал с Django 2 года."),
+                                 [], "Go", "С Django работал 2 года")
+        self.assertEqual((decision.kind, decision.reply), ("question", "С Django работал 2 года."))
+
+    def test_still_contradicting_goes_to_you(self):
+        ai = FakeAi()
+        ai.last_raw = ""
+        ai.complete = lambda *a, **k: '{"kind": "question", "question": "q", "reply": "Опыта с Django не было."}'
+        decision = ai._fix_reply(Decision("question", self.QUESTION, "Опыта с Django не было."), [], "Go",
+                                 "С Django работал 2 года")
+        self.assertEqual(decision.kind, "human")
 
 
 class AttachNow(unittest.TestCase):

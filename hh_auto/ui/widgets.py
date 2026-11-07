@@ -1384,7 +1384,8 @@ def _open_box(label: tkinter.Label) -> tkinter.Text:
     _close_box()
     text, font = str(label.cget("text")), label.cget("font")
     width, height = label.winfo_width(), label.winfo_height()
-    wrap = int(str(label.cget("wraplength")) or 0)
+    # «186», «232.5» (customtkinter умножает на масштаб экрана) или «2c» — в точках экрана
+    wrap = round(label.winfo_fpixels(label.cget("wraplength") or 0))
     dark = 1 if ctk.get_appearance_mode() == "Dark" else 0
     box = tkinter.Text(label, bd=0, highlightthickness=0, relief="flat", padx=0, pady=0, width=1, height=1, font=font,
                        wrap="word" if wrap else "none", insertwidth=0, takefocus=0, cursor="xterm",

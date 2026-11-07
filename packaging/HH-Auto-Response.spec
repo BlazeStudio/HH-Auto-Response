@@ -27,7 +27,10 @@ a = Analysis(
     [str(ROOT / "scripts" / "gui.py")],
     pathex=[str(ROOT)],
     datas=datas,
-    hiddenimports=[],
+    # Картинки в окне (значки меню) на Linux и macOS идут через PIL._imagingtk, а он ищет Tk модулем
+    # PIL._tkinter_finder. Хук PyInstaller для Pillow вырезает из него импорт tkinter, и модуль в сборку не попадал:
+    # Linux-версия падала при запуске («No module named 'PIL._tkinter_finder'»)
+    hiddenimports=["PIL._tkinter_finder"],
     excludes=["numpy", "pandas", "matplotlib", "scipy", "pytest", "IPython"],
     noarchive=False,
 )

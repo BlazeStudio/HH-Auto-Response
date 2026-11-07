@@ -42,7 +42,7 @@ from ..hh.negotiations import FILE as NEGOTIATIONS_FILE, funnel as funnel_rows
 from ..hh.resume import has_city
 from ..hh.vacancy_meta import SKILLS_FILE, SkillStats
 from ..core.logger import SUCCESS, log, setup_logging
-from ..core.paths import app_root, bundled, is_frozen
+from ..core.paths import app_root, is_frozen
 from ..hh.runner import RunOptions, Stats
 from ..web import browser, window as browser_window
 from ..hh import raising, watch

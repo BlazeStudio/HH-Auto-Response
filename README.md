@@ -754,7 +754,7 @@ PyInstaller собирает только под ту систему, на ко�
 |---|---|
 | `hh_auto/` | вся программа: поиск и отклики, чаты, нейросеть, окно, отчёт, обновление |
 | `scripts/` | точки входа: `gui.py` (окно), `responses.py` (отклики), `chats.py` (чаты), `watch.py` (фоновая проверка), `raise_resume.py` (поднять резюме), `analyze_resume.py` (анализ резюме), `ai_test.py` (песочница ИИ) |
-| `tests/` | проверки без нейросети и браузера: `python -m unittest discover -s tests` |
+| `tests/` | проверки: `python -m unittest discover -s tests` (без браузера), `python tests/e2e_mock_hh.py` (весь путь на макете hh, без сети), `python tests/smoke_gui.py` (окно программы; на Linux без экрана — через `xvfb-run -a`) |
 | `packaging/` | сборка приложения: `build.bat`, `build.sh`, `build-macos.sh`, `build-linux.sh`, настройки PyInstaller, иконки |
 | `docker/` | `Dockerfile`, `entrypoint.sh` и `docker-compose.yml` для сервера |
 | `docs/` | гайд по [Ollama на другом компьютере](docs/ollama.md), [что нового в версии](docs/release-notes.md), скриншоты (светлые и `dark/`), баннер для GitHub (`social-preview.png`, тёмный — `social-preview-dark.png`) |

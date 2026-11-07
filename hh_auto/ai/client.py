@@ -56,10 +56,11 @@ reply — ответ именно на этот вопрос, по сущест�
 Правила ответа:
 - от первого лица, по-русски (или на языке вопроса), коротко: 1–2 предложения на вопрос, не длиннее {max_chars} символов;
 - только факты из резюме и контекста; не выдумывай опыт, цифры, компании, навыки и даты;
+- если ответ на вопрос есть в контексте соискателя, отвечай именно так;
 - если точного ответа в резюме и контексте нет (например, о зарплате или графике), это всё равно "question":
   ответь честно и нейтрально (например: «Готов обсудить на собеседовании»);
 - на вопрос о количестве лет опыта отвечай числом из резюме; срок по отдельной технологии называй, только
-  если он прямо следует из резюме (технология указана в конкретном месте работы с датами). Навыкам из
+  если он написан в контексте или прямо следует из резюме (технология указана в конкретном месте работы с датами). Навыкам из
   списка «Навыки» и тому, что соискатель «изучает в свободное время», коммерческий стаж не приписывай —
   так и скажи (например: «Коммерческого опыта с NLP нет, изучаю LLM и RAG в свободное время»);
 - не соглашайся на условия, которых нет в резюме или контексте: формат работы бери из строки резюме
@@ -96,8 +97,8 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
 - варианты копируй ДОСЛОВНО из списка; для «выбери один» — ровно один вариант;
 - только факты из резюме и контекста; не выдумывай опыт, сроки, суммы, компании и ссылки;
 - если ответ на вопрос есть в контексте соискателя, отвечай именно так;
-- стаж: общий — из строки «Опыт работы» в ключевых фактах; по отдельной технологии — только если он прямо
-  следует из резюме. Навыкам «из списка» и тому, что «изучаю в свободное время», коммерческий стаж не приписывай;
+- стаж: общий — из строки «Опыт работы» в ключевых фактах; по отдельной технологии — только если он написан
+  в контексте или прямо следует из резюме. Навыкам «из списка» и тому, что «изучаю в свободное время», коммерческий стаж не приписывай;
 - список технологий/навыков: выбирай ТОЛЬКО то, что прямо написано в резюме, остальное не выбирай;
 - зарплата, сроки выхода, переезд, график — ТОЛЬКО из контекста. Для вилок выбирай вариант, в который попадает
   сумма из контекста («от 150 000» → вилка, начинающаяся со 150 000). Если в контексте этого нет — текстом
@@ -871,6 +872,26 @@ class AiClient:
         if _CITY_Q.search(decision.question) and not knows_city(resume, context):
             decision.reply = UNKNOWN_FACT_REPLY
             return decision
+        formats = office_refusal(decision.question, resume, context)
+        if formats:
+            decision.reply = f"Рассматриваю формат работы: {formats}."
+            return decision
+        own = own_words_about(decision.question, context)
+        if own and _NO_EXPERIENCE.search(decision.reply):
+            # «Опыта с Django не было, но работал с Django 2 года»: вы сами написали в контексте, что работали
+            retry = messages + [{"role": "assistant", "content": self.last_raw[:2000]},
+                                {"role": "user", "content": f"Соискатель сам написал: «{own}». Ответь по его словам, "
+                                                            "без «опыта не было». Верни тот же JSON."}]
+            try:
+                self.last_raw = self.complete(retry, json_mode=True)
+                fixed = self._parse(self.last_raw)
+                if fixed.kind == "question" and fixed.reply and not _NO_EXPERIENCE.search(fixed.reply):
+                    return fixed
+            except AiError:
+                pass
+            self.notes.append(f"ответ спорит с вашими словами «{own[:60]}» — оставляю вам")
+            decision.kind = "human"
+            return decision
         if _SALARY_Q.search(decision.question):
             phrase = salary_phrase(context)
             if not phrase:
@@ -954,7 +975,8 @@ class AiClient:
                 answers.append(FormAnswer(q, choices=picked))
                 continue
             # Зарплата и сроки — слишком важны, чтобы доверять модели: считаем сами
-            fixed = context_topic_answer(q, context) or language_answer(q, resume, context)
+            fixed = (context_topic_answer(q, context) or language_answer(q, resume, context)
+                     or format_answer(q, resume, context))
             if fixed is not None:
                 answers.append(fixed)
                 continue
@@ -1417,6 +1439,45 @@ _CITY_CONTEXT = re.compile(r"жив[уёе]|прожива|город|(?:^|[.!?]
 
 def knows_city(resume: str, context: str) -> bool:
     return bool(_CITY_FACT.search(resume) or _CITY_CONTEXT.search(context))
+
+
+# Офис, когда в резюме его нет. Модель (qwen3:8b) на «Готовы работать в офисе 5 дней?» при «Формат работы: Удалённо,
+# Гибрид» в 4 случаях из 4 отвечала «Готов работать в офисе 5 дней в неделю», хотя правило это запрещало
+_OFFICE_Q = re.compile(r"\bофис|на месте работодателя|на территории (?:работодателя|компании)", re.I)
+_FORMAT_LINE = re.compile(r"^\s*Формат работы:?\s*(.+)$", re.I | re.M)
+_OFFICE_FORMAT = re.compile(r"офис|на месте|на территории", re.I)
+
+
+def office_refusal(question: str, resume: str, context: str) -> str:
+    """Спрашивают про офис, а в резюме офиса нет и в контексте о нём ни слова — форматы из резюме
+    («удалённо, гибрид»), иначе ""."""
+    line = _FORMAT_LINE.search(resume)
+    if not _OFFICE_Q.search(question) or not line or _OFFICE_FORMAT.search(line.group(1)) or _OFFICE_Q.search(context):
+        return ""
+    return line.group(1).strip().rstrip(".").lower()
+
+
+def format_answer(q: FormQuestion, resume: str, context: str) -> FormAnswer | None:
+    """Анкета: вопрос про офис, которого нет в резюме, — ответ по строке «Формат работы», а не согласие модели."""
+    formats = office_refusal(q.text, resume, context)
+    if not formats:
+        return None
+    if q.kind == "text":
+        return FormAnswer(q, text=f"Рассматриваю формат работы: {formats}.")
+    for wanted in ([r"гибрид"] if "гибрид" in formats else []) + [r"удал", r"^\s*нет\b"]:
+        k = next((k for k, o in enumerate(q.options) if re.search(wanted, o, re.I)), None)
+        if k is not None:
+            return FormAnswer(q, choices=[k])
+    return None
+
+
+def own_words_about(question: str, context: str) -> str:
+    """Предложение из контекста о технологии, про которую спрашивают («С Django работал 2 года»), иначе ""."""
+    for tech in dict.fromkeys(_TECH_WORD.findall(question)):
+        for sentence in re.split(r"(?<=[.!?\n])\s*", context):
+            if re.search(rf"(?<![\w]){re.escape(tech)}(?![\w])", sentence, re.I) and not _NO_EXPERIENCE.search(sentence):
+                return sentence.strip()
+    return ""
 
 
 def _neutral_option(q: FormQuestion) -> int | None:
