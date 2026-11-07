@@ -32,7 +32,8 @@
 - Python-файлы компилируются (и во вложенных папках `hh_auto`): `python -m compileall -q hh_auto scripts`.
 - Проверки без нейросети проходят: `python -m unittest discover -s tests`, а для изменений в откликах, чатах
   и окне — ещё `python tests/e2e_mock_hh.py` и `python tests/smoke_gui.py` (без сети, на макете hh). Их же
-  на Windows, macOS и Linux запускает GitHub Actions («Проверки»).
+  на Windows, macOS и Linux можно запустить в GitHub Actions: Actions → «Проверки» → Run workflow (сами они
+  не запускаются — автоматически работают только «Сайт» и «Сборка»).
 - Новый модуль — в папку по смыслу (см. «Что где лежит» в README), а не в корень `hh_auto/`.
 - Новые настройки есть в `config.example.toml` с пояснением, а в окне — в нужной вкладке «Настроек».
 - Заметное изменение описано в `CHANGELOG.md` (в разделе следующей версии).

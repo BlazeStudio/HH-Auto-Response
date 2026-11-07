@@ -1,17 +1,16 @@
 # Проверки на всех системах: юнит-тесты, весь путь программы на макете hh и окно приложения.
 # Сеть не нужна: hh и нейросеть подменены (tests/mock_hh.py), настоящих откликов нет.
-# Запускается при push в любую ветку, на pull request и вручную: Actions → «Проверки» → Run workflow.
+# Сам не запускается: автоматически работают только «Сайт» (push в main) и «Сборка» (новый релиз).
+# Запуск вручную: Actions → «Проверки» → Run workflow → нужная ветка.
 name: Проверки
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:  # новый push в ту же ветку отменяет недоделанную проверку старого
+concurrency:  # новый запуск на той же ветке отменяет недоделанный старый
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
