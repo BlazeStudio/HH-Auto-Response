@@ -310,6 +310,7 @@ _SOFT_HINT = re.compile(
     r"управленческ\w* навык|ориентаци\w* на клиент")
 _LANG_HINT = re.compile(r"(?:английск|немецк|французск|китайск|испанск|итальянск|японск|корейск|арабск|турецк)\w* язык")
 
+BACKSLASH = "\\"
 _STOP = {"с", "и", "в", "во", "на", "по", "для", "к", "о", "об", "от", "из", "за", "а", "of", "and", "the", "in", "to",
          "for", "with", "или", "or"}
 _WORD = re.compile(r"[a-zа-я0-9][a-zа-я0-9+#]*", re.I)
@@ -367,7 +368,7 @@ class _Entry:
     def __init__(self, name: str, kind: str):
         self.name, self.kind = name, kind
         self.plain: set[str] = {norm(name)}
-        self.patterns: list[re.Pattern] = []
+        self.patterns: list[tuple[re.Pattern, tuple[str, ...] | None]] = []  # (выражение, буквальные начала)
         self.cased: list[re.Pattern] = []
 
 
@@ -381,7 +382,7 @@ def _dictionary() -> tuple[dict[str, _Entry], dict[str, str]]:
         entry = _Entry(name, kind)
         for alias in (a.strip() for a in (rest[0] if rest else "").split(";")):
             if alias.startswith("re:"):  # с начала слова: «работ\w* в команде» — не «разработку в команде»
-                entry.patterns.append(re.compile(rf"(?<!\w)(?:{alias[3:]})"))
+                entry.patterns.append((re.compile(rf"(?<!\w)(?:{alias[3:]})"), _needles(alias[3:])))
             elif alias.startswith("cs:"):
                 entry.cased.append(re.compile(alias[3:]))
             elif alias:
@@ -396,6 +397,54 @@ def _dictionary() -> tuple[dict[str, _Entry], dict[str, str]]:
 def _dictionary_regex() -> re.Pattern:
     _, aliases = _dictionary()
     return _bounded(_trie(aliases))
+
+
+def _needles(source: str) -> tuple[str, ...] | None:
+    """Буквальные начала вариантов регулярного выражения («английск\\w*|english» → «английск», «english»):
+    если ни одного нет в тексте, выражение можно не запускать. None — у какого-то варианта начала нет."""
+    branches, depth, start = [], 0, 0
+    for i, char in enumerate(source):
+        if char == BACKSLASH:
+            continue
+        if char == "(" and (i == 0 or source[i - 1] != BACKSLASH):
+            depth += 1
+        elif char == ")" and source[i - 1] != BACKSLASH:
+            depth -= 1
+        elif char == "|" and depth == 0 and source[i - 1] != BACKSLASH:
+            branches.append(source[start:i])
+            start = i + 1
+    branches.append(source[start:])
+    needles = []
+    for branch in branches:
+        literal = re.match(r"[^" + re.escape(BACKSLASH + "[](){}*+?.|^$") + r"]*", branch).group()
+        if "?" in branch[len(literal):len(literal) + 1] or "*" in branch[len(literal):len(literal) + 1]:
+            literal = literal[:-1]  # «a/?b» — последняя буква перед «?» необязательна
+        if len(literal) < 2:
+            return None
+        needles.append(literal)
+    return tuple(needles)
+
+
+_found_cache: dict[str, frozenset[str]] = {}  # текст → навыки из словаря: одни и те же вакансии — в каждом расчёте
+
+
+def _dictionary_skills(low: str, text: str) -> frozenset[str]:
+    """Навыки из словаря в тексте (low — уже norm, text — как есть: для вариантов с учётом регистра)."""
+    cached = _found_cache.get(low)
+    if cached is not None:
+        return cached
+    entries, aliases = _dictionary()
+    found = {aliases[m.group()] for m in _dictionary_regex().finditer(low)}
+    for entry in entries.values():
+        if entry.name in found:
+            continue
+        if any((needles is None or any(n in low for n in needles)) and pattern.search(low)
+               for pattern, needles in entry.patterns) or any(p.search(text) for p in entry.cased):
+            found.add(entry.name)
+    if len(_found_cache) > 30_000:
+        _found_cache.clear()
+    _found_cache[low] = result = frozenset(found)
+    return result
 
 
 def implied(names: Iterable[str]) -> set[str]:
@@ -449,7 +498,7 @@ class Vocabulary:
         if bare != text and bare in self.aliases:
             return self.aliases[bare]
         for entry in self.entries.values():  # «Английский — C1», «English (Upper-Intermediate)»
-            if entry.kind in (LANG, SOFT) and any(p.search(text) for p in entry.patterns):
+            if entry.kind in (LANG, SOFT) and any(p.search(text) for p, _ in entry.patterns):
                 return entry.name
         return self.extra.get(text, name)
 
@@ -466,11 +515,7 @@ class Vocabulary:
         """Навыки, упомянутые в тексте. extra=False — только из словаря (для коротких карточек вакансий,
         где общие слова вроде «обучение» — не навык)."""
         low = "\n".join(norm(line) for line in text.splitlines())  # строки — для поиска по основам слов
-        found = {self.aliases[m.group()] for m in _dictionary_regex().finditer(low)}
-        for entry in self.entries.values():
-            if entry.name not in found and (any(p.search(low) for p in entry.patterns)
-                                            or any(p.search(text) for p in entry.cased)):
-                found.add(entry.name)
+        found = set(_dictionary_skills(low, text))
         if not extra:
             return found
         if self._extra_regex is not None:

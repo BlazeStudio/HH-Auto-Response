@@ -34,7 +34,7 @@ from ..core import control
 from ..web import selectors as S
 from ..ai.client import AiClient, AiError, is_done_message, norm, ours_is_last, review
 from ..web.auth import hh_role, is_auth_url
-from ..web.browser import FatalError, wait_captcha
+from ..web.browser import FatalError, slowdown, wait_captcha
 from ..core.config import Config
 from ..core.logger import log
 from .negotiations import Negotiations
@@ -540,7 +540,7 @@ def _click_chat(page: Page, chat: _Chat, cfg: Config) -> None:
             if attempt == 2 or "not attached" not in str(e):
                 raise
             control.sleep(0.3)
-    control.sleep(random.uniform(cfg.limits.action_delay_min, cfg.limits.action_delay_max) / 2)
+    control.sleep(random.uniform(cfg.limits.action_delay_min, cfg.limits.action_delay_max) / 2 * slowdown())
     log.info("  → открываю чат")
     cell.click()
     try:
@@ -575,7 +575,7 @@ def _open_chat(page: Page, chat: _Chat, cfg: Config) -> bool:
     cell = page.locator(_cell_selector(chat.id))
     try:
         _click_chat(page, chat, cfg)
-        delay = random.uniform(cfg.chats.delay_min, cfg.chats.delay_max)
+        delay = random.uniform(cfg.chats.delay_min, cfg.chats.delay_max) * slowdown()  # после капчи — дольше
         log.info(f"  ⏸ {delay:.1f} с — жду, пока hh отметит чат прочитанным")
         control.sleep(delay)
         _back_to_list(page)
@@ -730,7 +730,12 @@ def _wait_next_message(page: Page, timeout: float, last_sent: str) -> str | None
     """После нашего ответа ждём новое сообщение работодателя (следующий вопрос робота). Отметка «прочитано»,
     время или «печатает…» под нашим ответом — ещё не оно: раньше программа принимала их за новое сообщение,
     видела последним свой ответ и уходила из чата, а вопрос робота, пришедший следом, оставался без ответа."""
+    # Робот бывает быстрее, чем мы убедились, что наш ответ ушёл: его вопрос уже на экране. Раньше он попадал
+    # в «было до ответа», перемен программа не видела и уходила, а счётчика непрочитанных у открытого чата нет —
+    # вернуться к нему было не по чему, и вопрос оставался без ответа
     baseline = _transcript(page) or ""
+    if _question_after(baseline, last_sent):
+        return _settled(page, baseline)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         control.sleep(1.0)

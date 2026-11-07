@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from ..core.config import AI_PROVIDERS, Ai
@@ -55,10 +56,11 @@ reply — ответ именно на этот вопрос, по сущест�
 Правила ответа:
 - от первого лица, по-русски (или на языке вопроса), коротко: 1–2 предложения на вопрос, не длиннее {max_chars} символов;
 - только факты из резюме и контекста; не выдумывай опыт, цифры, компании, навыки и даты;
+- если ответ на вопрос есть в контексте соискателя, отвечай именно так;
 - если точного ответа в резюме и контексте нет (например, о зарплате или графике), это всё равно "question":
   ответь честно и нейтрально (например: «Готов обсудить на собеседовании»);
 - на вопрос о количестве лет опыта отвечай числом из резюме; срок по отдельной технологии называй, только
-  если он прямо следует из резюме (технология указана в конкретном месте работы с датами). Навыкам из
+  если он написан в контексте или прямо следует из резюме (технология указана в конкретном месте работы с датами). Навыкам из
   списка «Навыки» и тому, что соискатель «изучает в свободное время», коммерческий стаж не приписывай —
   так и скажи (например: «Коммерческого опыта с NLP нет, изучаю LLM и RAG в свободное время»);
 - не соглашайся на условия, которых нет в резюме или контексте: формат работы бери из строки резюме
@@ -94,8 +96,9 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
 - грейд — Junior / Middle / Senior, а не цифры;
 - варианты копируй ДОСЛОВНО из списка; для «выбери один» — ровно один вариант;
 - только факты из резюме и контекста; не выдумывай опыт, сроки, суммы, компании и ссылки;
-- стаж: общий — из строки «Опыт работы» в ключевых фактах; по отдельной технологии — только если он прямо
-  следует из резюме. Навыкам «из списка» и тому, что «изучаю в свободное время», коммерческий стаж не приписывай;
+- если ответ на вопрос есть в контексте соискателя, отвечай именно так;
+- стаж: общий — из строки «Опыт работы» в ключевых фактах; по отдельной технологии — только если он написан
+  в контексте или прямо следует из резюме. Навыкам «из списка» и тому, что «изучаю в свободное время», коммерческий стаж не приписывай;
 - список технологий/навыков: выбирай ТОЛЬКО то, что прямо написано в резюме, остальное не выбирай;
 - зарплата, сроки выхода, переезд, график — ТОЛЬКО из контекста. Для вилок выбирай вариант, в который попадает
   сумма из контекста («от 150 000» → вилка, начинающаяся со 150 000). Если в контексте этого нет — текстом
@@ -108,33 +111,53 @@ FORM_PROMPT = """Ты отвечаешь за соискателя на ОДИН
 - пиши своими словами, живо и по делу; не копируй строки резюме дословно и не перечисляй весь стек подряд;
 - ты говоришь как сам соискатель: никогда не пиши «в резюме не указано» / «в резюме нет» — пиши «опыта с X не было»;
 - can_answer = false — ТОЛЬКО если просят: тестовое задание, код, решение задачи, ссылку на портфолио/GitHub,
-  документы, контакты, персональные данные или оплату."""
+  документы, телефон, почту, паспортные данные или оплату. Город, гражданство и образование сюда не относятся."""
 
 
 LETTER_PROMPT = """Ты пишешь сопроводительное письмо соискателя к отклику на вакансию hh.ru.
-Тебе дают резюме соискателя, его дополнительный контекст и вакансию (название, компания, описание).
+Тебе дают резюме соискателя, его дополнительный контекст и данные о вакансии.
 
 Как писать:
 - от первого лица, по-русски, живо и по-деловому, без канцелярита и штампов («динамично развивающаяся компания»);
-- вакансию называй в кавычках, компанию — по имени: «вакансия «Python-разработчик» в Ромашке»
-  (если компания не указана — просто «ваша компания»);
+{naming}
 {structure}
 - если требования вакансии шире опыта — сделай упор на смежный опыт и быстрое обучение, но опыт,
   которого нет в резюме, не приписывай;
+- название и требования вакансии — не твой опыт: технологию оттуда, которой нет в резюме и контексте, не называй
+  своей («знаю», «понимаю», «работал»); можно честно написать, что с ней не работал и готов освоить;
+- цифры и результаты — только те, что написаны в резюме и контексте, теми же словами: не пересчитывай их
+  в проценты и «в N раз», не округляй и не добавляй новых;
 - никаких контактов, ссылок, подписи с именем, заполнителей в квадратных скобках, темы письма и markdown;
 - зарплату упоминай только если о ней просят в вакансии и она есть в контексте;
-- до {max_chars} символов.
+- до {max_chars} символов;
+- пожелания к письму в контексте соискателя (тон, что упоминать, а что нет) важнее правил выше.
 
 Верни только текст письма."""
+# Как называть вакансию и компанию: (не упоминать вакансию, не упоминать компанию) → правило
+LETTER_NAMING = {
+    (False, False): """- вакансию называй в кавычках, компанию — по имени: «вакансия «Python-разработчик» в Ромашке»
+  (если компания не указана — просто «ваша компания»);""",
+    (False, True): "- вакансию называй в кавычках; компанию не называй и не пиши «ваша компания»;",
+    (True, False): "- компанию можно назвать по имени; вакансию не называй и не пиши слово «вакансия», пиши о самих задачах;",
+    (True, True): "- не называй ни вакансию, ни компанию и не пиши слова «вакансия» и «ваша компания»: "
+                  "пиши только о задачах и своём опыте;",
+}
 # Порядок письма. По опыту откликов (339 откликов, 26 приглашений) письма, которые начинаются с опыта под
 # вакансию, а не с пересказа компании, чаще приводят к приглашению — это вариант по умолчанию
 LETTER_EXPERIENCE_FIRST = """- начни с «Здравствуйте!» и сразу — 2–3 факта из резюме, которые совпадают с требованиями вакансии
-  (своими словами, с конкретикой: задачи, результаты, технологии), затем одно предложение, чем интересна
-  именно эта вакансия, и короткое предложение обсудить детали — всего 3–5 предложений;
+  (своими словами, с конкретикой: задачи, результаты, технологии), затем одно предложение, чем {interest},
+  и короткое предложение обсудить детали — всего 3–5 предложений;
 - не начинай с пересказа компании или вакансии («Ваша компания — лидер…», «Меня заинтересовала…»);"""
-LETTER_INTEREST_FIRST = """- начни с «Здравствуйте!», затем 3–5 предложений: чем заинтересовала именно эта вакансия, 2–3 факта из резюме,
+LETTER_INTEREST_FIRST = """- начни с «Здравствуйте!», затем 3–5 предложений: чем {interest}, 2–3 факта из резюме,
   которые совпадают с требованиями вакансии (своими словами, с конкретикой: задачи, результаты, технологии),
   и короткое предложение обсудить детали;"""
+# Свой промпт соискателя ([letter] ai_prompt) — последним: при расхождении он важнее правил выше
+LETTER_USER_RULES = """
+
+ТРЕБОВАНИЯ СОИСКАТЕЛЯ К ПИСЬМУ. Они важнее всех правил выше: если требование расходится с правилом, выполняй требование.
+Это его собственные слова: что он здесь пишет о себе, считай фактом наравне с резюме. Сам опыт не придумывай.
+
+{rules}"""
 
 
 FILTER_PROMPT = """Ты помогаешь соискателю отбирать вакансии на hh.ru.
@@ -564,7 +587,8 @@ def review(decision: Decision, transcript: str, sent: list[str]) -> str:
         decision.kind = "human"
         return f"в сообщении «{sensitive.group(0)}» — такие вопросы решаете вы"
     meeting = MEETING.search(tail) or (MEETING.search(decision.question) if decision.question else None)
-    if meeting and decision.kind != "human":
+    # «Готовы ли вы после интервью предоставить документы?» — про документы, а не приглашение на интервью
+    if meeting and decision.kind != "human" and not documents_question(tail):
         decision.kind = "human"
         return f"предлагают {meeting.group(0)} — время согласуете вы"
     if decision.kind in ("info", "wait") and tail.rstrip().endswith("?"):
@@ -708,7 +732,7 @@ class AiClient:
         fresh = new_messages(transcript, sent or [])
         parts = [
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
-            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
+            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{self._full_context(context) or '(нет)'}",
             f"ПЕРЕПИСКА (последние сообщения внизу):\n{transcript}",
             "НОВЫЕ СООБЩЕНИЯ РАБОТОДАТЕЛЯ (реши, что с ними делать):\n" + "\n".join(fresh or [last_message(transcript)]),
         ]
@@ -736,6 +760,15 @@ class AiClient:
             return Decision("info")
         buttons = buttons or []
         self.notes = []
+        fresh = new_messages(transcript, sent)
+        about_documents = [m for m in fresh if documents_question(m)]
+        if about_documents:  # обещание от вашего имени: решает ваше разрешение, а не модель
+            self.last_raw = ""
+            if not self._documents_allowed(context):
+                return Decision("human", about_documents[0])
+            if len([m for m in fresh if m.rstrip().endswith("?")]) <= 1:
+                button = next((b for b in buttons if _YES_OPTION.search(b) and not _NO_OPTION.search(b)), "")
+                return Decision("question", about_documents[0], "" if button else DOCUMENTS_REPLY, button)
         messages = self.build_messages(resume, context, transcript, sent, buttons=buttons)
         self.last_raw = self.complete(messages, json_mode=True)
         try:
@@ -828,24 +861,49 @@ class AiClient:
             return True
 
     def _fix_reply(self, decision: Decision, messages: list[dict], resume: str, context: str) -> Decision:
-        """Страховка ответа в чате: без «в резюме не указано» и без опыта с технологиями, которых нет в резюме.
-        Сначала просим модель переписать, не вышло — правим сами."""
+        """Страховка ответа в чате: без «в резюме не указано», без опыта с технологиями, которых нет в резюме, и без
+        цифр, которых нет в резюме и контексте. Сначала просим модель переписать, не вышло — правим сами."""
         if decision.kind != "question" or not decision.reply:
             return decision
         # Срок выхода и зарплата — только из вашего контекста, как в анкетах при отклике
         if _START_Q.search(decision.question) and not _TIMING_CTX.search(context):
             decision.reply = "Готов обсудить на собеседовании."
             return decision
+        if _CITY_Q.search(decision.question) and not knows_city(resume, context):
+            decision.reply = UNKNOWN_FACT_REPLY
+            return decision
+        formats = office_refusal(decision.question, resume, context)
+        if formats:
+            decision.reply = f"Рассматриваю формат работы: {formats}."
+            return decision
+        own = own_words_about(decision.question, context)
+        if own and _NO_EXPERIENCE.search(decision.reply):
+            # «Опыта с Django не было, но работал с Django 2 года»: вы сами написали в контексте, что работали
+            retry = messages + [{"role": "assistant", "content": self.last_raw[:2000]},
+                                {"role": "user", "content": f"Соискатель сам написал: «{own}». Ответь по его словам, "
+                                                            "без «опыта не было». Верни тот же JSON."}]
+            try:
+                self.last_raw = self.complete(retry, json_mode=True)
+                fixed = self._parse(self.last_raw)
+                if fixed.kind == "question" and fixed.reply and not _NO_EXPERIENCE.search(fixed.reply):
+                    return fixed
+            except AiError:
+                pass
+            self.notes.append(f"ответ спорит с вашими словами «{own[:60]}» — оставляю вам")
+            decision.kind = "human"
+            return decision
         if _SALARY_Q.search(decision.question):
             phrase = salary_phrase(context)
             if not phrase:
                 decision.reply = "Готов обсудить на собеседовании."
-            elif re.sub(r"\D", "", phrase) not in re.sub(r"\D", "", decision.reply):
-                decision.reply = f"Ожидаю {phrase}."
+            elif (re.sub(r"\D", "", phrase) not in re.sub(r"\D", "", decision.reply)
+                  or reply_invented_numbers(decision.reply, decision.question, resume, context)):
+                decision.reply = f"Ожидаю {phrase}."  # сумму считает программа: переспрашивать незачем
             return decision
         techs = unbacked_tech(FormQuestion(0, decision.question, "text"), resume, context)
         known = f"{resume}\n{context}\n{decision.question}"
         invented = letter_invented_tech(decision.reply, known)  # «работал с AWS», а в резюме AWS нет
+        numbers = reply_invented_numbers(decision.reply, decision.question, resume, context)  # «ускорил в 8 раз»
         problem = ""
         if _ABOUT_RESUME.search(decision.reply):
             problem = "не упоминай резюме — говори от первого лица («опыта с X не было, но …»)"
@@ -854,6 +912,8 @@ class AiClient:
                        "или честно скажи, что его не было")
         elif invented:
             problem = f"в резюме НЕТ {', '.join(invented)} — убери их, пиши только про опыт из резюме"
+        if numbers:
+            problem += f"{'; ' if problem else ''}в резюме НЕТ таких цифр: {', '.join(numbers)}. {_NUMBERS_RULE}"
         if not problem:
             return decision
         retry = messages + [{"role": "assistant", "content": self.last_raw[:2000]},
@@ -862,7 +922,8 @@ class AiClient:
             self.last_raw = self.complete(retry, json_mode=True)
             fixed = self._parse(self.last_raw)
             if (fixed.kind == "question" and fixed.reply and not _ABOUT_RESUME.search(fixed.reply)
-                    and not claims_experience(fixed.reply, techs) and not letter_invented_tech(fixed.reply, known)):
+                    and not claims_experience(fixed.reply, techs) and not letter_invented_tech(fixed.reply, known)
+                    and not reply_invented_numbers(fixed.reply, decision.question, resume, context)):
                 return fixed
         except AiError:
             pass
@@ -876,6 +937,9 @@ class AiClient:
         else:
             kept = [x for x in re.split(r"(?<=[.!?])\s+", decision.reply) if not _ABOUT_RESUME.search(x)]
             decision.reply = " ".join(kept) or "Такого опыта не было, но готов быстро освоить."
+        if numbers:
+            self.notes.append(f"цифр нет в резюме и контексте, убрал: {', '.join(numbers)}")
+            decision.reply = drop_invented_numbers(decision.reply, decision.question, resume, context)
         return decision
 
     def fill_form(self, resume: str, context: str, vacancy: str, questions: list[FormQuestion]) -> FormFill:
@@ -889,13 +953,30 @@ class AiClient:
                 self.notes.append(f"вопрос {n} — ловушка для нейросетей, не отмечаю")
                 answers.append(trap)
                 continue
+            # «Готовы ли предоставить документы?» — обещание от вашего имени: только с вашего разрешения
+            if documents_question(q.text):
+                if not self._documents_allowed(context):
+                    return FormFill(False, f"вопрос {n}: спрашивают, готовы ли вы предоставить документы. Если "
+                                           "готовы, включите «Настройки» → «ИИ-ответы в чатах» → "
+                                           "«Готов предоставить документы по запросу работодателя»")
+                agreed = documents_answer(q)
+                if agreed is not None:
+                    answers.append(agreed)
+                    continue
+            if _ATTACH_NOW.search(q.text):  # приложить файл программа не может, а общая фраза тут — не ответ
+                return FormFill(False, f"вопрос {n}: просят приложить документ — это решаете вы")
+            # Город, который нейросети неоткуда узнать: иначе она берёт его из строки о вузе или работе
+            if q.kind == "text" and _CITY_Q.search(q.text) and not knows_city(resume, context):
+                answers.append(FormAnswer(q, text=UNKNOWN_FACT_REPLY))
+                continue
             # «Отметьте технологии»: короткие варианты отмечаем по резюме сами — точно и без выдумок
             picked = skills_from_resume(q, f"{resume}\n{context}")
             if picked is not None:
                 answers.append(FormAnswer(q, choices=picked))
                 continue
             # Зарплата и сроки — слишком важны, чтобы доверять модели: считаем сами
-            fixed = context_topic_answer(q, context) or language_answer(q, resume, context)
+            fixed = (context_topic_answer(q, context) or language_answer(q, resume, context)
+                     or format_answer(q, resume, context))
             if fixed is not None:
                 answers.append(fixed)
                 continue
@@ -925,10 +1006,24 @@ class AiClient:
                 self.notes.append(f"вопрос {n}: {e} — ответил осторожно")
                 answers.append(fallback)
         answers = [drop_trap_choices(self._no_invented_tech(resume, context, vacancy, a)) for a in answers]
-        for answer in answers:
+        answers = [self._no_invented_numbers(resume, context, vacancy, a) for a in answers]
+        for n, answer in enumerate(answers, 1):
             if answer.question.kind == "text":
                 answer.text = fix_text_answer(answer.question, answer.text, resume, context)
+                if _VAGUE_ANSWER.search(answer.text):  # вопрос без ответа: человеку видно, что дописать
+                    self.notes.append(f"вопрос {n}: ответа нет в резюме и контексте, поэтому ответил общей фразой. "
+                                      "Чтобы отвечать точнее, допишите это в «Настройки» → «Что ещё знать о вас»")
         return FormFill(True, answers=answers)
+
+    def _documents_allowed(self, context: str) -> bool:
+        """Можно ли обещать документы: галочка в настройках или ваши слова в контексте."""
+        return self.cfg.documents_ready or bool(_DOCS_CONSENT.search(context))
+
+    def _full_context(self, context: str) -> str:
+        """Контекст для нейросети: ваш текст и то, что вы разрешили галочками."""
+        if not self.cfg.documents_ready:
+            return context
+        return f"{context}\nГотов предоставить документы по запросу работодателя.".strip()
 
     def _no_invented_tech(self, resume: str, context: str, vacancy: str, answer: FormAnswer) -> FormAnswer:
         """Вопрос про технологию, которой нет в резюме, а модель «вспомнила» опыт с ней — не пропускаем выдумку."""
@@ -955,35 +1050,86 @@ class AiClient:
             text = f"С {names} напрямую не работал, но готов быстро освоить."
         return FormAnswer(q, text=text)
 
+    def _no_invented_numbers(self, resume: str, context: str, vacancy: str, answer: FormAnswer) -> FormAnswer:
+        """Текстовый ответ с цифрами, которых нет в резюме и контексте: просим переписать, не вышло — убираем предложения."""
+        q = answer.question
+        if q.kind != "text":
+            return answer
+        numbers = reply_invented_numbers(answer.text, q.text, resume, context, vacancy)
+        if not numbers:
+            return answer
+        computed = fix_text_answer(q, "", resume, context)  # доход и грейд считает программа: переспрашивать незачем
+        if computed:
+            return FormAnswer(q, text=computed)
+        # На qwen3:8b такая просьба срабатывает чаще общего правила: вопрос «на сколько процентов?» тянет модель считать
+        forced = FormQuestion(q.index, f"{q.text}\n(Цифр «{', '.join(numbers)}» в резюме НЕТ, считать их самому нельзя. "
+                                       "Ответь тем, что есть в резюме, теми же словами и цифрами, без пересчёта. Если в "
+                                       "резюме такого нет — ответь без цифр.)", "text")
+        try:
+            item = self._answer_question(resume, context, vacancy, forced)
+            text = _clean_reply(str(item.get("text") or item.get("answer") or ""), self.cfg.max_answer_chars)
+        except AiError:
+            text = ""
+        if (text and not claims_experience(text, unbacked_tech(q, resume, context))
+                and not reply_invented_numbers(text, q.text, resume, context, vacancy)):
+            return FormAnswer(q, text=text)
+        self.notes.append(f"вопрос {q.index + 1}: цифр нет в резюме и контексте, убрал: {', '.join(numbers)}")
+        return FormAnswer(q, text=drop_invented_numbers(answer.text, q.text, resume, context, vacancy))
+
     def write_letter(self, resume: str, context: str, title: str, company: str, description: str,
-                     max_chars: int = 900, experience_first: bool = True) -> str:
+                     max_chars: int = 900, experience_first: bool = True, ai_prompt: str = "") -> str:
         """Сопроводительное письмо под вакансию — для тех, у кого нет подписки hh (кнопки «Сгенерировать»).
-        experience_first — начинать с опыта под вакансию ([letter] experience_first)."""
-        user = "\n\n".join([
+        experience_first — начинать с опыта под вакансию ([letter] experience_first);
+        ai_prompt — свои требования соискателя ([letter] ai_prompt), они важнее встроенных правил."""
+        rules = ai_prompt.strip()
+        hide_vacancy, hide_company = forbidden_mentions(f"{rules}\n{context}")
+        no_think = "\n\n/no_think" if "qwen3" in self.model.lower() else ""
+        user = "\n\n".join(filter(None, [
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
             f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
-            f"ВАКАНСИЯ: «{title}», компания {company}",
-            f"ОПИСАНИЕ ВАКАНСИИ:\n{description or '(не загрузилось — пиши по названию вакансии)'}",
-        ])
-        if "qwen3" in self.model.lower():
-            user += "\n\n/no_think"
+            letter_vacancy(title, company, description, hide_vacancy, hide_company),
+            f"ТРЕБОВАНИЯ СОИСКАТЕЛЯ К ПИСЬМУ:\n{rules}" if rules else "",  # и последним: небольшие модели слушают конец
+        ])) + no_think
         structure = LETTER_EXPERIENCE_FIRST if experience_first else LETTER_INTEREST_FIRST
-        prompt = LETTER_PROMPT.replace("{structure}", structure).replace("{max_chars}", str(max_chars))
+        interest = "интересны такие задачи" if hide_vacancy else "интересна именно эта вакансия"
+        prompt = (LETTER_PROMPT.replace("{naming}", LETTER_NAMING[hide_vacancy, hide_company])
+                  .replace("{structure}", structure).replace("{interest}", interest)
+                  .replace("{max_chars}", str(max_chars)))
+        if rules:
+            prompt += LETTER_USER_RULES.replace("{rules}", rules)
+        signature = bool(rules and _WANTS_SIGNATURE.search(rules))  # подпись обычно вырезаем, но её могли попросить
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": user}]
         self.last_raw = self.complete(messages, max_tokens=900)
-        text = clean_letter(self.last_raw, max_chars)
-        known = f"{resume}\n{context}\n{title}\n{company}"
-        invented = letter_invented_tech(text, known)
-        if invented:  # технологии из вакансии, которых нет в резюме, модель записала себе в опыт — переписываем
-            names = ", ".join(invented)
+        text = clean_letter(self.last_raw, max_chars, signature)
+        facts = f"{resume}\n{context}\n{rules}"  # что соискатель сам сказал о себе
+
+        def problems(letter: str) -> tuple[list[str], list[str], list[str]]:
+            return (letter_invented_tech(letter, f"{facts}\n{company}", title),
+                    letter_invented_numbers(letter, facts, title, company),
+                    letter_mentions(letter, title, company, hide_vacancy, hide_company, resume))
+
+        invented, numbers, mentioned = problems(text)
+        if invented or numbers or mentioned:  # выдуманный опыт, чужие цифры, то, что просили не упоминать — переписываем
+            asks = []
+            if invented:
+                asks.append(f"В резюме НЕТ {', '.join(invented)}. Не упоминай их как свой опыт — только то, что есть "
+                            "в резюме.")
+            if numbers:
+                asks.append(f"В резюме НЕТ таких цифр: {', '.join(numbers)}. {_NUMBERS_RULE}.")
+            if mentioned:
+                asks.append(f"Соискатель просил этого не упоминать, а в письме есть: {', '.join(mentioned)}. Убери это, "
+                            "пиши о задачах и своём опыте.")
             messages += [{"role": "assistant", "content": self.last_raw},
-                         {"role": "user", "content": f"В резюме НЕТ {names}. Перепиши письмо: не упоминай их как свой "
-                                                     "опыт — только то, что есть в резюме. Верни только текст письма."}]
-            self.last_raw = self.complete(messages, max_tokens=900)
-            text = clean_letter(self.last_raw, max_chars)
-            invented = letter_invented_tech(text, known)
-            if invented:  # снова — убираем предложения с выдуманным опытом
-                text = drop_sentences_with(text, invented)
+                         {"role": "user", "content": f"Перепиши письмо. {' '.join(asks)} Верни только текст письма."
+                                                     + no_think}]
+            try:
+                self.last_raw = self.complete(messages, max_tokens=900)
+                text = clean_letter(self.last_raw, max_chars, signature) or text
+            except AiError:  # черновик уже есть: лишнее вырежем сами
+                pass
+            # Снова — убираем такие предложения. Проверяем каждое заново, а не ищем слово: «с Python не работал»
+            # и название вакансии в кавычках остаются, хотя слово то же
+            text = drop_sentences_if(text, lambda sentence: any(problems(sentence)))
         return text
 
     def _honest_fallback(self, resume: str, context: str, vacancy: str, q: FormQuestion) -> FormAnswer | None:
@@ -999,7 +1145,7 @@ class AiClient:
             pass
         if q.kind == "text":  # «нет опыта» — только на вопрос про опыт с чем-то; на «по ТК или ГПХ?» это чепуха
             return FormAnswer(q, text="Опыта с этим не было, но готов быстро освоить." if _EXPERIENCE_WITH.search(q.text)
-                              else "Готов рассказать подробнее на собеседовании.")
+                              else UNKNOWN_FACT_REPLY)
         k = _modest_option(q)
         if k is None:
             k = _neutral_option(q)
@@ -1014,7 +1160,7 @@ class AiClient:
         user = "\n\n".join([
             f"КЛЮЧЕВЫЕ ФАКТЫ ИЗ РЕЗЮМЕ:\n{key_facts(resume) or '(нет)'}",
             f"РЕЗЮМЕ СОИСКАТЕЛЯ:\n{resume or '(не загружено)'}",
-            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{context or '(нет)'}",
+            f"ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ОТ СОИСКАТЕЛЯ:\n{self._full_context(context) or '(нет)'}",
             f"ВАКАНСИЯ: {vacancy}",
         ])
         hints = program_hints(q, resume, context)
@@ -1079,7 +1225,8 @@ class AiClient:
 
 
 _KEY_FACT = re.compile(r"^(?:Опыт работы|Формат работы|Тип занятости|Уровень дохода|Командировки|Переезд|"
-                       r"Гражданство|Проживает|Желательное время в пути)", re.I)
+                       r"Готовность к переезду|Гражданство|Разрешение на работу|Проживает|"
+                       r"Желательное время в пути)", re.I)
 
 
 def key_facts(resume: str) -> str:
@@ -1130,8 +1277,15 @@ _OFFTOPIC_OPENER = re.compile(r"^\s*(?:Меня (?:заинтересовала|
 
 
 _TECH_WORD = re.compile(r"\b[A-Za-z][A-Za-z0-9+#.\-]*[A-Za-z0-9+#]\b")
-_NO_EXPERIENCE = re.compile(r"не работал|не использовал|не было|нет (?:прямого |коммерческого )?опыта|напрямую не|"
-                            r"не применял|не доводилось|знаком на базовом|готов (?:быстро )?освоить|изуча", re.I)
+# Честная оговорка об опыте. «Не было» — только про опыт: «писал на Python сервисы, где не было простоев» — не оговорка
+_NO_EXPERIENCE = re.compile(
+    r"\bне\s+(?:\w+\s+)?(?:работал|использовал|применял|сталкивал|пробовал|приходилось|доводилось|довелось|знаком)|"
+    r"\bнезнаком|\bнапрямую не\b|\bзнаком\w* на базовом|"
+    r"\b(?:опыта|практики|дела|проектах|стеке)\b[^.!?]{0,40}?\b(?:не\s+было|нет)\b|"
+    r"\b(?:не\s+было|нет)\s+(?:\w+\s+){0,2}?(?:опыта|практики|дела|возможност\w+|задач)\b|"
+    r"\b(?:готов\w*|могу|хочу|хотел\w*(?:\s+бы)?|планирую|интересно)\s+(?:\w+\s+){0,2}?(?:освоить|осваивать|изучить|"
+    r"изучать|разобраться|научиться|учиться|перейти|погрузиться)\b|"
+    r"\b(?:освою|изучу|разберусь|научусь)\b|изуча", re.I)
 _EXPERIENCE_Q = re.compile(r"опыт|работал|использовал|владеете|знаете|уровень|сколько лет", re.I)
 # Вопрос именно про опыт с чем-то («опыт с Helm», «работали в Kubernetes») — а не «опыт работы оформлен по ТК?»
 _EXPERIENCE_WITH = re.compile(r"опыт\w*\s+(?:работы\s+)?(?:с|со|в)\s|работал\w*\s+(?:с|со|в)\s|использовал|владеете|"
@@ -1271,10 +1425,95 @@ def language_answer(q: FormQuestion, resume: str, context: str) -> FormAnswer | 
 
 
 _NEUTRAL = re.compile(r"готов обсудить|обсудим|по договор[её]нности|обсуждается|на собеседовании", re.I)
+# Общая фраза вместо ответа: в резюме и контексте его не нашлось
+UNKNOWN_FACT_REPLY = "Готов рассказать подробнее на собеседовании."
+_VAGUE_ANSWER = re.compile(r"готов\w*\s+(?:обсудить|рассказать)[^.!?]*на\s+собеседовании", re.I)
+# Вопрос о городе проживания. Город известен, если он есть в строке резюме о проживании или вы написали о нём сами
+_CITY_Q = re.compile(r"(?:в\s+каком|ваш|какой)\s+город|город\w*\s+(?:проживания|жительства)|"
+                     r"где\s+(?:вы\s+)?(?:живёте|живете|проживаете)|место\s+(?:проживания|жительства)", re.I)
+_CITY_FACT = re.compile(r"^\s*(?:проживает|город(?:\s+проживания)?|место\s+(?:проживания|жительства))\s*:", re.I | re.M)
+# В контексте: «Живу в Москве», «Москва, гибрид» или название посреди предложения. «Ожидаю от 150 000» — не город
+_CITY_CONTEXT = re.compile(r"жив[уёе]|прожива|город|(?:^|[.!?]\s+)[А-ЯЁ][а-яё]{2,}(?:[- ][А-ЯЁ][а-яё]+)?\s*(?:[.!?,]|$)|"
+                           r"[а-яё,]\s+[А-ЯЁ][а-яё]{3,}", re.M)
+
+
+def knows_city(resume: str, context: str) -> bool:
+    return bool(_CITY_FACT.search(resume) or _CITY_CONTEXT.search(context))
+
+
+# Офис, когда в резюме его нет. Модель (qwen3:8b) на «Готовы работать в офисе 5 дней?» при «Формат работы: Удалённо,
+# Гибрид» в 4 случаях из 4 отвечала «Готов работать в офисе 5 дней в неделю», хотя правило это запрещало
+_OFFICE_Q = re.compile(r"\bофис|на месте работодателя|на территории (?:работодателя|компании)", re.I)
+_FORMAT_LINE = re.compile(r"^\s*Формат работы:?\s*(.+)$", re.I | re.M)
+_OFFICE_FORMAT = re.compile(r"офис|на месте|на территории", re.I)
+
+
+def office_refusal(question: str, resume: str, context: str) -> str:
+    """Спрашивают про офис, а в резюме офиса нет и в контексте о нём ни слова — форматы из резюме
+    («удалённо, гибрид»), иначе ""."""
+    line = _FORMAT_LINE.search(resume)
+    if not _OFFICE_Q.search(question) or not line or _OFFICE_FORMAT.search(line.group(1)) or _OFFICE_Q.search(context):
+        return ""
+    return line.group(1).strip().rstrip(".").lower()
+
+
+def format_answer(q: FormQuestion, resume: str, context: str) -> FormAnswer | None:
+    """Анкета: вопрос про офис, которого нет в резюме, — ответ по строке «Формат работы», а не согласие модели."""
+    formats = office_refusal(q.text, resume, context)
+    if not formats:
+        return None
+    if q.kind == "text":
+        return FormAnswer(q, text=f"Рассматриваю формат работы: {formats}.")
+    for wanted in ([r"гибрид"] if "гибрид" in formats else []) + [r"удал", r"^\s*нет\b"]:
+        k = next((k for k, o in enumerate(q.options) if re.search(wanted, o, re.I)), None)
+        if k is not None:
+            return FormAnswer(q, choices=[k])
+    return None
+
+
+def own_words_about(question: str, context: str) -> str:
+    """Предложение из контекста о технологии, про которую спрашивают («С Django работал 2 года»), иначе ""."""
+    for tech in dict.fromkeys(_TECH_WORD.findall(question)):
+        for sentence in re.split(r"(?<=[.!?\n])\s*", context):
+            if re.search(rf"(?<![\w]){re.escape(tech)}(?![\w])", sentence, re.I) and not _NO_EXPERIENCE.search(sentence):
+                return sentence.strip()
+    return ""
 
 
 def _neutral_option(q: FormQuestion) -> int | None:
     return next((k for k, o in enumerate(q.options) if _NEUTRAL.search(o)), None)
+
+
+# Вопрос о готовности показать документы позже: «Готовы ли вы предоставить выписку из ЭТК?». Это не просьба
+# прислать их сейчас: такое («приложите скан», паспорт) по-прежнему остаётся человеку
+_DOCS_WORD = re.compile(r"документ|выписк|\bэтк\b|трудов\w*\s+книжк|2-?ндфл|справк\w*\s+о\s+доход", re.I)
+_DOCS_GIVE = re.compile(r"предостав|предъяв|показа|подтверд|присла|выслать|отправить|направить", re.I)
+_DOCS_READY = re.compile(r"готов|соглас|сможете|можете|есть\s+ли\s+возможность|возможно\s+ли", re.I)
+_DOCS_NOW = re.compile(r"\b(?:приложите|прикрепите|пришлите|загрузите|отправьте|вышлите|укажите)\b", re.I)
+# Просьба приложить файл прямо в анкете
+_ATTACH_NOW = re.compile(r"\b(?:приложите|прикрепите|пришлите|загрузите|вышлите)\b[^.?!\n]*"
+                         r"(?:документ|скан|фото|копи|диплом|выписк|справк|трудов\w*\s+книжк|файл)", re.I)
+# Ваши слова в контексте: «Готов предоставить все необходимые документы». «Не готов…» разрешением не считается
+_DOCS_CONSENT = re.compile(
+    r"(?<!не )готов\w*(?:\s+\S+){0,3}?\s+(?:предостав|предъяв|показа|присла|отправ)\w*(?:\s+\S+){0,4}?\s+документ|"
+    r"документ\w*(?:\s+\S+){0,3}?\s+(?<!не )готов", re.I)
+_YES_OPTION = re.compile(r"^\s*(?:да\b|конечно|готов|согласен|согласна|могу)", re.I)
+_NO_OPTION = re.compile(r"^\s*нет\b|\bне\s+(?:готов|соглас|могу|буду)", re.I)
+DOCUMENTS_REPLY = "Да, готов предоставить документы по запросу."
+
+
+def documents_question(text: str) -> bool:
+    """Спрашивают о готовности предоставить документы — а не просят прислать их сейчас."""
+    return bool(_DOCS_WORD.search(text) and _DOCS_GIVE.search(text) and _DOCS_READY.search(text)
+                and not _DOCS_NOW.search(text) and not SENSITIVE.search(text))
+
+
+def documents_answer(q: FormQuestion) -> FormAnswer | None:
+    """Ответ «да» на вопрос о документах. None — среди вариантов нет согласия: решает нейросеть."""
+    if q.kind == "text":
+        return FormAnswer(q, text=DOCUMENTS_REPLY)
+    k = next((k for k, o in enumerate(q.options) if _YES_OPTION.search(o) and not _NO_OPTION.search(o)), None)
+    return FormAnswer(q, choices=[k]) if k is not None else None
 
 
 _HUMAN_OPTION = re.compile(r"^\s*нет\b|человек|не (?:нейросеть|ии|бот|ai)\b", re.I)
@@ -1339,17 +1578,20 @@ def _clean_reply(text: str, max_chars: int) -> str:
 
 
 _LETTER_JUNK = re.compile(r"\[[^\]]{2,40}\]|^\s*(?:Тема|Subject)\s*:|^\s*С уважением|^\s*---", re.I | re.M)
+_WANTS_SIGNATURE = re.compile(r"(?<!не )(?<!без )(?:подпис|с уважением)", re.I)
 
 
-def clean_letter(text: str, max_chars: int) -> str:
-    """Письмо от нейросети: без markdown, подписи, заполнителей «[Ваше имя]» и с абзацами как в hh."""
+def clean_letter(text: str, max_chars: int, signature: bool = False) -> str:
+    """Письмо от нейросети: без markdown, заполнителей «[Ваше имя]», подписи (если её не просили в своём промпте)
+    и с абзацами как в hh."""
     text = text.replace("**", "").replace("__", "").strip().strip('"«»').strip()
     lines = []
     for line in text.splitlines():
         if _LETTER_JUNK.search(line):
-            if re.match(r"\s*С уважением", line, re.I):
+            if not re.match(r"\s*С уважением", line, re.I):
+                continue
+            if not signature:
                 break  # дальше подпись — имя и контакты не нужны
-            continue
         lines.append(line.strip().lstrip("#").strip())
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     text = re.sub(r"^(Здравствуйте[!,.]|Добрый день[!,.])\s*(?=\S)", r"\1\n\n", text)  # приветствие — отдельной строкой
@@ -1360,26 +1602,376 @@ def clean_letter(text: str, max_chars: int) -> str:
     return cut[: end + 1] if end > max_chars * 0.5 else cut.rstrip() + "…"
 
 
-def letter_invented_tech(text: str, known: str) -> list[str]:
+# Просьба не упоминать вакансию или компанию — в своём промпте или в контексте соискателя
+_VACANCY_NOUN = r"ваканси|должност|позици"
+_COMPANY_NOUN = r"компани|работодател|фирм|организаци"
+_NOUN = rf"\b(?:{_VACANCY_NOUN}|{_COMPANY_NOUN})\w*"
+# Только просьбы: «не указывай», «не упоминать». «В вакансии не указана зарплата» — не запрет
+_SAY = (r"(?:упомина(?:й|йте|ть)|упомян(?:и|ите|уть)|(?:на)?пиш(?:и|ите)|(?:на)?писать|назов(?:и|ите)|называ(?:й|йте|ть)|"
+        r"назвать|указыва(?:й|йте|ть)|укаж(?:и|ите)|указать|вставля(?:й|йте|ть)|добавля(?:й|йте|ть)|приводи(?:те|ть)?)\b")
+_NEVER = (rf"(?:\bне\s+(?:\w+\s+){{0,2}}?{_SAY}|\bнельзя\s+(?:\w+\s+)?{_SAY}|\bизбега\w*|\bубер\w*|\bубра\w*|"
+          r"\bбез\s+(?:упоминани|названи|указани)\w*)")
+_GAP = r"[^.!?\n,;]{0,40}?"
+_NO_MENTION = re.compile(
+    rf"{_NEVER}{_GAP}{_NOUN}(?:(?:\s*,\s*|\s+(?:и|или)\s+){_GAP}{_NOUN})*|"  # не упоминай компанию и вакансию
+    rf"{_NOUN}(?:\s+(?:и|или)\s+{_NOUN})?{_GAP}{_NEVER}|"  # компанию и вакансию не упоминай
+    rf"\b{_SAY}{_GAP}{_NOUN}{_GAP}(?:\bне\s+(?:нужно|надо|стоит|следует)|\bнельзя)",  # упоминать компанию не нужно
+    re.I,
+)
+# Слова, которые и без названия выдают вакансию и компанию. «В этой компании» не берём: это бывает и о прошлой работе
+_VACANCY_WORD = re.compile(r"\bваканси\w*|\b(?:эт|данн|ваш)\w+\s+(?:позици|должност)\w*", re.I)
+_COMPANY_WORD = re.compile(r"\b(?:ваш|данн)\w*\s+(?:компани|организаци|фирм)\w*", re.I)
+_NAME_WORD = re.compile(r"\w[\w+#.-]*[\w+#]|\w")
+_LEGAL_FORM = re.compile(r"^(?:ооо|оао|зао|пао|ао|нао|ип|гк|нпо|ltd|llc|inc|gmbh)$", re.I)
+_QUOTED = re.compile(r"[«\"„“]([^«»\"„“”\n]{3,80})[»\"”“]")
+
+
+def forbidden_mentions(rules: str) -> tuple[bool, bool]:
+    """Что соискатель просит не упоминать в письме: (название вакансии, компанию). Ошибка здесь безобидна:
+    письмо без названия компании всё равно хорошее."""
+    found = " ".join(m.group(0) for m in _NO_MENTION.finditer(rules))
+    return bool(re.search(_VACANCY_NOUN, found, re.I)), bool(re.search(_COMPANY_NOUN, found, re.I))
+
+
+def letter_vacancy(title: str, company: str, description: str, hide_vacancy: bool, hide_company: bool) -> str:
+    """Вакансия для письма. Что просили не упоминать, нейросеть и не получает: запрет «не пиши X» небольшие модели
+    пропускают мимо, а то, чего не знаешь, не напишешь. Название показываем, только если описание не загрузилось."""
+    parts = []
+    if not hide_vacancy:
+        parts.append(f"ВАКАНСИЯ: «{title}»" + ("" if hide_company else f", компания {company}"))
+    else:
+        if not description:
+            parts.append(f"ЧТО ЗА РАБОТА (только чтобы понять задачи, в письме это не упоминай): {title}")
+        if not hide_company:
+            parts.append(f"КОМПАНИЯ: {company}")
+    empty = "(не загрузилось)" if hide_vacancy else "(не загрузилось — пиши по названию вакансии)"
+    parts.append(f"ОПИСАНИЕ ВАКАНСИИ:\n{description or empty}")
+    return "\n\n".join(parts)
+
+
+def _with_endings(word: str) -> str:
+    """Слово с любым окончанием: «Ромашка» найдёт и «Ромашке», «Ozon» — и «Ozon'е»."""
+    if len(word) > 3 and re.search(r"[а-яё]$", word, re.I):
+        stem = re.sub(r"(?:ая|яя|ое|ее|ый|ий|ой|[аяоеиыуюйь])$", "", word, flags=re.I)
+        return re.escape(stem) + r"[а-яё]{0,4}"
+    return re.escape(word) + r"(?:['’]?[а-яё]{1,3})?"
+
+
+def _name_regex(words: list[str]) -> re.Pattern | None:
+    """Название в тексте: слова по порядку, с окончаниями, между ними пробелы и скобки."""
+    if not words:
+        return None
+    return re.compile(r"(?<!\w)" + r"[^\w\n]{1,3}".join(map(_with_endings, words)) + r"(?!\w)", re.I)
+
+
+def _company_regex(company: str) -> re.Pattern | None:
+    """Компания без «ООО». Название из одного слова — с большой буквы: компания «Рост» — не «рост продаж»."""
+    words = [w for w in _NAME_WORD.findall(company) if not _LEGAL_FORM.match(w)]
+    if len(words) != 1:
+        return _name_regex(words)
+    first, rest = words[0][0], _with_endings(words[0])[len(re.escape(words[0][0])):]
+    return re.compile(rf"(?<!\w)[{re.escape(first + first.upper())}](?i:{rest})(?!\w)")
+
+
+def letter_mentions(text: str, title: str, company: str, hide_vacancy: bool, hide_company: bool, resume: str) -> list[str]:
+    """Что из запрещённого соискателем попало в письмо. Своя должность и прошлая работа из резюме — это факты о себе,
+    а не название вакансии: «работаю backend-разработчиком» остаётся, если так написано в резюме."""
+    patterns = []
+    if hide_vacancy:
+        patterns.append(_VACANCY_WORD)
+        name = _name_regex(_NAME_WORD.findall(title))
+        if name is not None and not name.search(resume):
+            patterns.append(name)
+    if hide_company:
+        patterns.append(_COMPANY_WORD)
+        name = _company_regex(company)
+        if name is not None and not name.search(resume):
+            patterns.append(name)
+    found = [m.group(0) for pattern in patterns for m in pattern.finditer(text)]
+    if hide_vacancy:  # в кавычках — часть названия вакансии: «Backend-разработчик» при «Backend-разработчик (Python)»
+        wanted = _words(title)
+        found += [m.group(0) for m in _QUOTED.finditer(text) if _words(m.group(1)) and _words(m.group(1)) <= wanted]
+    return list(dict.fromkeys(found))
+
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+# Оговорка «не работал» относится к своей части предложения: «с Kafka не работал, но ускорил обработку в 10 раз»,
+# «хорошо понимаю Python и готов освоить Kafka», «готов освоить Kafka, так как знаю Python»
+_CLAUSE = re.compile(r"(?:,\s*|\s+)(?:но|однако|зато)\s+|;\s*|"
+                     r",\s*(?:хотя|где|ведь|поскольку|потому что|так как|а(?!\s+также\b))\s+|"
+                     r"(?:,\s*|\s+и\s+)(?=(?:быстро\s+)?(?:готов|могу|хочу|планирую|освою|изучу|изучаю|разберусь|"
+                     r"научусь|не\s))", re.I)
+# Вакансия названа: «на вакансию Python-разработчика», «на позицию…». «На позиции Python-разработчика работал» — это
+# уже о себе, поэтому «на позиции» и «занимал должность» не считаются
+_VACANCY_INTRO = (r"\bваканси\w*|\bна\s+(?:позицию|должность|роль)\b|\bпозиция\b|"
+                  r"\b(?:ваш|эт|данн)\w+\s+(?:позици|должност|рол)\w*")
+# Слова из названия вакансии, которые говорят о должности, а не о технологии
+_ROLE_WORDS = {"backend", "frontend", "fullstack", "developer", "engineer", "programmer", "software", "manager",
+               "analyst", "lead"}
+
+
+def _name_stems(text: str) -> list[str]:
+    """Слова названия для сравнения: латиница как есть, русские — по началу («разработчика» = «разработчик»)."""
+    words = re.findall(r"[^\W_][\w+#.]*[\w+#]|[^\W_]", text.lower())
+    return [w if w.isascii() else w[:5] for w in words if w not in ("на", "по")]
+
+
+def _without_names(text: str, title: str, company: str = "") -> str:
+    """Письмо без названий вакансии и компании там, где письмо их называет. Название вакансии — только в кавычках
+    или сразу после «вакансия», «на позицию»: без них «работаю Python-разработчиком» — уже рассказ о своём опыте."""
+    name = _company_regex(company) if company else None
+    if name is not None:
+        text = name.sub(" ", text)
+    stems = set(_name_stems(title))
+    if not stems:
+        return text
+
+    def unquote(match: re.Match) -> str:
+        found = _name_stems(match.group(1))
+        # одно слово в кавычках — не название, если в названии их несколько: «Python» при «Backend-разработчик (Python)»
+        return " " if found and set(found) <= stems and (len(found) > 1 or len(stems) == 1) else match.group(0)
+
+    text = _QUOTED.sub(unquote, text)
+    words = "|".join(re.escape(s) + (r"(?:['’]?[а-яё]{1,3})?" if s.isascii() else r"[а-яё]*")
+                     for s in sorted(stems, key=len, reverse=True))
+    return re.sub(rf"({_VACANCY_INTRO})(?:[\s()«»\"„“”\-–—]+(?:{words}|на|по)(?!\w))+", r"\1 ", text, flags=re.I)
+
+
+def _letter_parts(text: str, title: str = "", company: str = "") -> Iterator[tuple[str, bool]]:
+    """Части письма, где соискатель говорит о себе: (текст части, есть ли в ней честная оговорка)."""
+    for sentence in _SENTENCE.split(_without_names(text, title, company)):
+        for part in _CLAUSE.split(sentence):
+            yield part, bool(_NO_EXPERIENCE.search(part))
+
+
+def letter_invented_tech(text: str, known: str, title: str = "") -> list[str]:
     """Технологии (латиницей) в письме, которых нет ни в резюме, ни в контексте, — если о них не сказано
-    честно («не работал», «готов освоить»)."""
-    known = known.lower()
+    честно («не работал», «готов освоить»). title — название вакансии: само по себе оно не факт о соискателе.
+    «Вакансия «Backend-разработчик (Python)»» проходит, «хорошо понимаю Python» при резюме на Go — нет."""
+    roles = [w for w in _TECH_WORD.findall(title) if w.lower() in _ROLE_WORDS]
+    known = "\n".join([known, *roles]).lower()
     found = []
-    for sentence in re.split(r"(?<=[.!?])\s+", text):
-        if _NO_EXPERIENCE.search(sentence):
+    for part, honest in _letter_parts(text, title):
+        if honest:
             continue
-        for word in _TECH_WORD.findall(sentence):
-            if len(word) > 1 and word not in found and not re.search(
-                    rf"(?<![a-z0-9]){re.escape(word.lower())}(?![a-z0-9])", known):
+        for word in _TECH_WORD.findall(part):
+            # по частям: «Python-Backend» — не выдумка, если в резюме есть и Python, и Backend
+            if len(word) > 1 and word not in found and not all(
+                    re.search(rf"(?<![a-z0-9]){re.escape(piece)}(?![a-z0-9])", known) for piece in word.lower().split("-")):
                 found.append(word)
     return found
 
 
+# ─────────── цифры в письме: сверяем с тем, что соискатель сам сказал о себе ───────────
+# «Двух часов» в резюме и «в два раза» в письме — одно и то же число, но разные утверждения. Поэтому сверяем вид:
+# кратность и проценты — только с кратностью и процентами, срок — только с тем же сроком (2 часа ≠ 2 минуты),
+# прочие числа — по значению. Пересчитанное («в 8 раз» из «с двух часов до 15 минут») тоже считается выдумкой: модели
+# плохо считают, а работодатель прочитает это как факт.
+
+_NUMERALS = {word: value for value, words in {
+    1: "один одна одно одного одной одному одним одну", 1.5: "полтора полторы полутора",
+    2: "два две двух двум двумя двое", 3: "три трёх трех трём трем тремя трое",
+    4: "четыре четырёх четырех четырём четырем четырьмя четверо", 5: "пять пяти пятью пятеро",
+    6: "шесть шести шестью шестеро", 7: "семь семи семеро", 8: "восемь восьми восемью", 9: "девять девяти девятью",
+    10: "десять десяти десятью", 11: "одиннадцать одиннадцати", 12: "двенадцать двенадцати",
+    13: "тринадцать тринадцати", 14: "четырнадцать четырнадцати", 15: "пятнадцать пятнадцати",
+    16: "шестнадцать шестнадцати", 17: "семнадцать семнадцати", 18: "восемнадцать восемнадцати",
+    19: "девятнадцать девятнадцати", 20: "двадцать двадцати", 30: "тридцать тридцати", 40: "сорок сорока",
+    50: "пятьдесят пятидесяти", 60: "шестьдесят шестидесяти", 70: "семьдесят семидесяти",
+    80: "восемьдесят восьмидесяти", 90: "девяносто девяноста", 100: "сто ста",
+}.items() for word in words.split()}
+_NUMERAL = "|".join(sorted(_NUMERALS, key=len, reverse=True))
+_NOT_IN_NAME = r"(?<![\w.,/:])(?<![^\W\d_]-)"  # цифра внутри имени — не число: Web-3, ISO-27001, HTTP/2
+_QUANTITY = re.compile(
+    rf"{_NOT_IN_NAME}(?P<literal>\d+(?:[/:]\d+)+|\d+(?:\.\d+){{2,}})(?![\w/:])|"  # 24/7, 12:30, 01.02.2021, 1.2.3
+    rf"{_NOT_IN_NAME}(?P<digits>\d{{1,3}}(?:[   ]\d{{3}})+(?!\d)|\d+(?:[.,]\d+)?)|"  # 150 000, 2,5, 15
+    rf"(?<!\w)[xх×](?P<fold>\d+)(?!\w)|"  # x10
+    rf"(?<!\w)(?P<words>(?:{_NUMERAL})(?:\s+(?:{_NUMERAL}))*)(?!\w)",  # двадцать пять
+    re.I)
+_HALF = re.compile(r"\s+с\s+половиной", re.I)
+_NUMERAL_ENDING = re.compile(r"(?:-(?:х|ух|ёх|ех|и|ти|мя|ми)|х(?=\s+[а-яё]))(?!\w)", re.I)  # 3-х, 5-ти, 2х часов
+# Срок одним словом: «пятилетний опыт», «двухчасовой»
+_NUMERAL_ADJECTIVE = re.compile(rf"(?<!\w)({_NUMERAL})(летн|месячн|недельн|дневн|часов|минутн|секундн)\w*", re.I)
+_ADJECTIVE_UNITS = {"летн": "year", "месячн": "month", "недельн": "week", "дневн": "day", "часов": "hour",
+                    "минутн": "minute", "секундн": "second"}
+_SCALE = re.compile(r"(?:\s*(?:(?P<k>тыс(?:яч\w*|\.)?)|(?P<m>млн\.?|миллион\w*)|(?P<g>млрд\.?|миллиард\w*))|(?P<kk>[кk]))"
+                    r"(?!\w)", re.I)
+_UNIT = re.compile(
+    r"\+?(?:\s*|-)(?:(?P<percent>%|процент\w*)|"
+    r"(?P<times>[xх×](?!\w)|кратн\w*|раз(?:а|ов)?\b"  # «2 раза в неделю» — не кратность, а обычное число
+    r"(?!\s+в\s+(?:день|сутки|час|минуту|неделю|месяц|квартал|год|смену|спринт)))|"
+    r"(?P<year>лет\b|летн\w*|год(?:а|у|ы|ов|ом|ах|ами)?\b|гг?\b\.?)|"
+    r"(?P<month>месяц\w*|месячн\w*|мес\b\.?)|"
+    r"(?P<week>недел\w*|нед\b\.?)|"
+    r"(?P<day>день\b|дн(?:я|ей|и|ях|ям|ём)\b|дневн\w*|сут(?:ки|ок|очн\w*)?\b\.?)|"
+    r"(?P<hour>час(?:а|у|ы|ов|ах|ам|ом)?\b|часов\w*|ч\b\.?)|"
+    r"(?P<minute>минут\w*|мин\b\.?)|"
+    r"(?P<second>секунд\w*|сек\b\.?)|"
+    r"(?P<ms>миллисекунд\w*|мс\b))", re.I)
+_TIME_UNITS = ("year", "month", "week", "day", "hour", "minute", "second", "ms")
+_RANGE_LINK = re.compile(r"\s*(?:[-–—]|до|по|или|и)\s*", re.I)  # 2-3 года, с 5 до 7 лет
+# Кратность и доли, которые записаны без отдельного числа
+_RESULT_PHRASES = [(re.compile(rf"(?<!\w)(?:{pattern})(?!\w)", re.I), key) for pattern, key in (
+    (r"вдвое|вдвойне|двукратн\w*|двухкратн\w*", ("times", 2)),
+    (r"втрое|втройне|тр[её]хкратн\w*", ("times", 3)),
+    (r"вчетверо|четыр[её]хкратн\w*", ("times", 4)),
+    (r"впятеро|пятикратн\w*", ("times", 5)),
+    (r"вшестеро|шестикратн\w*", ("times", 6)),
+    (r"всемеро|семикратн\w*", ("times", 7)),
+    (r"ввосьмеро|восьмикратн\w*", ("times", 8)),
+    (r"вдевятеро|девятикратн\w*", ("times", 9)),
+    (r"вдесятеро|десятикратн\w*|на\s+порядок", ("times", 10)),
+    (r"в\s+разы|в\s+(?:несколько|десятки|сотни|тысячи)\s+раз|многократн\w*|кратн(?:о|ый|ого|ое|ая|ые|ых)|"
+     r"на\s+порядки|на\s+(?:несколько|пару)\s+порядков", ("times", "много")),
+    (r"наполовину|вполовину|на\s+половину", ("percent", 50)),
+    (r"на\s+треть", ("percent", 33)),
+    (r"на\s+четверть", ("percent", 25)),
+    (r"на\s+две\s+трети", ("percent", 66)),
+    (r"на\s+три\s+четверти", ("percent", 75)),
+    (r"полгода|полугода", ("unit", 0.5, "year")),
+    (r"полчаса|получаса", ("unit", 0.5, "hour")),
+)]
+# Порядок без числа: «тысячи запросов», «сотни сервисов»
+_MAGNITUDE = re.compile(r"(?<!\w)(?:десятк\w*|сотн\w*|сотен|тысяч\w*|миллион\w*|миллиард\w*)(?!\w)", re.I)
+_LIST_MARK = re.compile(r"^\s*\d{1,2}[.)](?:\s+|$)", re.M)  # нумерованный список — не утверждение о цифре
+# Согласие с условием работодателя — не рассказ о себе: «готов работать 5 дней в неделю». «Вёл команду из 5 человек» — рассказ
+_AGREES = re.compile(r"(?<!\w)(?:готов\w*|согласен|согласна|могу|смогу|устраива\w+|устроит|подходит)(?!\w)", re.I)
+_ONE_PERIOD = re.compile(r"(?<!\w)(через|за|в\s+течение)\s+(месяц\w*|недел\w+|год\w*|день|дня)(?!\w)", re.I)
+# Ответ без содержания: то, что может остаться, когда убрали предложение с цифрой
+_BARE_REPLY = re.compile(r"(?:(?:да|нет|конечно|разумеется|верно|есть|здравствуйте|добрый день|спасибо)[\s,.!]*)+", re.I)
+_NUMBERS_RULE = ("Не пересчитывай результаты в проценты и разы и не округляй: пиши цифры теми же словами, что в резюме, "
+                 "или совсем без цифр")
+
+
+@dataclass
+class _Quantity:
+    value: float | str
+    start: int
+    end: int
+    unit: str = ""
+    scale: float = 1
+    bare_one: bool = False  # «один» словом: чаще это «один из сервисов», а не число
+
+
+def _quantities(text: str) -> list[_Quantity]:
+    """Числа в тексте с единицами. Цифры, приклеенные к имени (1С, 3D, 5G, 152-ФЗ, 1-й), числом не считаем."""
+    found = []
+    for match in _QUANTITY.finditer(text):
+        if match.group("literal"):
+            found.append(_Quantity(match.group("literal"), match.start(), match.end()))
+            continue
+        if match.group("fold"):
+            found.append(_Quantity(float(match.group("fold")), match.start(), match.end(), "times"))
+            continue
+        if match.group("digits"):
+            value = float(re.sub(r"\s", "", match.group("digits")).replace(",", "."))
+        else:
+            words = match.group("words").lower().split()
+            value = float(sum(_NUMERALS[w] for w in words))
+        pos = match.end()
+        half = _HALF.match(text, pos)
+        if half:
+            value, pos = value + 0.5, half.end()
+        ending = _NUMERAL_ENDING.match(text, pos)
+        pos = ending.end() if ending else pos
+        scale = 1.0
+        scaled = _SCALE.match(text, pos)
+        if scaled:
+            scale = 1e6 if scaled.group("m") else 1e9 if scaled.group("g") else 1e3
+            pos = scaled.end()
+        unit = _UNIT.match(text, pos)
+        name = unit.lastgroup if unit else ""
+        if not unit and match.group("digits") and re.match(r"-?[^\W\d_]", text[pos:pos + 2]):
+            continue
+        found.append(_Quantity(value * scale, match.start(), unit.end() if unit else pos, name or "", scale,
+                               bare_one=value == 1 and not match.group("digits")))
+    return found
+
+
+def _number_claims(text: str) -> list[tuple[tuple, str]]:
+    """Что текст утверждает цифрами: (вид и значение, как это написано в тексте)."""
+    claims: list[tuple[tuple, str]] = []
+
+    def take(match: re.Match, key: tuple) -> str:  # запомнить и вычеркнуть: в «в десятки раз» уже не ищем «десятки»
+        claims.append((key, match.group(0)))
+        return " " * len(match.group(0))
+
+    for pattern, key in _RESULT_PHRASES:
+        text = pattern.sub(lambda m: take(m, key), text)
+    text = _NUMERAL_ADJECTIVE.sub(lambda m: take(m, ("unit", float(_NUMERALS[m.group(1).lower()]),
+                                                     _ADJECTIVE_UNITS[m.group(2).lower()])), text)
+    quantities = _quantities(text)
+    # Единица и «тысяч» одни на весь диапазон: «2-3 года», «от 150 до 200 тысяч»
+    for left, right in zip(quantities[-2::-1], quantities[:0:-1]):
+        if not left.unit and isinstance(left.value, float) and _RANGE_LINK.fullmatch(text, left.end, right.start):
+            left.unit, left.scale, left.value = right.unit, right.scale, left.value * right.scale
+    for q in quantities:
+        value = round(q.value, 3) if isinstance(q.value, float) else q.value
+        if (q.bare_one and q.unit not in _TIME_UNITS) or (value == 1 and q.unit == "times"):
+            continue  # «один из сервисов», «один раз» — не цифры
+        if q.unit in ("percent", "times"):
+            key = (q.unit, value)
+        elif q.unit and not (q.unit == "year" and isinstance(value, float) and 1900 <= value <= 2100):
+            key = ("unit", value, q.unit)
+        else:  # «с 2021 года» — дата, в резюме она может быть без слова «год»
+            key = ("plain", value)
+        # Как написано в письме, с соседним словом: модели понятнее «в 10 раз» и «7 сервисов», чем «10» и «7»
+        before = re.search(r"(?<!\w)(?:в|на|до)\s+$", text[max(0, q.start - 5):q.start])
+        after = None if q.unit else re.match(r"\s+\w+", text[q.end:])
+        claims.append((key, (before.group(0) if before else "") + text[q.start:q.end] + (after.group(0) if after else "")))
+    for match in _MAGNITUDE.finditer(text):
+        if not any(q.start <= match.start() < q.end for q in quantities):
+            word = match.group(0).lower()
+            claims.append((("plain", word[:6] if word.startswith("мил") else word[:3]), match.group(0)))
+    return claims
+
+
+def letter_invented_numbers(text: str, known: str, title: str = "", company: str = "", offered: str = "") -> list[str]:
+    """Цифры в письме, которых нет в известном о соискателе (резюме, контекст, свой промпт) — как они написаны в письме.
+    Требования из вакансии сюда не входят: «от 2 лет» оттуда — не стаж соискателя. Цифры из названий вакансии и компании,
+    когда письмо их называет, не проверяем. После оговорки («опыта от 2 лет нет») обычные числа — не утверждение
+    о себе, а кратность и проценты проверяем всегда: «с Kafka не работал, но ускорил в 10 раз».
+    offered — условия работодателя: фактом о соискателе они не становятся, но принять их можно («готов к 5 дням в офисе»)."""
+    facts = {key for key, _ in _number_claims(known)}
+    terms = {key for key, _ in _number_claims(offered)}
+    agrees = bool(terms and _AGREES.search(text))  # «Да, устроит. Срок 3 месяца — обычное условие»: согласие в другом предложении
+    found: list[str] = []
+    for part, honest in _letter_parts(_LIST_MARK.sub("", text), title, company):
+        for key, label in _number_claims(part):
+            if honest and key[0] not in ("times", "percent"):
+                continue
+            allowed = (key in facts or (key[0] == "plain" and any(f[0] == "unit" and f[1] == key[1] for f in facts))
+                       or (agrees and key in terms))
+            if not allowed and label not in found:
+                found.append(label)
+    return found
+
+
+def reply_invented_numbers(reply: str, question: str, resume: str, context: str, vacancy: str = "") -> list[str]:
+    """Цифры в ответе работодателю (чат, анкета), которых нет в резюме и контексте. Вопрос фактом не считается:
+    «Есть 5 лет опыта?» не разрешает «у меня 5 лет опыта». Условие из него принять можно, если спрашивают не об опыте и
+    не о сроке выхода: «Можете выйти через 3 дня?» — обещание, а срок знаете только вы. Доход сверяем и с расчётом программы: «от 150» в контексте — это «от 150 000 ₽» в ответе, а срок словом — с цифрой:
+    «через месяц» в контексте — это «через 1 месяц» в ответе."""
+    known = _ONE_PERIOD.sub(r"\1 1 \2", f"{resume}\n{context}\n{salary_phrase(context) or ''}")
+    about_you = _EXPERIENCE_Q.search(question) or _START_Q.search(question)
+    return letter_invented_numbers(reply, known, vacancy, offered="" if about_you else question)
+
+
+def drop_invented_numbers(reply: str, question: str, resume: str, context: str, vacancy: str = "") -> str:
+    """Ответ без предложений с чужими цифрами. Осталось только «Да.» — оно подтверждало бы число из вопроса, поэтому
+    общая фраза. «Такого опыта не было» здесь не годится: опыт может быть, неверной была только цифра."""
+    kept = drop_sentences_if(reply, lambda sentence: bool(reply_invented_numbers(sentence, question, resume, context, vacancy)))
+    return kept if kept and not _BARE_REPLY.fullmatch(kept) else UNKNOWN_FACT_REPLY
+
+
+def drop_sentences_if(text: str, bad: Callable[[str], bool]) -> str:
+    """Убирает из письма или ответа предложения, для которых bad(предложение) истинно (абзацы сохраняются)."""
+    paragraphs = [" ".join(s for s in re.split(r"(?<=[.!?])\s+", paragraph) if not bad(s))
+                  for paragraph in text.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(paragraphs)).strip()
+
+
 def drop_sentences_with(text: str, words: list[str]) -> str:
     """Убирает из письма предложения, где упомянуты эти слова (абзацы сохраняются)."""
-    paragraphs = []
-    for paragraph in text.split("\n"):
-        kept = [s for s in re.split(r"(?<=[.!?])\s+", paragraph)
-                if not any(re.search(rf"(?<![A-Za-z0-9]){re.escape(w)}(?![A-Za-z0-9])", s) for w in words)]
-        paragraphs.append(" ".join(kept))
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(paragraphs)).strip()
+    return drop_sentences_if(text, lambda sentence: any(
+        re.search(rf"(?<![A-Za-z0-9]){re.escape(w)}(?![A-Za-z0-9])", sentence) for w in words))

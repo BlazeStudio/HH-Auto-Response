@@ -39,17 +39,19 @@ from ..reports.results import HH_DAILY_LIMIT, ResultsBook, Summary, load_summary
 from ..hh.search import describe_search
 from ..reports.stats import FILE as STATS_FILE, METRICS, SKIP_KINDS, StatsStore, buckets, totals
 from ..hh.negotiations import FILE as NEGOTIATIONS_FILE, funnel as funnel_rows
+from ..hh.resume import has_city
 from ..hh.vacancy_meta import SKILLS_FILE, SkillStats
 from ..core.logger import SUCCESS, log, setup_logging
-from ..core.paths import app_root, bundled, is_frozen
+from ..core.paths import app_root, is_frozen
 from ..hh.runner import RunOptions, Stats
 from ..web import browser, window as browser_window
 from ..hh import raising, watch
 from ..core import updater
 from .mini import BrowserPreview, MiniWindow
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
-from .widgets import (Chart, ChipGroup, ItemList, crossfade, PlainFrame, QuietToplevel, SelectableText, TextLabel, flush_paint, frozen, install_editing,
-                      precise_timer, set_titlebar_dark, theme_switch)
+from .widgets import (Chart, ChipGroup, ItemList, MENU_BUTTONS, crossfade, PlainFrame, QuietToplevel, RichText,
+                      SelectableText, TextLabel, flush_paint, frozen, install_editing, precise_timer, set_titlebar_dark,
+                      theme_switch)
 from .theme import (ACCENT, ACCENT_FILL, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_NAME, BORDER, CARD_BG, CARD_LINE, FILL,
                     FILL_HOVER, GREEN, GREEN_FILL, GREEN_HOVER, LINK, MAIN_BG, MUTED, NAV_HOVER, RED, RED_ON_SOFT,
                     RED_SOFT, RED_SOFT_HOVER, SEG_THUMB, SIDEBAR_BG, TEXT, apply_app_icon, apply_ctk_theme, icon,
@@ -325,7 +327,7 @@ class LogView(ctk.CTkTextbox):
         self._menu.add_separator()
         self._menu.add_command(label="Выделить всё", command=self.select_all)
         text = self._textbox
-        for button in ("<Button-3>", "<Button-2>") if sys.platform == "darwin" else ("<Button-3>",):
+        for button in MENU_BUTTONS:
             text.bind(button, self._popup)
         text.bind("<Command-KeyPress>" if sys.platform == "darwin" else "<Control-KeyPress>", self._on_ctrl)
         text.bind("<Button-1>", lambda _e: text.focus_set(), add="+")  # иначе Ctrl+C уйдёт в другое поле
@@ -504,6 +506,22 @@ def set_primary_enabled(button: ctk.CTkButton, enabled: bool) -> None:
     """Главная кнопка недоступна — серая, как остальные недоступные кнопки (синяя казалась нажимаемой)."""
     button.configure(state="normal" if enabled else "disabled", fg_color=ACCENT_FILL if enabled else FILL,
                      text_color_disabled=MUTED)
+
+
+def set_run_buttons(app: "App", kind: str, running: bool, start: ctk.CTkButton, start_text: str, start_command,
+                    second: ctk.CTkButton | None = None, second_text: str = "",
+                    second_command=None) -> tuple[bool, bool]:
+    """Кнопки запуска страницы. Работает её дело (kind): главная — серая, вторая — «Пауза»; на паузе главная —
+    «Продолжить». Работает другое — обе недоступны. Возвращает (работает её дело, стоит на паузе)."""
+    mine = running and app.running_kind == kind
+    paused = mine and control.paused() and not control.stop_requested()
+    start.configure(text="▶  Продолжить" if paused else start_text, command=app.resume if paused else start_command)
+    set_primary_enabled(start, paused or not running)
+    if second is not None:
+        pausing = mine and not control.stop_requested()
+        second.configure(text="❚❚  Пауза" if pausing else second_text, command=app.pause if pausing else second_command,
+                         state="normal" if (pausing and not paused) or not running else "disabled")
+    return mine, paused
 
 
 def set_stop_enabled(button: ctk.CTkButton, enabled: bool) -> None:
@@ -717,15 +735,19 @@ class ResponsesPage(Page):
         self.totals.configure(text=f"Последний запуск: {last}   ·   Всего: {total}")
 
     def set_running(self, running: bool) -> None:
-        state = "disabled" if running else "normal"
-        for widget in (self.start_btn, self.dry_btn, self.limit, self.start_page, self.retry):
-            widget.configure(state=state)
+        """Пока идёт работа, «Начать» серая, а «Пробный прогон» становится «Паузой»; на паузе «Начать» —
+        «Продолжить» и горит вместе с «Остановить»."""
+        mine, paused = set_run_buttons(self.app, "responses", running, self.start_btn, "▶  Начать",
+                                       lambda: self.app.start_responses(False), self.dry_btn, "Пробный прогон",
+                                       lambda: self.app.start_responses(True))
+        for widget in (self.limit, self.start_page, self.retry):
+            widget.configure(state="disabled" if running else "normal")
         set_stop_enabled(self.stop_btn, running)
-        self._show_state(running)
+        self._show_state(running, paused)
 
-    def _show_state(self, running: bool) -> None:
-        self.run_state.configure(text="●  Идёт работа" if running else "Не запущено",
-                                 text_color=GREEN if running else MUTED)
+    def _show_state(self, running: bool, paused: bool = False) -> None:
+        self.run_state.configure(text="❚❚  Пауза" if paused else "●  Идёт работа" if running else "Не запущено",
+                                 text_color=AMBER if paused else GREEN if running else MUTED)
 
     def update_stats(self, stats: Stats, limit: int) -> None:
         self.cards["applied"].set(f"{stats.applied} / {limit}" if limit else stats.applied)
@@ -753,7 +775,8 @@ class ChatsPage(Page):
                          "ИИ-ответы, отвечает «Роботу-рекрутеру» на анкеты по вашему резюме и читает уведомления. "
                          "Живым людям, приглашениям и просьбам о документах не отвечает — показывает их списком.")
         self.app = app
-        self.start_btn = _primary_button(self.actions, "✉  Обработать чаты", lambda: app.start_chats(False), width=200)
+        self.start_text = "✉  Обработать чаты"
+        self.start_btn = _primary_button(self.actions, self.start_text, lambda: app.start_chats(False), width=200)
         self.dry_btn = _secondary_button(self.actions, "Только показать", lambda: app.start_chats(True), width=150)
         self.stop_btn = _stop_button(self.actions, app.stop)
         for i, button in enumerate((self.start_btn, self.dry_btn, self.stop_btn)):
@@ -787,7 +810,9 @@ class ChatsPage(Page):
     def refresh_config(self, cfg: Config) -> None:
         only_rejections = cfg.chats.mode == "rejections"
         self.mode.set(next(label for label, mode in CHATS_MODE_LABELS.items() if mode == cfg.chats.mode))
-        self.start_btn.configure(text="✉  Прочитать отказы" if only_rejections else "✉  Обработать чаты")
+        self.start_text = "✉  Прочитать отказы" if only_rejections else "✉  Обработать чаты"
+        if self.start_btn.cget("state") == "normal" and not control.paused():
+            self.start_btn.configure(text=self.start_text)
         if only_rejections:
             text = ("Только отказы: откроет непрочитанные отказы, чтобы hh отметил их прочитанными. Остальные чаты "
                     "не трогает" + (" — ИИ-ответы сейчас не работают" if cfg.ai.enabled else ""))
@@ -811,9 +836,9 @@ class ChatsPage(Page):
         self.app.reload_config()
 
     def set_running(self, running: bool) -> None:
-        state = "disabled" if running else "normal"
-        self.start_btn.configure(state=state)
-        self.dry_btn.configure(state=state)
+        set_run_buttons(self.app, "chats", running, self.start_btn, self.start_text,
+                        lambda: self.app.start_chats(False), self.dry_btn, "Только показать",
+                        lambda: self.app.start_chats(True))
         set_stop_enabled(self.stop_btn, running)
 
     def update_stats(self, stats: ChatStats) -> None:
@@ -884,7 +909,8 @@ class AiTestPage(Page):
         resume_path = self.app.root_dir / "data" / "resume.txt"
         if resume_path.exists():
             when = datetime.fromtimestamp(resume_path.stat().st_mtime).strftime("%d.%m.%Y %H:%M")
-            resume = f"{len(resume_path.read_text(encoding='utf-8'))} симв., загружено {when}"
+            text = resume_path.read_text(encoding="utf-8")
+            resume = f"{len(text)} симв., загружено {when}" + ("" if has_city(text) else ", города в нём нет")
         else:
             resume = "не загружено — нажмите «Загрузить резюме с hh»"
         context = cfg.ai.context.strip()
@@ -993,6 +1019,8 @@ class AiTestPage(Page):
                 for answer in fill.answers:
                     self.view.append(f"  {answer.question.text}", "info")
                     self.view.append(f"    → {answer.describe()}", "ok")
+                for note in self.pg.client.notes if self.pg else ():
+                    self.view.append(f"  страховка: {note}", "warn")
         else:
             turn = payload
             d = turn.decision
@@ -1092,6 +1120,10 @@ SETTINGS = [
         ("letter", "experience_first", "Письмо нейросети начинать с опыта под вакансию", "bool",
          "Сразу 2–3 факта из резюме под требования вакансии, а не пересказ компании. По опыту откликов такие письма "
          "чаще приводят к приглашению. Выключено — сначала о том, чем интересна вакансия"),
+        ("letter", "ai_prompt", "Свой промпт для письма нейросети", "text",
+         "Тон, структура, что упоминать, а что нет. Важнее встроенных правил. Что напишете здесь о себе, нейросеть считает "
+         "фактом, как и контекст. Например: Пиши по-простому, как живой человек. Не упоминай компанию и вакансию. Кнопка "
+         "hh этот промпт не использует. Проверить — «Тест письма» на странице «Проверка ИИ»"),
     ]),
     ("Вопросы работодателя", [
         ("questions", "answer_salary", "Отвечать, если вопрос один и он о зарплате", "bool", ""),
@@ -1140,7 +1172,15 @@ SETTINGS = [
          "Ollama на другом компьютере: http://192.168.1.50:11434 (или http://localhost:11434 через SSH-туннель). "
          "Пусто — Ollama на этом компьютере. Подробно — docs/ollama.md"),
         ("ai", "context", "Что ещё знать о вас, кроме резюме", "text",
-         "Зарплатные ожидания, формат работы, город, когда готовы выйти, готовность к переезду и т.п."),
+         "Здесь вы говорите нейросети, что отвечать работодателю: если в этом тексте есть ответ на вопрос, она ответит "
+         "так, как вы написали. Зарплатные ожидания, формат работы, город, когда готовы выйти, готовность к переезду "
+         "и т.п. Например: Живу в Москве, гражданство РФ. Могу выйти через 2 недели. Проверить ответы — «Тест анкеты» "
+         "на странице «Проверка ИИ». Требования к письму удобнее писать на вкладке «Отклики» → «Свой промпт для "
+         "письма нейросети»"),
+        ("ai", "documents_ready", "Готов предоставить документы по запросу работодателя", "bool",
+         "На вопрос «Готовы ли вы предоставить документы?» (выписка из ЭТК, договоры ГПХ, справки) нейросеть ответит "
+         "«да». Выключено — такие анкеты пропускаются, а чаты остаются вам. Сами документы программа никуда не "
+         "отправляет; если просят приложить их сейчас или сообщить паспортные данные, решаете вы"),
         ("ai", "only_robot", "Отвечать только ботам hh (Робот-рекрутер, ИИ-помощник), живым людям — вы", "bool",
          "Выключено — отвечает всем. Встречи, собеседования и звонки в любом случае остаются вам"),
         ("ai", "max_answer_chars", "Максимальная длина ответа, символов", "int", ""),
@@ -2230,6 +2270,7 @@ class StatsPage(Page):
         self.app = app
         self.days: dict[str, dict] = {}
         self._shown: tuple | None = None  # по каким данным страница посчитана в последний раз
+        self._refreshed_at = 0.0
 
         self.notice = Card(self)  # «статистика не ведётся» — видна, только если её выключили
         TextLabel(self.notice, "Статистика не ведётся: новые запуски не записываются ([stats] disabled). "
@@ -2297,11 +2338,17 @@ class StatsPage(Page):
                 stamps.append(None)
         return datetime.now().date(), self.period.get(), self.step.get(), repr(self.app.cfg.stats), tuple(stamps)
 
+    RUN_REFRESH = 60  # с: во время работы данные меняются на каждой вакансии — пересчитываем не чаще
+
     def refresh(self) -> None:
         sources = self._sources()
         if sources == self._shown:
             return  # с прошлого раза ничего не поменялось — вкладка открывается без пересчёта (~45 мс)
+        if (self.app.running_kind and self._shown is not None and sources[:4] == self._shown[:4]
+                and time.monotonic() - self._refreshed_at < self.RUN_REFRESH):
+            return  # идёт работа: свежие числа — через минуту или когда она закончится (полсекунды на переход)
         self._shown = sources
+        self._refreshed_at = time.monotonic()
         cfg = self.app.cfg
         store = StatsStore(self.app.root_dir, cfg.stats.keep_days)
         self.days = store.load()  # в первый раз — посчитает дни по уже накопленной истории откликов
@@ -2449,7 +2496,7 @@ class ReportCard(Card):
     def text(master, text: str, minus: int = 0, **kwargs) -> SelectableText:
         """Текст по ширине карточки, который можно выделить и скопировать (minus — сколько занято слева:
         по нему считается высота, пока карточка ещё не на экране)."""
-        return SelectableText(master, text, width_px=max(200, 820 - minus), **kwargs)
+        return SelectableText(master, text, width_px=max(200, 820 - minus), quick=True, **kwargs)
 
 
 class ScoreCard(ReportCard):
@@ -2507,14 +2554,10 @@ class AdviceCard(ReportCard):
 
     def show(self, advice: list) -> None:
         self.clear()
-        self.body.grid_columnconfigure(1, weight=1)
-        for n, item in enumerate(advice):
-            label, color = ADVICE_STYLE[item.level]
-            TextLabel(self.body, label, size=12, weight="bold", color=color).grid(row=n, column=0, sticky="nw",
-                                                                                padx=(0, 14), pady=3)
-            self.text(self.body, item.text, minus=80, size=13).grid(row=n, column=1, sticky="ew", pady=3)
-        if not advice:
-            self.text(self.body, "Серьёзных замечаний нет.", color=MUTED).grid(row=0, column=0, sticky="ew")
+        rows = [[(ADVICE_STYLE[item.level][0], ADVICE_STYLE[item.level][1], True), item.text] for item in advice]
+        table = RichText(self.body, tabs=[(82, "left")], indent=82, size=13, spacing=5)
+        table.set_rows(rows or [[("Серьёзных замечаний нет.", MUTED)]])
+        table.pack(fill="x")
 
     def show_ai(self, text: str, color=TEXT) -> None:
         if not self.ai_box.winfo_manager():
@@ -2523,7 +2566,8 @@ class AdviceCard(ReportCard):
 
 
 class MarketSkillsCard(ReportCard):
-    HEADS = ("Навык", "Спрос", "Зарплата", "В резюме", "Если изучить")
+    # столбцы — доли ширины карточки: в узком окне таблица сжимается, а не переносится
+    TABS = [(0.47, "right"), (0.58, "right"), (0.62, "left"), (0.79, "left")]
 
     def __init__(self, master):
         super().__init__(master, "Навыки, которые просят")
@@ -2532,6 +2576,17 @@ class MarketSkillsCard(ReportCard):
         self.filter.set("Все")
         self.filter.pack(side="right")
         self.report: analysis.Report | None = None
+        self.table = RichText(self.body, tabs=self.TABS, wrap="none", spacing=1)
+        self.table.pack(fill="x")
+        self.note = self.text(self.body, "Спрос — доля вакансий вашего рынка, где навык просят. Зарплата — "
+                                         "насколько середина зарплат в таких вакансиях выше или ниже общей. «Только "
+                                         "в опыте» — навык упомянут в опыте, но его нет в «Ключевых навыках»: hh его "
+                                         "там не видит. «Если изучить» — сколько вакансий станут подходящими с одним "
+                                         "этим навыком.", color=MUTED, size=12)
+        self.note.pack(fill="x", pady=(10, 0))
+
+    def clear(self) -> None:
+        pass  # таблица и пояснение — одни на всё время, меняется только текст
 
     def show(self, report: analysis.Report) -> None:
         self.report = report
@@ -2540,36 +2595,20 @@ class MarketSkillsCard(ReportCard):
     def _render(self) -> None:
         if self.report is None:
             return
-        with frozen(self):
-            self.clear()
-            body = self.body
-            rows = self.report.market
-            if self.filter.get() == "Нет в резюме":
-                rows = [r for r in rows if r.status != "key"]
-            body.grid_columnconfigure(0, weight=1)
-            for col, title in enumerate(self.HEADS):
-                TextLabel(body, title, color=MUTED, size=12).grid(row=0, column=col, sticky="w",
-                                                                   padx=(0 if col == 0 else 14, 0), pady=(0, 2))
-            for n, r in enumerate(rows, 1):
-                TextLabel(body, r.name + ("  · уходит" if r.legacy else ""), size=12, width=1).grid(
-                    row=n, column=0, sticky="ew", pady=1)
-                TextLabel(body, f"{r.share * 100:.0f}%", size=12).grid(row=n, column=1, sticky="w", padx=(14, 0))
-                lift = r.lift
-                TextLabel(body, "—" if lift is None else analysis.signed(lift), size=12,
-                          color=MUTED if lift is None or abs(lift) < 0.05 else GREEN if lift > 0 else RED).grid(
-                    row=n, column=2, sticky="w", padx=(14, 0))
-                text, color = SKILL_STATUS[r.status]
-                TextLabel(body, text, size=12, color=color).grid(row=n, column=3, sticky="w", padx=(14, 0))
-                gain = f"+{analysis.plural(r.gain, 'подходящая', 'подходящие', 'подходящих')}" if r.gain else ""
-                TextLabel(body, gain, size=12, color=ACCENT).grid(row=n, column=4, sticky="w", padx=(14, 0))
-            if not rows:
-                TextLabel(body, "Все востребованные навыки уже в «Ключевых навыках».", color=MUTED, size=12).grid(
-                    row=1, column=0, columnspan=5, sticky="w")
-            self.text(body, "Спрос — доля вакансий вашего рынка, где навык просят. Зарплата — насколько середина "
-                            "зарплат в таких вакансиях выше или ниже общей. «Только в опыте» — навык упомянут "
-                            "в опыте, но его нет в «Ключевых навыках»: hh его там не видит. «Если изучить» — сколько "
-                            "вакансий станут подходящими с одним этим навыком.", color=MUTED, size=12).grid(
-                row=len(rows) + 2, column=0, columnspan=5, sticky="ew", pady=(10, 0))
+        rows = self.report.market
+        if self.filter.get() == "Нет в резюме":
+            rows = [r for r in rows if r.status != "key"]
+        lines = [[(title, MUTED) for title in ("Навык", "Спрос", "Зарплата", "В резюме", "Если изучить")]]
+        for r in rows:
+            lift = r.lift
+            lift_color = MUTED if lift is None or abs(lift) < 0.05 else GREEN if lift > 0 else RED
+            text, color = SKILL_STATUS[r.status]
+            gain = f"+{analysis.plural(r.gain, 'подходящая', 'подходящие', 'подходящих')}" if r.gain else ""
+            lines.append([r.name + ("  · уходит" if r.legacy else ""), f"{r.share * 100:.0f}%",
+                          ("—" if lift is None else analysis.signed(lift), lift_color), (text, color), (gain, ACCENT)])
+        if not rows:
+            lines.append([("Все востребованные навыки уже в «Ключевых навыках».", MUTED)])
+        self.table.set_rows(lines)
 
 
 class PathCard(ReportCard):
@@ -2578,63 +2617,59 @@ class PathCard(ReportCard):
 
     def show(self, report: analysis.Report) -> None:
         self.clear()
-        body = self.body
-        body.grid_columnconfigure(2, weight=1)
+        rows = []
         for n, step in enumerate(report.path, 1):
-            TextLabel(body, f"{n}.", size=13, weight="bold", color=ACCENT).grid(row=n, column=0, sticky="nw",
-                                                                              padx=(0, 8), pady=2)
-            TextLabel(body, step.name, size=13, weight="bold").grid(row=n, column=1, sticky="nw", padx=(0, 14), pady=2)
             vacancies = analysis.plural(step.gain, "подходящая вакансия", "подходящие вакансии", "подходящих вакансий")
             more = (f"+{vacancies} (станет {step.fit_after} из {report.near})" if step.gain
                     else "подходящих пока не прибавит")
-            self.text(body, f"{more} · просят в {step.share * 100:.0f}% вакансий вашего рынка", minus=200, size=12,
-                      color=MUTED).grid(row=n, column=2, sticky="ew", pady=2)
-        if not report.path:
-            self.text(body, "Чего-то одного, что заметно расширит выбор, нет — ваши навыки уже покрывают рынок.",
-                      color=MUTED, size=12).grid(row=1, column=0, columnspan=3, sticky="ew")
-        self.text(body, "Каждый следующий — с учётом предыдущих: сначала то, что сильнее приближает к вакансиям, "
-                        "к которым вы уже близки. Изученное добавьте в резюме, когда будет что показать.",
-                  color=MUTED, size=12).grid(row=len(report.path) + 2, column=0, columnspan=3, sticky="ew",
-                                             pady=(10, 0))
+            rows.append([(f"{n}.", ACCENT, True), (step.name, None, True),
+                         (f"{more} · просят в {step.share * 100:.0f}% вакансий вашего рынка", MUTED)])
+        if not rows:
+            rows = [[("Чего-то одного, что заметно расширит выбор, нет — ваши навыки уже покрывают рынок.", MUTED)]]
+        table = RichText(self.body, tabs=[(24, "left"), (190, "left")], indent=190, spacing=3)
+        table.set_rows(rows)
+        table.pack(fill="x")
+        self.text(self.body, "Каждый следующий — с учётом предыдущих: сначала то, что сильнее приближает к вакансиям, "
+                             "к которым вы уже близки. Изученное добавьте в резюме, когда будет что показать.",
+                  color=MUTED, size=12).pack(fill="x", pady=(10, 0))
 
 
 class YourSkillsCard(ReportCard):
+    TABS = [(0.33, "right"), (0.35, "left"), (0.52, "left"), (0.84, "right"), (0.86, "left")]
+
     def __init__(self, master):
         super().__init__(master, "Ваши навыки: что актуально")
 
     def show(self, report: analysis.Report) -> None:
         self.clear()
-        body = self.body
         rows = report.yours
-        half = (len(rows) + 1) // 2
-        for col in (0, 4):
-            body.grid_columnconfigure(col, weight=1, uniform="yours")
-        for n, r in enumerate(rows):
-            base, line = (0, n) if n < half else (4, n - half)
-            TextLabel(body, r.name, size=12, width=1).grid(row=line, column=base, sticky="ew", pady=1)
-            TextLabel(body, f"{r.share_all * 100:.0f}%", size=12, color=MUTED).grid(row=line, column=base + 1,
-                                                                                    sticky="e", padx=(10, 0))
-            label = analysis.relevance(r)
-            TextLabel(body, label, size=12, color=RELEVANCE_COLORS[label]).grid(row=line, column=base + 2, sticky="w",
-                                                                               padx=(10, 24 if base == 0 else 0))
         if not rows:
-            self.text(body, "В резюме не нашлось раздела «Ключевые навыки» — оценить, что актуально, не по чему.",
-                      color=MUTED, size=12).grid(row=0, column=0, columnspan=7, sticky="ew")
-        else:
-            self.text(body, "Доля — от всех вакансий выборки. «Почти не просят» — не значит «не нужно»: просто "
-                            "по нему вас редко найдут; держите такие навыки в конце списка.", color=MUTED,
-                      size=12).grid(row=half + 1, column=0, columnspan=7, sticky="ew", pady=(10, 0))
+            self.text(self.body, "В резюме не нашлось раздела «Ключевые навыки» — оценить, что актуально, не по чему.",
+                      color=MUTED, size=12).pack(fill="x")
+            return
+        half = (len(rows) + 1) // 2
+
+        def cells(r):
+            label = analysis.relevance(r)
+            return [r.name, (f"{r.share_all * 100:.0f}%", MUTED), (label, RELEVANCE_COLORS[label])]
+
+        lines = [cells(rows[n]) + (cells(rows[n + half]) if n + half < len(rows) else []) for n in range(half)]
+        table = RichText(self.body, tabs=self.TABS, wrap="none", spacing=1)
+        table.set_rows(lines)
+        table.pack(fill="x")
+        self.text(self.body, "Доля — от всех вакансий выборки. «Почти не просят» — не значит «не нужно»: просто "
+                             "по нему вас редко найдут; держите такие навыки в конце списка.", color=MUTED,
+                  size=12).pack(fill="x", pady=(10, 0))
 
 
 class MarketCard(ReportCard):
+    BAR = 28  # полос в самой длинной строке «Какой опыт просят»
+
     def __init__(self, master):
         super().__init__(master, "Рынок")
 
     def show(self, report: analysis.Report) -> None:
         self.clear()
-        body = self.body
-        body.grid_columnconfigure(1, weight=1)
-        row = 0
         salary = report.salary
         if salary:
             level = f" (опыт {salary['level']})" if salary["level"] else ""
@@ -2645,34 +2680,25 @@ class MarketCard(ReportCard):
                 text += f". Вы просите {analysis.money(salary['yours'])}"
         else:
             text = "Зарплату указали слишком мало вакансий, чтобы считать."
-        self.text(body, text, size=13).grid(row=row, column=0, columnspan=3, sticky="ew")
-        row += 1
+        rows = [[text]]
         if report.experience:
-            TextLabel(body, "Какой опыт просят", color=MUTED, size=12).grid(row=row, column=0, columnspan=3,
-                                                                             sticky="w", pady=(12, 2))
-            row += 1
+            rows.append([("Какой опыт просят", MUTED)])
             for level, share in report.experience:
                 mine = level == report.your_level
-                TextLabel(body, analysis.EXPERIENCE_LABELS[level] + ("  · вы" if mine else ""), size=12,
-                          weight="bold" if mine else "normal").grid(row=row, column=0, sticky="w", padx=(0, 14))
-                bar = Bar(body, color=ACCENT_FILL if mine else MUTED)
-                bar.grid(row=row, column=1, sticky="ew", pady=2)
-                bar.set(share)
-                TextLabel(body, f"{share * 100:.0f}%", size=12).grid(row=row, column=2, sticky="e", padx=(12, 0))
-                row += 1
-        lines = []
+                rows.append([(analysis.EXPERIENCE_LABELS[level] + ("  · вы" if mine else ""), None, mine),
+                             ("█" * max(1, round(share * self.BAR)) if share else "", ACCENT if mine else MUTED),
+                             f"{share * 100:.0f}%"])
         if report.formats:
-            lines.append("Формат работы: " + " · ".join(f"{analysis.FORMAT_LABELS.get(f, f)} {s * 100:.0f}%"
-                                                        for f, s in report.formats))
+            rows.append([("Формат работы: " + " · ".join(f"{analysis.FORMAT_LABELS.get(f, f)} {s * 100:.0f}%"
+                                                          for f, s in report.formats), MUTED)])
         if report.english_share:
-            lines.append(f"Английский просят в {report.english_share * 100:.0f}% вакансий")
+            rows.append([(f"Английский просят в {report.english_share * 100:.0f}% вакансий", MUTED)])
         if report.titles:
-            lines.append("Слова в названиях подходящих вам вакансий: "
-                         + ", ".join(f"{w} {s * 100:.0f}%" for w, s in report.titles[:8]))
-        for line in lines:
-            self.text(body, line, size=12, color=MUTED).grid(row=row, column=0, columnspan=3, sticky="ew",
-                                                             pady=(8 if line is lines[0] else 2, 0))
-            row += 1
+            rows.append([("Слова в названиях подходящих вам вакансий: "
+                          + ", ".join(f"{w} {s * 100:.0f}%" for w, s in report.titles[:8]), MUTED)])
+        table = RichText(self.body, tabs=[(140, "left"), (440, "right")], spacing=3)
+        table.set_rows(rows)
+        table.pack(fill="x")
 
 
 class MatchesCard(ReportCard):
@@ -2681,28 +2707,22 @@ class MatchesCard(ReportCard):
 
     def show(self, report: analysis.Report) -> None:
         self.clear()
-        body = self.body
-        body.grid_columnconfigure(1, weight=1)
-        for n, m in enumerate(report.matches):
-            TextLabel(body, f"{m.coverage * 100:.0f}%", size=13, weight="bold",
-                      color=_score_color(m.coverage * 100)).grid(row=2 * n, column=0, sticky="nw", padx=(0, 14),
-                                                                 pady=(6 if n else 0, 0))
-            title = TextLabel(body, m.title + (f" — {m.area}" if m.area else ""), size=13, color=ACCENT, width=1,
-                              cursor="hand2")
-            title.grid(row=2 * n, column=1, sticky="ew", pady=(6 if n else 0, 0))
-            title.bind("<Button-1>", lambda _e, url=m.url: webbrowser.open(url))
-            TextLabel(body, analysis.money(m.salary) if m.salary else "", size=12).grid(
-                row=2 * n, column=2, sticky="e", padx=(12, 0), pady=(6 if n else 0, 0))
+        rows = []
+        for m in report.matches:
+            title = m.title + (f" — {m.area}" if m.area else "")
+            rows.append([(f"{m.coverage * 100:.0f}%", _score_color(m.coverage * 100), True),
+                         (title, ACCENT, False, m.url), (f"  ·  {analysis.money(m.salary)}" if m.salary else "")])
             detail = f"совпало {m.have} из {m.size} навыков"
             if m.missing:
                 detail += " · нет: " + ", ".join(m.missing)
             if m.applied:
                 detail += " · вы уже откликались"
-            self.text(body, detail, minus=150, size=12, color=MUTED).grid(row=2 * n + 1, column=1, columnspan=2,
-                                                                          sticky="ew")
-        if not report.matches:
-            self.text(body, "Вакансий, где у вас больше половины навыков и хватает опыта, в выборке нет.",
-                      color=MUTED, size=12).grid(row=0, column=0, columnspan=3, sticky="ew")
+            rows.append(["", (detail, MUTED)])
+        if not rows:
+            rows = [[("Вакансий, где у вас больше половины навыков и хватает опыта, в выборке нет.", MUTED)]]
+        table = RichText(self.body, tabs=[(52, "left")], indent=52, spacing=2)
+        table.set_rows(rows)
+        table.pack(fill="x")
 
 
 class ChecksCard(ReportCard):
@@ -2713,14 +2733,13 @@ class ChecksCard(ReportCard):
 
     def show(self, checks: list) -> None:
         self.clear()
-        body = self.body
-        body.grid_columnconfigure(2, weight=1)
-        for n, check in enumerate(checks):
+        rows = []
+        for check in checks:
             mark, color = ("~", AMBER) if check.partial else self.MARKS[check.ok]
-            TextLabel(body, mark, size=13, weight="bold", color=color).grid(row=n, column=0, sticky="nw",
-                                                                          padx=(0, 10), pady=2)
-            TextLabel(body, check.title, size=13).grid(row=n, column=1, sticky="nw", padx=(0, 14), pady=2)
-            self.text(body, check.detail, minus=230, size=12, color=MUTED).grid(row=n, column=2, sticky="ew", pady=2)
+            rows.append([(mark, color, True), check.title, (check.detail, MUTED)])
+        table = RichText(self.body, tabs=[(24, "left"), (230, "left")], indent=230, size=12, spacing=3)
+        table.set_rows(rows)
+        table.pack(fill="x")
 
 
 class AnalysisPage(Page):
@@ -2733,9 +2752,10 @@ class AnalysisPage(Page):
                          "зарплаты. Всё считается на вашем компьютере, резюме никуда не отправляется.")
         self.app = app
         self.scan_btn = _primary_button(self.actions, "▶  Проверить рынок", self.scan, width=190)
+        self.pause_btn = _secondary_button(self.actions, "❚❚  Пауза", app.pause, width=120, state="disabled")
         self.stop_btn = _stop_button(self.actions, app.stop)
-        self.scan_btn.pack(side="left")
-        self.stop_btn.pack(side="left", padx=(10, 0))
+        for i, button in enumerate((self.scan_btn, self.pause_btn, self.stop_btn)):
+            button.pack(side="left", padx=(0 if i == 0 else 10, 0))
         self.waiting_hh = False
         self.report: analysis.Report | None = None
         self._token = 0
@@ -2803,8 +2823,9 @@ class AnalysisPage(Page):
         self.market_card = MarketCard(self.scroll)
         self.matches_card = MatchesCard(self.scroll)
         self.checks_card = ChecksCard(self.scroll)
-        self.cards = (self.score_card, self.advice_card, self.skills_card, self.path_card, self.yours_card,
-                      self.market_card, self.matches_card, self.checks_card)
+        self.cards = (self.score_card, self.skills_card, self.yours_card, self.advice_card, self.path_card,
+                      self.market_card, self.matches_card, self.checks_card)  # в этом порядке и на странице
+        self._rendered = ""  # какой отчёт сейчас нарисован (текстом) — тот же не перерисовываем
 
     # ---------- резюме ----------
 
@@ -2935,7 +2956,9 @@ class AnalysisPage(Page):
     # ---------- отчёт ----------
 
     def set_running(self, running: bool) -> None:
-        set_primary_enabled(self.scan_btn, not running)  # пока горит «Остановить» — проверить рынок нельзя
+        # пока горит «Остановить» — проверить рынок нельзя; на паузе — «Продолжить»
+        mine, paused = set_run_buttons(self.app, "market", running, self.scan_btn, "▶  Проверить рынок", self.scan)
+        self.pause_btn.configure(state="normal" if mine and not paused and not control.stop_requested() else "disabled")
         self.hh_btn.configure(state="disabled" if running else "normal")
         set_stop_enabled(self.stop_btn, running and self.app.running_kind == "market")
 
@@ -2965,7 +2988,11 @@ class AnalysisPage(Page):
             self.source.set("")
             self.resume_info.set("Не загружено. Подойдёт PDF с hh («Скачать» → PDF), Word или текст — или «С hh».",
                                  MUTED)
-        sources = (resume.get("text") if resume else None, label, store.stamp())
+        stamp = store.stamp()
+        if self.app.running_kind and self.report is not None and self._shown and self._shown[:2] == (
+                resume.get("text") if resume else None, label):
+            stamp = self._shown[2]  # идёт работа: вакансии прибавляются по странице — пересчитаем, когда закончится
+        sources = (resume.get("text") if resume else None, label, stamp)
         if sources == self._shown:
             return
         self._shown = sources
@@ -2989,7 +3016,8 @@ class AnalysisPage(Page):
                 log.debug("анализ резюме:", exc_info=True)
                 self.app.events.put(("analysis", token, None, str(e)))
 
-        threading.Thread(target=work, daemon=True).start()
+        # считать начинаем, когда вкладка уже нарисована: иначе расчёт в фоне тормозит сам переход на неё
+        self.after(150, lambda: token == self._token and threading.Thread(target=work, daemon=True).start())
 
     def on_report(self, token: int, report: analysis.Report | None, error: str) -> None:
         if token != self._token:
@@ -3009,21 +3037,26 @@ class AnalysisPage(Page):
         self.resume_info.set(" · ".join(facts), TEXT)
         query = analysis_market.market_query(p.title)
         self.query.configure(placeholder_text=f"по должности: {query}" if query else "должность, например python")
+        if not report.total or not report.near:
+            self._rendered = ""
+            self._show_placeholder("Сначала нужны вакансии для сравнения",
+                                   "Резюме загружено, но сравнивать его пока не с чем. Нажмите «Проверить рынок» — "
+                                   "программа пройдёт выдачу hh по должности из резюме (или по запросу в поле "
+                                   "«Проверить по запросу»), ни на что не откликаясь: в широком запросе это несколько "
+                                   "минут. Вакансии копятся и при обычных откликах. Когда они появятся, здесь будут "
+                                   "оценка резюме, навыки, которые просят, и советы.")
+            return
+        rendered = analysis.to_text(report)
+        if rendered == self._rendered and self.score_card.winfo_manager():
+            return  # отчёт не изменился — не перерисовываем (переход на вкладку остаётся быстрым)
+        self._rendered = rendered
         with frozen(self):
-            if not report.total or not report.near:
-                self._show_placeholder("Не с чем сравнить", "Вакансий с навыками пока нет. Нажмите «Проверить рынок» — "
-                                       "программа пролистает выдачу (5 страниц — до 500 вакансий, 1–2 минуты), ни на "
-                                       "что не откликаясь. Вакансии копятся и при обычных откликах. Пока — только "
-                                       "оформление:", keep=(self.advice_card, self.checks_card))
-                self.advice_card.show(report.advice)
-                self.checks_card.show(report.checks)
-                return
             self.placeholder.pack_forget()
             self.score_card.show(report)
-            self.advice_card.show(report.advice)
             self.skills_card.show(report)
-            self.path_card.show(report)
             self.yours_card.show(report)
+            self.advice_card.show(report.advice)
+            self.path_card.show(report)
             self.market_card.show(report)
             self.matches_card.show(report)
             self.checks_card.show(report.checks)
@@ -3107,6 +3140,7 @@ class App(ctk.CTk):
         self.log_handler = QueueLogHandler(self.events)
         self.worker: threading.Thread | None = None
         self.running_kind: str | None = None
+        self.running_title = ""  # «Отклики», «Чаты: только отказы»… — для меню слева после паузы
         self.started_at = 0.0
         self.last_log_path: Path | None = None
         self.stats = Stats()
@@ -3724,6 +3758,7 @@ class App(ctk.CTk):
             return
         control.reset()
         self.running_kind = kind
+        self.running_title = title
         self.started_at = time.monotonic()
         if clear:
             self.console.clear()
@@ -3760,6 +3795,8 @@ class App(ctk.CTk):
         закрывается почти сразу: раньше «Запустить» и тут же «Остановить» ждали, пока откроется hh."""
         if self.worker and self.worker.is_alive():
             control.request_stop()
+            control.resume()  # стоявшая на паузе работа сразу увидит остановку
+            self._set_running(True)
             self._set_status("●  Останавливаюсь…", AMBER, "дождитесь завершения шага")
             for page in (self.pages["responses"], self.pages["chats"], self.pages["analysis"]):
                 set_stop_enabled(page.stop_btn, False)
@@ -3782,6 +3819,20 @@ class App(ctk.CTk):
             browser.finish_processes(everything=True)
             self._set_status("●  Останавливаюсь…", AMBER, "браузер не закрывался — завершил его")
             self.after(round(self.STOP_KILL_AGAIN * 1000), self._stop_escalate, worker, 2)
+
+    def pause(self) -> None:
+        """«Пауза»: работа встанет в ближайшей паузе между шагами (начатая вакансия доделывается), браузер
+        остаётся открытым. «Продолжить» — дальше с того же места, «Остановить» — закончить."""
+        if self.worker and self.worker.is_alive() and not control.paused() and not control.stop_requested():
+            control.request_pause()
+            self._set_running(True)
+            self._set_status("●  Пауза", AMBER, "ставлю на паузу — дождусь конца шага")
+
+    def resume(self) -> None:
+        if control.paused() and not control.stop_requested():
+            control.resume()
+            self._set_running(True)
+            self._set_status(f"●  {self.running_title}", ACCENT)
 
     def _set_running(self, running: bool) -> None:
         self.pages["responses"].set_running(running)
@@ -3856,6 +3907,8 @@ class App(ctk.CTk):
             self._raise_after = max(self._raise_after, time.time() + self.STOP_QUIET)
         if self.pages["stats"].winfo_ismapped():  # статистику смотрят прямо сейчас — с итогами этого запуска
             self.pages["stats"].refresh()
+        if kind != "market" and self.pages["analysis"].winfo_ismapped():  # во время работы анализ не пересчитывался
+            self.pages["analysis"].refresh()
         if self.closing:
             self.destroy()
             return
@@ -3950,7 +4003,9 @@ class App(ctk.CTk):
             self.pages["chats"].update_stats(self.chat_stats)
         if self.running_kind and not control.stop_requested():
             minutes, seconds = divmod(int(time.monotonic() - self.started_at), 60)
-            what = "решите капчу в окне браузера • " if self.waiting_captcha else "идёт "
+            what = ("решите капчу в окне браузера • " if self.waiting_captcha else
+                    ("на паузе • " if control.holding() else "ставлю на паузу — дождусь конца шага • ")
+                    if control.paused() else "идёт ")
             self.status_detail.configure(text=f"{what}{minutes:02d}:{seconds:02d}")
         if self.running_kind and time.monotonic() - self._browser_check > 0.4:
             self._browser_check = time.monotonic()

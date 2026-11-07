@@ -148,7 +148,7 @@ def run(
         if limits.per_company and vac.company:
             sent = state.company_applied(vac.company, limits.per_company_days) + planned[company_key(vac.company)]
             if sent >= limits.per_company:
-                stats.skipped[f"лимит откликов в одну компанию ([limits] per_company)"] += 1
+                stats.skipped["лимит откликов в одну компанию ([limits] per_company)"] += 1
                 stats.seen(vac, "skipped", "лимит откликов в компанию")
                 log.info(f"{tag} «{vac.title}» — в «{vac.company}» уже {sent} откл. за {limits.per_company_days} дн. "
                          "([limits] per_company), пропускаю")
@@ -349,6 +349,8 @@ def _ai_skip_reason(cfg: Config, ai, vac: Vacancy, tag: str) -> tuple[str, bool]
 
 
 def _sleep(low: float, high: float, what: str) -> None:
-    delay = random.uniform(low, high)
+    from ..web.browser import slowdown
+
+    delay = random.uniform(low, high) * slowdown()  # после капчи — дольше
     log.info(f"  ⏸ пауза {delay:.1f} с {what}")
     control.sleep(delay)

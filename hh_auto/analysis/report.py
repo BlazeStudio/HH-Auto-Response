@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import statistics
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date
@@ -213,7 +214,11 @@ def build(profile: ResumeProfile, vacancies: list[MarketVacancy], applied: set[s
     skills_of: dict[str, set[str]] = {}
     hard_of: dict[str, set[str]] = {}
     coverage: dict[str, float] = {}
-    for v in vacancies:
+    for n, v in enumerate(vacancies):
+        if n % 64 == 63:
+            # считается в фоне, а окно в это время рисуется: без уступок каждое его действие ждало бы очереди
+            # к интерпретатору, и переход на вкладку тянулся по 2 секунды
+            time.sleep(0)
         found = {vocab.key(s) for s in v.skills} - {None}
         found |= vocab.find(f"{v.title}\n{v.text}", extra=False)
         skills_of[v.id] = found

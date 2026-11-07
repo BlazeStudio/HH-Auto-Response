@@ -82,7 +82,8 @@ class PlainFrame(_Light, tkinter.Frame):
 
 
 class TextLabel(_Light, tkinter.Label):
-    """Текст: одно окно вместо трёх у CTkLabel. color, bg — (светлая, тёмная); size — как у CTkFont."""
+    """Текст: одно окно вместо трёх у CTkLabel. color, bg — (светлая, тёмная); size — как у CTkFont.
+    Выделяется мышью и копируется, как и CTkLabel, — см. install_label_selection."""
 
     def __init__(self, master, text: str = "", color=TEXT, size: int = 13, weight: str = "normal",
                  wraplength: int = 0, bg=CARD_BG, **kwargs):
@@ -92,7 +93,6 @@ class TextLabel(_Light, tkinter.Label):
         self._color, self._bg, self._size, self._weight, self._wrap = color, bg, size, weight, wraplength
         self._init_light()
         self._restyle()
-        _copy_menu(self, [("Копировать", lambda: _copy(self, self.cget("text")))])  # подпись — целиком
 
     def _restyle(self) -> None:
         scale = self._get_widget_scaling()
@@ -130,13 +130,27 @@ def _copy(widget: tkinter.Misc, text: str) -> None:
     widget.clipboard_append(text)
 
 
+# Правая кнопка мыши. На macOS в Tk это Button-2, а ещё там принят Ctrl+щелчок
+MENU_BUTTONS = ("<Button-2>", "<Button-3>", "<Control-Button-1>") if sys.platform == "darwin" else ("<Button-3>",)
+
+
 def _copy_menu(widget: tkinter.Misc, items) -> None:
     """Меню по правой кнопке: items — [(подпись, команда)]."""
     menu = tkinter.Menu(widget, tearoff=0)
     for label, command in items:
         menu.add_command(label=label, command=command)
-    for button in ("<Button-3>", "<Button-2>") if sys.platform == "darwin" else ("<Button-3>",):
+    for button in MENU_BUTTONS:
         widget.bind(button, lambda e: menu.tk_popup(e.x_root, e.y_root), add="+")
+
+
+def _wheel_to_page(widget: tkinter.Misc, event) -> str:
+    """Колесо над текстом листает страницу, а не сдвигает строки самого текста."""
+    parent = widget.master
+    while parent is not None and not hasattr(parent, "_mouse_wheel_all"):
+        parent = getattr(parent, "master", None)
+    if parent is not None:
+        parent._mouse_wheel_all(event)
+    return "break"
 
 
 def _is_copy_key(event) -> bool:
@@ -148,14 +162,17 @@ class SelectableText(_Light, tkinter.Text):
     """Текст, который можно выделить мышью и скопировать: Ctrl+C (в любой раскладке), правая кнопка →
     «Копировать». Для подсказок, путей и текста ошибок. Высота сама подстраивается под текст и ширину.
 
-    width_px — ширина, по которой считать перенос строк, пока виджет ещё не на экране (как wraplength)."""
+    width_px — ширина, по которой считать перенос строк, пока виджет ещё не на экране (как wraplength);
+    quick — считать её грубо, по абзацам (для десятков текстов отчёта: точная высота всё равно посчитается,
+    когда текст появится на экране, а пословный замер занимал полсекунды)."""
 
     def __init__(self, master, text: str = "", color=TEXT, size: int = 13, weight: str = "normal", bg=CARD_BG,
-                 width_px: int = 600, **kwargs):
+                 width_px: int = 600, quick: bool = False, **kwargs):
         tkinter.Text.__init__(self, master, bd=0, highlightthickness=0, relief="flat", wrap="word", height=1,
                               width=1, padx=0, pady=0, insertwidth=0, takefocus=0, cursor="xterm", **kwargs)
         self._color, self._bg, self._size, self._weight, self._width_px = color, bg, size, weight, width_px
         self._text = text
+        self._quick, self._measure = quick, None
         self._init_light()
         self.bind("<Configure>", lambda _e: self._fit())
         # ширина могла смениться, пока текст был не на экране (окно ещё не показано, страница скрыта), — тогда
@@ -174,6 +191,7 @@ class SelectableText(_Light, tkinter.Text):
         scale = self._get_widget_scaling()
         mode = self._apply_appearance_mode
         self._font = (_family(), -round(self._size * scale), self._weight)
+        self._measure = None
         tkinter.Text.configure(self, fg=mode(self._color), bg=mode(self._bg), font=self._font,
                                selectbackground=mode(ACCENT_SOFT), selectforeground=mode(TEXT),
                                inactiveselectbackground=mode(ACCENT_SOFT))
@@ -201,12 +219,22 @@ class SelectableText(_Light, tkinter.Text):
                 lines = self._estimate(self.winfo_width())
         else:
             lines = self._estimate(round(self._width_px * self._get_widget_scaling()))
-        if int(self.cget("height")) != max(lines, 1):
-            tkinter.Text.configure(self, height=max(lines, 1))
+        lines = max(lines, 1) + self._extra_lines()
+        if int(self.cget("height")) != lines:
+            tkinter.Text.configure(self, height=lines)
+
+    def _extra_lines(self) -> int:
+        return 0
 
     def _estimate(self, width: int) -> int:
         import tkinter.font as tkfont
 
+        if self._quick:
+            if self._measure is None:
+                self._measure = tkfont.Font(root=self, font=self._font)
+            # ширина абзаца целиком на ширину строки, с запасом на перенос по словам
+            return sum(max(1, -(-round(self._measure.measure(paragraph) * 1.08) // max(width, 1)))
+                       for paragraph in self._text.split("\n"))
         font = tkfont.Font(root=self, font=self._font)
         lines = 0
         for paragraph in self._text.split("\n"):
@@ -238,17 +266,123 @@ class SelectableText(_Light, tkinter.Text):
         return None
 
     def _wheel(self, event):
-        """Колесо над текстом листает страницу, а не сдвигает строки самого текста."""
-        widget = self.master
-        while widget is not None and not hasattr(widget, "_mouse_wheel_all"):
-            widget = getattr(widget, "master", None)
-        if widget is not None:
-            widget._mouse_wheel_all(event)
-        return "break"
+        return _wheel_to_page(self, event)
 
     def destroy(self):
         self._destroy_light()
         tkinter.Text.destroy(self)
+
+
+class RichText(SelectableText):
+    """Строки с колонками и цветами — таблица одним текстом: выделяется и копируется как обычный текст, столбцы
+    разделены табуляцией (при вставке в Excel расходятся по ячейкам). И рисуется в разы быстрее сетки из
+    десятков подписей.
+
+    tabs — столбцы: [(x, "left" | "right")], x — в точках или доля ширины (меньше 1); indent — отступ
+    перенесённых строк (длинный текст в последнем столбце продолжается под ним); wrap="none" — таблица
+    не переносится: в узком окне правый край просто не виден; spacing — промежуток после каждой строки (точки).
+    Шрифт у всех строк один — иначе высота, посчитанная по строкам, не совпала бы с настоящей."""
+
+    def __init__(self, master, tabs=(), indent: int = 0, wrap: str = "word", size: int = 12, bg=CARD_BG,
+                 width_px: int = 760, spacing: int = 0):
+        self._tabs, self._indent, self._tab_spec, self._spacing = list(tabs), indent, None, spacing
+        self._wrap_mode = wrap
+        self._styles: dict[str, tuple] = {}  # тег → (цвет, жирный)
+        self._link_tags: list[str] = []
+        super().__init__(master, "", size=size, bg=bg, width_px=width_px, quick=True)
+        tkinter.Text.configure(self, wrap=wrap)
+        self.bind("<Configure>", lambda _e: self._apply_tabs(), add="+")
+
+    def _restyle(self) -> None:
+        super()._restyle()
+        scale = self._get_widget_scaling()
+        for tag, (color, bold) in self._styles.items():
+            self.tag_configure(tag, foreground=self._apply_appearance_mode(color),
+                               font=(_family(), -round(self._size * scale), "bold" if bold else "normal"))
+        self.tag_configure("row", lmargin2=round(self._indent * scale), spacing3=round(self._spacing * scale))
+        self._tab_spec = None
+        self._apply_tabs()
+
+    def _extra_lines(self) -> int:
+        """Промежутки между строками — в строках (Tk считает высоту по строкам без них)."""
+        if not self._spacing or not self._text:
+            return 0
+        import tkinter.font as tkfont
+
+        rows = self._text.count("\n") + 1
+        line = tkfont.Font(root=self, font=self._font).metrics("linespace")
+        return -(-rows * round(self._spacing * self._get_widget_scaling()) // max(line, 1))
+
+    def _apply_tabs(self) -> None:
+        if not self._tabs:
+            return
+        scale = self._get_widget_scaling()
+        width = self.winfo_width() if self.winfo_ismapped() and self.winfo_width() > 20 else self._width_px * scale
+        spec, last = [], 0
+        for x, align in self._tabs:
+            px = max(round(x * width) if x < 1 else round(x * scale), last + 1)
+            spec += [px, align]
+            last = px
+        if spec != self._tab_spec:
+            self._tab_spec = spec
+            tkinter.Text.configure(self, tabs=spec)
+
+    def _style(self, color, bold: bool) -> str:
+        for tag, style in self._styles.items():
+            if style == (color, bold):
+                return tag
+        tag = f"style{len(self._styles)}"
+        self._styles[tag] = (color, bold)
+        size = -round(self._size * self._get_widget_scaling())
+        self.tag_configure(tag, foreground=self._apply_appearance_mode(color),
+                           font=(_family(), size, "bold" if bold else "normal"))
+        return tag
+
+    def set_rows(self, rows) -> None:
+        """rows — строки, строка — ячейки: текст или (текст, цвет[, жирный[, ссылка]])."""
+        tkinter.Text.configure(self, state="normal")
+        self.delete("1.0", "end")
+        for tag in self._link_tags:
+            self.tag_delete(tag)
+        self._link_tags = []
+        plain = []
+        for n, row in enumerate(rows):
+            cells = []
+            for i, cell in enumerate(row):
+                text, color, bold, link = (((cell,) if isinstance(cell, str) else tuple(cell)) + (None,) * 3)[:4]
+                text, bold = text or "", bool(bold)
+                if i:
+                    self.insert("end", "\t", "row")
+                tags = ["row"]
+                if color is not None or bold:
+                    tags.append(self._style(color if color is not None else self._color, bold))
+                if link:
+                    tag = f"link{len(self._link_tags)}"
+                    self._link_tags.append(tag)
+                    tags.append(tag)
+                    self.tag_bind(tag, "<Button-1>", lambda _e, url=link: _open_link(url))
+                    self.tag_bind(tag, "<Enter>", lambda _e: tkinter.Text.configure(self, cursor="hand2"))
+                    self.tag_bind(tag, "<Leave>", lambda _e: tkinter.Text.configure(self, cursor="xterm"))
+                self.insert("end", text, tuple(tags))
+                cells.append(text)
+            if n + 1 < len(rows):
+                self.insert("end", "\n", "row")
+            plain.append("\t".join(cells))
+        tkinter.Text.configure(self, state="disabled")
+        self._text = "\n".join(plain)
+        self._apply_tabs()
+        self._fit()
+
+    def _estimate(self, width: int) -> int:
+        if self._wrap_mode == "none":
+            return self._text.count("\n") + 1
+        return super()._estimate(width)
+
+
+def _open_link(url: str) -> None:
+    import webbrowser
+
+    webbrowser.open(url)
 
 
 @lru_cache(maxsize=None)
@@ -940,12 +1074,35 @@ class QuietToplevel:
 _KEYCODES = {67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>>", 65: "<<SelectAll>>", 90: "<<Undo>>", 89: "<<Redo>>"}
 _CYRILLIC = {"cyrillic_es": "<<Copy>>", "cyrillic_em": "<<Paste>>", "cyrillic_che": "<<Cut>>",
              "cyrillic_ef": "<<SelectAll>>", "cyrillic_ya": "<<Undo>>", "cyrillic_en": "<<Redo>>"}  # Linux, macOS
+# macOS, если keysym незнакомый: физические клавиши C, V, X, A, Z, Y
+_MAC_KEYS = {8: "<<Copy>>", 9: "<<Paste>>", 7: "<<Cut>>", 0: "<<SelectAll>>", 6: "<<Undo>>", 16: "<<Redo>>"}
+_SHORTCUT = "⌘" if sys.platform == "darwin" else "Ctrl+"
+
+
+def shortcut_event(keysym: str, keycode: int, shift: bool, platform: str = sys.platform) -> str | None:
+    """Какое действие вызвать вручную. None — ничего: стандартные сочетания Tk обрабатывает сам (латиница)."""
+    low = keysym.lower()
+    latin = len(keysym) == 1 and keysym.isascii()
+    if platform == "win32":
+        name = _KEYCODES.get(keycode)
+    elif platform == "darwin":
+        name = _CYRILLIC.get(low)
+        if name is None and not latin:  # в keycode виртуальная клавиша: верхний байт, в старых Tk — третий
+            name = _MAC_KEYS.get(keycode >> 24 or (keycode >> 16) & 0xFF)
+    else:
+        name = _CYRILLIC.get(low) or ("<<Undo>>" if low == "z" else None)
+    if name == "<<Undo>>" and shift:
+        return "<<Redo>>"  # Ctrl+Shift+Z — как в браузере и редакторах
+    return None if latin else name
 
 
 def install_editing(root: tkinter.Misc) -> None:
     """Для всех полей ввода приложения: сочетания в любой раскладке, Ctrl+Z / Ctrl+Y (и Ctrl+Shift+Z),
-    меню правой кнопки «Отменить · Вырезать · Копировать · Вставить · Выделить всё»."""
-    root.bind_all("<Control-KeyPress>", _layout_shortcut, add="+")
+    меню правой кнопки «Отменить · Вырезать · Копировать · Вставить · Выделить всё». И для всего текста:
+    выделение мышью и копирование — см. install_label_selection."""
+    # На macOS сочетания идут с Command: по одному только Control их в другой раскладке никто не ловил, и в
+    # русской раскладке не работали ни ⌘V, ни ⌘A, ни остальные. В английской работали — поэтому «иногда»
+    root.bind_all("<Command-KeyPress>" if sys.platform == "darwin" else "<Control-KeyPress>", _layout_shortcut, add="+")
     root.bind_all("<FocusIn>", _focus_in, add="+")
     root.bind_all("<FocusOut>", _focus_out, add="+")
     root.bind_all("<KeyRelease>", lambda e: _EntryHistory.touch(e.widget), add="+")
@@ -956,23 +1113,19 @@ def install_editing(root: tkinter.Misc) -> None:
     root.bind_class("Text", "<<SelectAll>>", lambda e: e.widget.tag_add("sel", "1.0", "end-1c"))
     root.bind_class("Entry", "<<Undo>>", lambda e: _EntryHistory.step(e.widget, undo=True))
     root.bind_class("Entry", "<<Redo>>", lambda e: _EntryHistory.step(e.widget, undo=False))
-    root.bind_all("<Button-3>", _edit_menu, add="+")
+    # Tk отдаёт фокус по щелчку только изменяемому тексту: в окнах с текстом только для чтения
+    # («Что получает нейросеть», новая версия) выделить было можно, а Ctrl+C уходил в другое поле
+    root.bind_class("Text", "<Button-1>", lambda e: e.widget.focus_set(), add="+")
+    for button in MENU_BUTTONS:
+        root.bind_all(button, _edit_menu, add="+")
+    install_label_selection(root)
 
 
 def _layout_shortcut(event):
     widget = event.widget
     if not isinstance(widget, (tkinter.Entry, tkinter.Text)):
         return None
-    keysym = event.keysym or ""
-    shift = bool(event.state & 0x1)
-    if sys.platform == "win32":
-        name = _KEYCODES.get(event.keycode)
-    else:
-        name = _CYRILLIC.get(keysym.lower()) or ("<<Undo>>" if keysym.lower() == "z" else None)
-    if name == "<<Undo>>" and shift:
-        name = "<<Redo>>"  # Ctrl+Shift+Z — как в браузере и редакторах
-    elif len(keysym) == 1 and keysym.isascii():
-        return None  # латиница: Tk сам превратил сочетание в <<Copy>> и т.п.
+    name = shortcut_event(event.keysym or "", event.keycode, bool(event.state & 0x1))
     if name is None:
         return None
     widget.event_generate(name)
@@ -1075,7 +1228,7 @@ class _EntryHistory:
 def _edit_menu(event):
     """Правая кнопка в поле ввода. У виджетов со своим меню (подсказки, журнал) — их меню."""
     widget = event.widget
-    if not isinstance(widget, (tkinter.Entry, tkinter.Text)) or widget.bind("<Button-3>"):
+    if not isinstance(widget, (tkinter.Entry, tkinter.Text)) or any(widget.bind(b) for b in MENU_BUTTONS):
         return None
     editable = _editable(widget)
     try:
@@ -1090,21 +1243,194 @@ def _edit_menu(event):
         widget.event_generate(name)
 
     if editable:
-        menu.add_command(label="Отменить", accelerator="Ctrl+Z", command=lambda: send("<<Undo>>"))
+        menu.add_command(label="Отменить", accelerator=f"{_SHORTCUT}Z", command=lambda: send("<<Undo>>"))
         menu.add_separator()
-        menu.add_command(label="Вырезать", accelerator="Ctrl+X", command=lambda: send("<<Cut>>"),
+        menu.add_command(label="Вырезать", accelerator=f"{_SHORTCUT}X", command=lambda: send("<<Cut>>"),
                          state="normal" if has_selection else "disabled")
-    menu.add_command(label="Копировать", accelerator="Ctrl+C", command=lambda: send("<<Copy>>"),
+    menu.add_command(label="Копировать", accelerator=f"{_SHORTCUT}C", command=lambda: send("<<Copy>>"),
                      state="normal" if has_selection else "disabled")
     if editable:
-        menu.add_command(label="Вставить", accelerator="Ctrl+V", command=lambda: send("<<Paste>>"))
+        menu.add_command(label="Вставить", accelerator=f"{_SHORTCUT}V", command=lambda: send("<<Paste>>"))
     menu.add_separator()
-    menu.add_command(label="Выделить всё", accelerator="Ctrl+A", command=lambda: send("<<SelectAll>>"))
+    menu.add_command(label="Выделить всё", accelerator=f"{_SHORTCUT}A", command=lambda: send("<<SelectAll>>"))
     try:
         menu.tk_popup(event.x_root, event.y_root)
     finally:
         menu.grab_release()
     return "break"
+
+
+# ───────────────────── выделение и копирование текста в подписях ─────────────────────
+
+class _Selection:
+    """Подпись, которую сейчас выделяют: текст поверх неё и точка, где нажали кнопку мыши."""
+
+    box: tkinter.Text | None = None
+    press: tuple | None = None  # (подпись, x, y)
+    start: str = ""  # где в тексте начали выделять
+
+
+def _is_text_label(widget) -> bool:
+    """Подпись, а не часть кнопки или флажка: внутри них тоже tkinter.Label, но это функции, а не текст."""
+    if isinstance(widget, TextLabel):
+        return True
+    return isinstance(widget, tkinter.Label) and isinstance(widget.master, ctk.CTkLabel)
+
+
+def _selectable(widget) -> bool:
+    """Подпись можно выделять мышью. Те, на которые нажимают (ссылки, строки, мини-окно), левую кнопку заняли."""
+    return (_is_text_label(widget) and bool(str(widget.cget("text")).strip()) and not widget.bind("<Button-1>")
+            and str(widget.cget("cursor")) != "hand2")
+
+
+def install_label_selection(root: tkinter.Misc) -> None:
+    """Любую подпись можно выделить мышью и скопировать: Ctrl+C или правая кнопка → «Копировать».
+
+    Подпись — tkinter.Label: одно окно, и ширина по тексту, зато выделять в нём Tk не умеет. Менять сотни подписей
+    на Text нельзя: страницы стали бы открываться заметно медленнее, а ширина «по тексту» потерялась бы. Поэтому Text
+    с тем же шрифтом, цветом и расположением строк появляется поверх подписи, только когда её начали выделять.
+    Кнопки, флажки, вкладки и варианты выбора не выделяются — это функции, а не текст."""
+    root.bind_class("Label", "<Enter>", _label_enter, add="+")
+    root.bind_class("Label", "<Button-1>", _label_press, add="+")
+    root.bind_class("Label", "<B1-Motion>", _label_drag, add="+")
+    root.bind_class("Label", "<ButtonRelease-1>", _label_release, add="+")
+    root.bind_class("Label", "<Double-Button-1>", _label_double, add="+")
+    for button in MENU_BUTTONS:
+        root.bind_class("Label", button, _label_menu, add="+")
+    root.bind_all("<Button-1>", _click_elsewhere, add="+")
+
+
+def _label_enter(event) -> None:
+    widget = event.widget
+    if _selectable(widget) and not str(widget.cget("cursor")):
+        tkinter.Label.configure(widget, cursor="xterm")
+
+
+def _label_press(event) -> None:
+    _Selection.press = (event.widget, event.x, event.y) if _selectable(event.widget) else None
+
+
+def _label_drag(event) -> None:
+    press = _Selection.press
+    if press is None or press[0] is not event.widget:
+        return
+    box = _Selection.box
+    if box is None or box.master is not event.widget:
+        if abs(event.x - press[1]) + abs(event.y - press[2]) < 3:
+            return  # простой щелчок: окно поверх подписи не создаём
+        box = _open_box(event.widget)
+        _Selection.start = _closest_gap(box, press[1], press[2])
+    _select(box, _Selection.start, _closest_gap(box, event.x, event.y))
+
+
+def _label_release(event) -> None:
+    _Selection.press = None
+    box = _Selection.box
+    if box is not None and box.master is event.widget and not box.tag_ranges("sel"):
+        _close_box()
+
+
+def _label_double(event) -> None:
+    """Двойной щелчок — слово."""
+    if _selectable(event.widget):
+        box = _open_box(event.widget)
+        at = f"@{event.x},{event.y}"
+        box.tag_add("sel", f"{at} wordstart", f"{at} wordend")
+    _Selection.press = None
+
+
+def _label_menu(event):
+    label = event.widget
+    if not _is_text_label(label) or not str(label.cget("text")).strip():
+        return None
+    text = str(label.cget("text"))
+    menu = tkinter.Menu(label, tearoff=0)
+    menu.add_command(label="Копировать", command=lambda: _copy(label, text))
+    try:
+        menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        menu.grab_release()
+    return "break"
+
+
+def _click_elsewhere(event) -> None:
+    box = _Selection.box
+    if box is not None and event.widget is not box and event.widget is not box.master:
+        _close_box()
+
+
+def _close_box(_event=None) -> None:
+    box, _Selection.box = _Selection.box, None
+    if box is not None:
+        box.destroy()
+
+
+def _closest_gap(box: tkinter.Text, x: int, y: int) -> str:
+    """Промежуток между буквами под указателем. Ушли выше или ниже подписи — до начала или конца текста."""
+    if y < 0:
+        return "1.0"
+    if y >= box.winfo_height():
+        return "end-1c"
+    return str(box.tk.call("tk::TextClosestGap", box, x, y))
+
+
+def _select(box: tkinter.Text, start: str, end: str) -> None:
+    box.tag_remove("sel", "1.0", "end")
+    box.tag_add("sel", *((end, start) if box.compare(start, ">", end) else (start, end)))
+
+
+def _open_box(label: tkinter.Label) -> tkinter.Text:
+    """Text поверх подписи: те же шрифт, цвета и положение строк, что у tkinter.Label."""
+    _close_box()
+    text, font = str(label.cget("text")), label.cget("font")
+    width, height = label.winfo_width(), label.winfo_height()
+    # «186», «232.5» (customtkinter умножает на масштаб экрана) или «2c» — в точках экрана
+    wrap = round(label.winfo_fpixels(label.cget("wraplength") or 0))
+    dark = 1 if ctk.get_appearance_mode() == "Dark" else 0
+    box = tkinter.Text(label, bd=0, highlightthickness=0, relief="flat", padx=0, pady=0, width=1, height=1, font=font,
+                       wrap="word" if wrap else "none", insertwidth=0, takefocus=0, cursor="xterm",
+                       fg=label.cget("foreground"), bg=label.cget("background"), selectbackground=ACCENT_SOFT[dark],
+                       selectforeground=TEXT[dark], inactiveselectbackground=ACCENT_SOFT[dark])
+    measure = (int(box.tk.call("font", "measure", font, line)) for line in text.split("\n"))
+    block = min(max(measure), wrap) if wrap else max(measure)
+    free = max(0, width - block)
+    anchor = str(label.cget("anchor"))
+    left = 0 if "w" in anchor else free if "e" in anchor else free // 2
+    # Label переносит слово, если вместе с пробелом за ним оно не влезает в wraplength, а Text пробелу разрешает
+    # вылезать: с запасом на пробел строки ломаются там же, где в подписи
+    space = int(box.tk.call("font", "measure", font, " ")) if wrap and block >= wrap else 0
+    box.tag_configure("line", justify=str(label.cget("justify")), lmargin1=left, lmargin2=left,
+                      rmargin=max(0, width - left - block + space))
+    box.insert("1.0", text, "line")
+    box.place(x=0, y=0, relwidth=1, relheight=1)
+    box.update_idletasks()
+    counted = box.count("1.0", "end-1c", "update", "displaylines")
+    lines = (counted[0] if isinstance(counted, tuple) else counted or 0) + 1
+    linespace = int(box.tk.call("font", "metrics", font, "-linespace"))
+    if "n" not in anchor:
+        box.configure(pady=max(0, (height - lines * linespace) // 2))
+    box.configure(state="disabled")
+    for wheel in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        box.bind(wheel, lambda e, widget=box: _wheel_to_page(widget, e))
+    box.bind("<Escape>", _close_box)
+    box.focus_set()
+    _Selection.box = box
+    _watch_box(box, label, text)
+    return box
+
+
+def _watch_box(box: tkinter.Text, label: tkinter.Label, text: str) -> None:
+    """Подпись сменила текст (счётчик, состояние) или её больше не видно — поверх неё не должно остаться старого."""
+    if _Selection.box is not box:
+        return
+    try:
+        current = label.winfo_viewable() and str(label.cget("text")) == text
+    except tkinter.TclError:
+        current = False
+    if current:
+        box.after(400, _watch_box, box, label, text)
+    else:
+        _close_box()
 
 
 # ───────────────────── график для вкладки «Статистика» ─────────────────────

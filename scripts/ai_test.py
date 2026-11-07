@@ -108,6 +108,8 @@ def main() -> int:
         print(f"\nЗаполнено за {seconds:.1f} с" + ("" if fill.can_answer else f" — ИИ отказался: {fill.reason}"))
         for answer in fill.answers:
             print(f"  {answer.question.text}\n    → {answer.describe()}")
+        for note in pg.client.notes:
+            print(f"  страховка: {note}")
         return 0
 
     if args.demo:

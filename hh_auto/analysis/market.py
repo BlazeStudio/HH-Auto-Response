@@ -38,6 +38,10 @@ PER_PAGE = 100
 # Чем делить поиск, в котором больше HH_CAP: сначала опытом (он у вакансии один — части не пересекаются),
 # потом форматом работы (их бывает несколько — одна вакансия попадёт в две части, но считается один раз)
 SPLITS = (("experience", "опыт", EXPERIENCE), ("work_format", "формат", WORK_FORMAT))
+# Темп как у человека, листающего выдачу: пауза между страницами и передышка каждые BREAK_EVERY страниц.
+# Полная проверка — десятки страниц подряд: быстрее hh начинал показывать капчу
+PAGE_PAUSE = (3.0, 6.0)
+BREAK_EVERY, BREAK = 20, (20.0, 40.0)
 POOL_DAYS = 30  # анализ — по вакансиям, которые видели за последний месяц
 NET = 0.87  # «до вычета налогов» → на руки (НДФЛ 13%)
 _lock = threading.Lock()
@@ -89,6 +93,7 @@ def net_salary(meta: VacancyMeta) -> int | None:
 class MarketStore:
     def __init__(self, root: Path):
         self.path = root / "data" / FILE
+        self._own: tuple | None = None  # (отметка файла, данные) — что этот же объект записал в прошлый раз
 
     def load(self) -> dict:
         try:
@@ -105,7 +110,8 @@ class MarketStore:
         """Записать вакансии со страницы выдачи label. Возвращает, сколько новых."""
         today = date.today().isoformat()
         with _lock:
-            data = self.load()
+            # тот же запуск пишет страницу за страницей: файл в мегабайты не перечитываем, если его не трогали
+            data = self._own[1] if self._own and self._own[0] == self.stamp() else self.load()
             vacancies = data["vacancies"]
             fresh = 0
             for meta in metas:
@@ -129,6 +135,7 @@ class MarketStore:
             temp = self.path.with_suffix(".tmp")
             temp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
             temp.replace(self.path)
+            self._own = (self.stamp(), data)
             return fresh
 
     def _read(self) -> dict:
@@ -229,7 +236,7 @@ def scan(page, cfg: Config, root: Path, query: str, result: dict | None = None) 
     (её и стоит выбрать для сравнения)."""
     from ..hh.search import results_page_url
     from ..web.auth import is_auth_url
-    from ..web.browser import FatalError, open_url, wait_captcha
+    from ..web.browser import FatalError, open_url, slowdown, wait_captcha
 
     result = result if result is not None else {}
     result.setdefault("added", 0)
@@ -246,8 +253,12 @@ def scan(page, cfg: Config, root: Path, query: str, result: dict | None = None) 
     def open_page(url: str, page_num: int) -> tuple[dict[str, VacancyMeta], int | None]:
         nonlocal opened
         control.check()
-        if opened:  # пауза между страницами, как у человека
-            control.sleep(random.uniform(1.5, 3.0))
+        if opened and opened % BREAK_EVERY == 0:
+            rest = random.uniform(*BREAK) * slowdown()
+            log.info(f"  ⏸ передышка {rest:.0f} с — просмотрено {opened} стр. подряд")
+            control.sleep(rest)
+        elif opened:  # пауза между страницами, как у человека; после капчи — дольше
+            control.sleep(random.uniform(*PAGE_PAUSE) * slowdown())
         opened += 1
         page_url = results_page_url(url, page_num)
         log.debug(f"  открываю: {page_url}")

@@ -62,6 +62,20 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python packaging/build.py
 
+      # Окно собранного приложения открывается и работает, самопроверка проходит. Без этого шага в релиз 1.1.1-beta
+      # ушла Linux-версия, которая падала при запуске: --self-test окна не открывает и поломку не видел
+      - name: Собранное приложение запускается
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get install -y --no-install-recommends xvfb
+            xvfb-run -a -s "-screen 0 1400x900x24" python packaging/check_build.py
+          else
+            python packaging/check_build.py
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: HH-Auto-Response-${{ runner.os }}-${{ runner.arch }}

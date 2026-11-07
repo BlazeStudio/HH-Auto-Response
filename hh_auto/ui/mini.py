@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import customtkinter as ctk
 from PIL import Image, ImageDraw
 
+from ..core import control
 from ..web import window as browser_window
 from .theme import (ACCENT, ACCENT_FILL, ACCENT_HOVER, ACCENT_SOFT, APP_NAME, BORDER, CARD_BG, FILL, FILL_HOVER, GREEN,
                     MAIN_BG, MUTED, RED_FILL, RED_HOVER, SIDEBAR_BG, TEXT, apply_app_icon, icon)
@@ -254,9 +255,9 @@ class MiniWindow(QuietToplevel, ctk.CTkToplevel):
                 return right - width, bottom - height
         if browser_window.supported():  # правый нижний угол рабочей области монитора, где окно программы
             near = int(self.app.wm_frame(), 16)
-            left, top, right, bottom = browser_window._work_area(near)
+            _left, _top, right, bottom = browser_window._work_area(near)
         else:
-            left, top, right, bottom = 0, 0, self.winfo_screenwidth(), self.winfo_screenheight() - 48
+            right, bottom = self.winfo_screenwidth(), self.winfo_screenheight() - 48
         margin = round(self.MARGIN * ctk.ScalingTracker.get_window_scaling(self))
         return right - width - margin, bottom - height - margin
 
@@ -328,7 +329,9 @@ class MiniWindow(QuietToplevel, ctk.CTkToplevel):
     # ---------- содержимое ----------
 
     def _action(self) -> None:
-        if self.app.running_kind:
+        if self.app.running_kind and control.paused():
+            self.app.resume()
+        elif self.app.running_kind:
             self.app.stop()
         else:
             self.app.start_responses(False)
@@ -372,8 +375,8 @@ class MiniWindow(QuietToplevel, ctk.CTkToplevel):
             self.status.set(color=color)
         if abs(self.progress.get() - progress) > 0.001:
             self.progress.set(progress)
-        running = bool(app.running_kind)
-        action = "■  Остановить" if running else "▶  Начать отклики"
+        running = bool(app.running_kind) and not control.paused()  # на паузе — «Продолжить»
+        action = "■  Остановить" if running else "▶  Продолжить" if app.running_kind else "▶  Начать отклики"
         if self.action.cget("text") != action:
             self.action.configure(text=action, fg_color=RED_FILL if running else ACCENT_FILL,
                                   hover_color=RED_HOVER if running else ACCENT_HOVER)

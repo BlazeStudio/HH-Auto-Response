@@ -1,5 +1,7 @@
 # Публикует сайт из папки site/ на GitHub Pages.
 # Один раз нужно включить в настройках репозитория: Settings → Pages → Source → GitHub Actions.
+# Сам запускается только при push в main с изменениями сайта. Со сборкой релиза не связан: новую версию
+# и ссылки на её архивы страница берёт из GitHub API прямо в браузере (site/src/scripts/github.ts).
 
 name: Сайт
 
@@ -9,11 +11,6 @@ on:
     paths:
       - site/**
       - .github/workflows/pages.yml
-  # После сборки релиза, чтобы новая версия сразу попала в HTML. Прямо на событие release нельзя:
-  # оно запускается от тега, а окружение github-pages принимает только ветку main.
-  workflow_run:
-    workflows: [Сборка]
-    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -27,7 +24,6 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

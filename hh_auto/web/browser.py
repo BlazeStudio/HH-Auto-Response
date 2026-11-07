@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import random
 import threading
 import time
 from pathlib import Path
@@ -350,8 +351,21 @@ def captcha_shown(page: Page) -> bool:
         return False
 
 
+# Капча — знак, что hh считает, что мы торопимся. Обходить её программа не будет: она замедляется сама.
+SLOW_FOR = 20 * 60  # с: столько после капчи паузы между действиями длиннее
+_captchas: list[float] = []  # когда за этот сеанс hh показывал капчу (time.monotonic)
+
+
+def slowdown() -> float:
+    """Во сколько раз удлинить паузы: после капчи за последние SLOW_FOR — вдвое, после двух и больше — втрое."""
+    now = time.monotonic()
+    recent = sum(1 for moment in _captchas if now - moment < SLOW_FOR)
+    return 1.0 if not recent else 2.0 if recent == 1 else 3.0
+
+
 def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
-    """Капчу не обходим и не решаем: зовём человека и ждём, пока он её решит. True — капча была."""
+    """Капчу не обходим и не решаем: зовём человека и ждём, пока он её решит. True — капча была.
+    После неё — передышка и более длинные паузы (slowdown): чаще всего капча — от слишком частых действий."""
     if not captcha_shown(page):
         return False
     if _cfg is not None and _cfg.browser.headless:
@@ -368,6 +382,11 @@ def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
         control.sleep(2)
     log.success("  ✓ капча пройдена, продолжаю")
     hide_after_user(was_hidden)
+    _captchas.append(time.monotonic())
+    rest = random.uniform(20, 40) * slowdown() / 2
+    log.info(f"  hh просит помедленнее: передышка {rest:.0f} с, следующие {SLOW_FOR // 60} мин паузы "
+             f"между действиями ×{slowdown():g}")
+    control.sleep(rest)
     return True
 
 
