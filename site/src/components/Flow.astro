@@ -1,0 +1,38 @@
+---
+// Схема работы из техпаспорта: шесть шагов на общей сетке линий.
+const steps = [
+  { title: 'Поиск', text: 'По вашей ссылке из hh или по запросу, страница за страницей.' },
+  { title: 'Отбор', text: 'Фильтры по словам и ИИ-фильтр по вашему описанию.' },
+  { title: 'Письмо', text: 'Нейросеть пишет письмо под требования вакансии, или берётся ваш шаблон.' },
+  { title: 'Отклик', text: 'Отправляет отклик и отвечает на анкету работодателя.' },
+  { title: 'Чаты', text: 'Читает отказы и отвечает роботам. Приглашения оставляет вам.' },
+  { title: 'Отчёт', text: 'Таблица Excel, статистика и уведомления в Telegram.' },
+];
+---
+
+<section id="flow" class="section scroll-mt-10">
+  <div class="wrap">
+    <div class="reveal max-w-3xl">
+      <p class="kicker" data-num="01">Схема работы</p>
+      <h2 class="h2">
+        Шесть шагов от поиска до отчёта.
+        <span class="dim">Пробный прогон покажет их все и ничего не отправит.</span>
+      </h2>
+    </div>
+
+    <ol class="flow reveal mt-10 lg:mt-12">
+      {
+        steps.map((step, index) => (
+          <li class="flow-step">
+            <div class="flex items-center justify-between font-mono text-xs">
+              <span class="text-hh">{String(index + 1).padStart(2, '0')}</span>
+              <span class="flow-arrow text-fg-3" aria-hidden="true">{index < steps.length - 1 ? '→' : '■'}</span>
+            </div>
+            <p class="mt-5 text-lg font-semibold tracking-tight">{step.title}</p>
+            <p class="mt-1.5 text-sm leading-relaxed text-fg-2 text-pretty">{step.text}</p>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</section>

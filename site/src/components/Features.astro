@@ -28,10 +28,10 @@ const extras = [
 ] as const;
 ---
 
-<section id="features" class="section scroll-mt-10">
+<section id="features" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
   <div class="wrap">
     <div class="reveal max-w-3xl">
-      <p class="kicker">Что умеет робот</p>
+      <p class="kicker" data-num="02">Что умеет робот</p>
       <h2 class="h2">Всё, на что раньше уходили вечера. <span class="dim">Один раз настроили, дальше он сам.</span></h2>
     </div>
 
@@ -79,8 +79,8 @@ const extras = [
                 <li class="min-w-0">
                   <span
                     class:list={[
-                      'block h-7 rounded-md',
-                      index < 3 ? 'bg-hh/70' : index === 3 ? 'bg-hh/20 ring-1 ring-hh/70' : 'bg-white/6',
+                      'block h-7 rounded-sm',
+                      index < 3 ? 'bg-hh/70' : index === 3 ? 'bg-hh/20 ring-1 ring-hh/70' : 'bg-tint/6',
                     ]}
                   />
                   <span class="mt-1 block text-center font-mono text-[0.625rem] text-fg-3">{time.slice(0, 2)}</span>

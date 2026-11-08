@@ -8,9 +8,9 @@ const { stars } = await getRepoSnapshot();
 
 <header class="site-header" data-header>
   <div class="wrap flex h-16 items-center justify-between gap-4">
-    <a href={sitePath('/')} class="flex items-center gap-2.5 rounded-lg" aria-label="HH Auto, на главную">
-      <img src={sitePath('/logo.png')} width="30" height="30" alt="" class="size-7.5 rounded-lg" />
-      <span class="text-[1.0625rem] font-semibold tracking-tight whitespace-nowrap">HH Auto</span>
+    <a href={sitePath('/')} class="flex items-center gap-2.5 rounded-md" aria-label="HH-Auto-Response, на главную">
+      <img src={sitePath('/logo.png')} width="30" height="30" alt="" class="size-7.5 rounded-md" />
+      <span class="text-[1.0625rem] font-semibold tracking-tight whitespace-nowrap">HH-Auto-Response</span>
     </a>
 
     <nav class="hidden items-center gap-0.5 whitespace-nowrap lg:flex" aria-label="Разделы сайта">
@@ -24,10 +24,10 @@ const { stars } = await getRepoSnapshot();
         aria-label={stars === null ? 'Поставить звезду на GitHub' : `Поставить звезду на GitHub, сейчас звёзд: ${stars}`}
       >
         <Icon name="star" class="size-4 text-warn" />
-        <span class="hidden whitespace-nowrap sm:inline">Star на GitHub</span>
+        <span class="hidden whitespace-nowrap sm:inline lg:hidden xl:inline">Star на GitHub</span>
         <span
           data-stars
-          class="rounded-md bg-white/8 px-1.5 text-[0.8125rem] tabular-nums"
+          class="rounded-sm bg-tint/8 px-1.5 font-mono text-xs tabular-nums"
           hidden={stars === null}
         >
           {stars ?? ''}
@@ -39,7 +39,6 @@ const { stars } = await getRepoSnapshot();
         <nav class="menu-panel" aria-label="Разделы сайта">
           {nav.map((item) => <a href={item.href}>{item.label}</a>)}
           <a href={sitePath('/safety')}>Безопасность</a>
-          <a href={sitePath('/contacts')}>Контакты</a>
         </nav>
       </details>
     </div>

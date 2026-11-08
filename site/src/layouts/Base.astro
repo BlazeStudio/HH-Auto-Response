@@ -1,8 +1,8 @@
 ---
-import '@fontsource-variable/onest';
-import '@fontsource-variable/jetbrains-mono';
+import '@fontsource-variable/geologica';
+import '@fontsource-variable/martian-mono';
 import '../styles/global.css';
-import onestCyrillic from '@fontsource-variable/onest/files/onest-cyrillic-wght-normal.woff2?url';
+import geologicaCyrillic from '@fontsource-variable/geologica/files/geologica-cyrillic-wght-normal.woff2?url';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
 import { contacts, links, sitePath } from '../config';
@@ -66,11 +66,12 @@ const structuredData = {
     <link rel="canonical" href={canonical.href} />
     {noindex && <meta name="robots" content="noindex" />}
 
-    <meta name="theme-color" content="#070a12" />
+    <meta name="theme-color" content="#edefea" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e100f" media="(prefers-color-scheme: dark)" />
     <link rel="icon" type="image/png" sizes="32x32" href={sitePath('/favicon-32.png')} />
     <link rel="apple-touch-icon" href={sitePath('/apple-touch-icon.png')} />
     <link rel="sitemap" href={sitePath('/sitemap-index.xml')} />
-    <link rel="preload" as="font" type="font/woff2" href={onestCyrillic} crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href={geologicaCyrillic} crossorigin />
 
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="ru_RU" />

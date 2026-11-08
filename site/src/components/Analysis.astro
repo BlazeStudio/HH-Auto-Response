@@ -33,16 +33,16 @@ const percent = (row: { sent: number; invited: number }) => (row.invited / row.s
 
 <section id="analysis" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
   <div class="wrap">
-    <div class="reveal relative overflow-hidden rounded-3xl border border-line bg-ink-900">
+    <div class="reveal relative overflow-hidden rounded-xl border border-line bg-ink-900">
       <div
         class="pointer-events-none absolute inset-x-0 top-0 h-96"
-        style="background: radial-gradient(48rem 20rem at 85% -10%, rgb(139 92 246 / 0.2), transparent 70%), radial-gradient(36rem 16rem at 5% -10%, rgb(14 165 233 / 0.1), transparent 70%)"
+        style="background: radial-gradient(48rem 20rem at 85% -10%, color-mix(in srgb, var(--color-ai) var(--glow-strong), transparent), transparent 70%), radial-gradient(36rem 16rem at 5% -10%, color-mix(in srgb, var(--color-hh) var(--glow), transparent), transparent 70%)"
         aria-hidden="true"
       >
       </div>
 
       <div class="relative p-6 sm:p-10 lg:p-14">
-        <p class="kicker" style="--kicker: var(--color-ai)">Анализ резюме и рынка</p>
+        <p class="kicker" data-num="03" style="--kicker: var(--color-ai)">Анализ резюме и рынка</p>
         <h2 class="h2 max-w-3xl">Сравните резюме со всей выдачей. <span class="dim">И узнайте, что поправить до отклика.</span></h2>
         <p class="lead mt-5">
           Программа смотрит, какие навыки просят в вашей профессии, сколько за них платят и на какую долю вакансий
@@ -147,7 +147,7 @@ const percent = (row: { sent: number; invited: number }) => (row.invited / row.s
                       <span class="font-medium tabular-nums">{percent(row).toFixed(1).replace('.', ',')}</span>
                     </div>
                     <div class="bar-track mt-1.5">
-                      <span class="bar-fill" style={`--v: ${(percent(row) / funnelMax) * 100}%; --bar: linear-gradient(90deg, var(--color-hh), var(--color-ai))`} />
+                      <span class="bar-fill" style={`--v: ${(percent(row) / funnelMax) * 100}%; --bar: var(--color-hh)`} />
                     </div>
                     <p class="mt-1 text-xs text-fg-3 tabular-nums">{row.sent} откликов, приглашений: {row.invited}</p>
                   </div>
