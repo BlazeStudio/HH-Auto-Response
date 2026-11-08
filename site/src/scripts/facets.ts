@@ -37,11 +37,37 @@ const CELL = 138;
 const FRAME_MS = 1000 / 30;
 const DRIFT = 16;
 const LIFT = 34;
-const FILL = 0.06;
-const EDGE = 0.055;
-const SKY = [56, 189, 248];
-const VIOLET = [139, 92, 246];
 const WIDE_SCREEN = '(min-width: 64rem)';
+
+interface Palette {
+  from: number[];
+  to: number[];
+  line: string;
+  fill: number;
+  edge: number;
+}
+
+// Цвета и яркость берутся из global.css, чтобы светлая и тёмная темы настраивались в одном месте
+function readPalette(): Palette {
+  const style = getComputedStyle(document.documentElement);
+  const rgb = (name: string, fallback: number[]) => {
+    const parts = style.getPropertyValue(name).trim().split(/\s+/).map(Number);
+    return parts.length === 3 && parts.every(Number.isFinite) ? parts : fallback;
+  };
+  const number = (name: string, fallback: number) => {
+    const value = parseFloat(style.getPropertyValue(name));
+    return Number.isFinite(value) ? value : fallback;
+  };
+  return {
+    from: rgb('--facet-a', [125, 147, 255]),
+    to: rgb('--facet-b', [185, 163, 255]),
+    line: `rgb(${rgb('--facet-line', [165, 177, 214]).join(' ')})`,
+    fill: number('--facet-fill', 0.06),
+    edge: number('--facet-edge', 0.055),
+  };
+}
+
+let palette: Palette = { from: [125, 147, 255], to: [185, 163, 255], line: 'rgb(165 177 214)', fill: 0.06, edge: 0.055 };
 
 function seededRandom(seed: number) {
   let state = seed;
@@ -83,7 +109,7 @@ function buildMesh(mesh: Mesh) {
     const fromEdge = mesh.side === 'left' ? centerX : mesh.width - centerX;
     const reach = Math.min(1, Math.max(0, 1 - fromEdge / mesh.width));
     const mix = Math.min(1, Math.max(0, centerY / mesh.height + (random() - 0.5) * 0.35));
-    const channel = (index: number) => Math.round(SKY[index] + (VIOLET[index] - SKY[index]) * mix);
+    const channel = (index: number) => Math.round(palette.from[index] + (palette.to[index] - palette.from[index]) * mix);
     facets.push({
       a,
       b,
@@ -130,7 +156,7 @@ function draw(mesh: Mesh, time: number) {
   const lightZ = 0.69;
 
   context.clearRect(0, 0, width, height);
-  context.strokeStyle = 'rgb(165 190 235)';
+  context.strokeStyle = palette.line;
   context.lineWidth = 1;
 
   for (const { a, b, c, color, fade } of facets) {
@@ -153,11 +179,11 @@ function draw(mesh: Mesh, time: number) {
     context.lineTo(c.x, c.y);
     context.closePath();
 
-    context.globalAlpha = fade * glow * FILL;
+    context.globalAlpha = fade * glow * palette.fill;
     context.fillStyle = color;
     context.fill();
 
-    context.globalAlpha = fade * (0.018 + glow * EDGE);
+    context.globalAlpha = fade * (0.018 + glow * palette.edge);
     context.stroke();
   }
 }
@@ -218,6 +244,13 @@ export function initFacets() {
     cancelAnimationFrame(frame);
     if (wide.matches && !still) frame = requestAnimationFrame(loop);
   };
+
+  palette = readPalette();
+  // Тема компьютера сменилась: перечитываем цвета и перестраиваем грани
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+    palette = readPalette();
+    meshes.forEach(resize);
+  });
 
   const observer = new ResizeObserver((entries) => {
     entries.forEach((entry) => {

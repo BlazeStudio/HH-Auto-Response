@@ -1,5 +1,5 @@
 ---
-import { Image } from 'astro:assets';
+import { getImage } from 'astro:assets';
 import responses from '../assets/shots/responses.png';
 import chats from '../assets/shots/chats.png';
 import analysis from '../assets/shots/analysis.png';
@@ -7,22 +7,42 @@ import skills from '../assets/shots/analysis-skills.png';
 import stats from '../assets/shots/stats.png';
 import ai from '../assets/shots/ai.png';
 import settings from '../assets/shots/settings.png';
+import responsesLight from '../assets/shots/light/responses.png';
+import chatsLight from '../assets/shots/light/chats.png';
+import analysisLight from '../assets/shots/light/analysis.png';
+import skillsLight from '../assets/shots/light/analysis-skills.png';
+import statsLight from '../assets/shots/light/stats.png';
+import aiLight from '../assets/shots/light/ai.png';
+import settingsLight from '../assets/shots/light/settings.png';
 
 const shots = [
-  { id: 'responses', title: 'Отклики', text: 'Сколько ушло сегодня, что пропущено и почему. Журнал работы на виду.', image: responses },
-  { id: 'chats', title: 'Чаты', text: 'Отказы прочитаны, на анкету робота ответила нейросеть, важное оставлено вам.', image: chats },
-  { id: 'analysis', title: 'Анализ резюме', text: 'Оценка против открытых вакансий и список дел, начиная с самых полезных.', image: analysis },
-  { id: 'skills', title: 'Навыки рынка', text: 'Спрос, зарплата, есть ли навык в резюме и сколько вакансий он откроет.', image: skills },
-  { id: 'stats', title: 'Статистика', text: 'Отклики и отказы по дням, неделям и месяцам. Графики настраиваются.', image: stats },
-  { id: 'ai', title: 'Проверка ИИ', text: 'Пишете за работодателя и смотрите, что ответит модель. В hh ничего не уходит.', image: ai },
-  { id: 'settings', title: 'Настройки', text: 'Все фильтры hh по вкладкам. Заполняются одной ссылкой с сайта.', image: settings },
+  { id: 'responses', title: 'Отклики', text: 'Сколько ушло сегодня, что пропущено и почему. Журнал работы на виду.', dark: responses, light: responsesLight },
+  { id: 'chats', title: 'Чаты', text: 'Отказы прочитаны, на анкету робота ответила нейросеть, важное оставлено вам.', dark: chats, light: chatsLight },
+  { id: 'analysis', title: 'Анализ резюме', text: 'Оценка против открытых вакансий и список дел, начиная с самых полезных.', dark: analysis, light: analysisLight },
+  { id: 'skills', title: 'Навыки рынка', text: 'Спрос, зарплата, есть ли навык в резюме и сколько вакансий он откроет.', dark: skills, light: skillsLight },
+  { id: 'stats', title: 'Статистика', text: 'Отклики и отказы по дням, неделям и месяцам. Графики настраиваются.', dark: stats, light: statsLight },
+  { id: 'ai', title: 'Проверка ИИ', text: 'Пишете за работодателя и смотрите, что ответит модель. В hh ничего не уходит.', dark: ai, light: aiLight },
+  { id: 'settings', title: 'Настройки', text: 'Все фильтры hh по вкладкам. Заполняются одной ссылкой с сайта.', dark: settings, light: settingsLight },
 ];
+
+// Снимки приложения в той же теме, что и сайт: браузер сам выберет светлый или тёмный
+const sizes = '(min-width: 1024px) 50vw, 100vw';
+const options = { widths: [640, 960, 1240], format: 'webp' as const, quality: 82 };
+const pictures = await Promise.all(
+  shots.map(async (shot) => {
+    const [dark, light] = await Promise.all([
+      getImage({ src: shot.dark, ...options }),
+      getImage({ src: shot.light, ...options }),
+    ]);
+    return { ...shot, darkImage: dark, lightImage: light };
+  }),
+);
 ---
 
 <section id="gallery" class="scroll-mt-10 pb-[clamp(4.5rem,10vw,8rem)]">
   <div class="wrap">
     <div class="reveal max-w-3xl">
-      <p class="kicker">Живое приложение</p>
+      <p class="kicker" data-num="04">Живое приложение</p>
       <h2 class="h2">Так оно выглядит на самом деле. <span class="dim">Да. Это буквально скриншоты из приложения.</span></h2>
     </div>
 
@@ -53,20 +73,28 @@ const shots = [
 
       <div class="min-w-0">
         {
-          shots.map((shot, index) => (
+          pictures.map((shot, index) => (
             <div id={`shot-panel-${shot.id}`} role="tabpanel" aria-labelledby={`shot-tab-${shot.id}`} hidden={index !== 0}>
               <div class="shot-frame">
-                <Image
-                  src={shot.image}
-                  alt={`Страница «${shot.title}» в приложении HH-Auto-Response`}
-                  widths={[640, 960, 1240]}
-                  sizes="(min-width: 1024px) 50vw, 100vw"
-                  format="webp"
-                  quality={82}
-                  loading="lazy"
-                  decoding="async"
-                  class="block h-auto w-full"
-                />
+                <picture>
+                  <source
+                    media="(prefers-color-scheme: light)"
+                    srcset={shot.lightImage.srcSet.attribute}
+                    sizes={sizes}
+                    type="image/webp"
+                  />
+                  <img
+                    src={shot.darkImage.src}
+                    srcset={shot.darkImage.srcSet.attribute}
+                    sizes={sizes}
+                    width={shot.dark.width}
+                    height={shot.dark.height}
+                    alt={`Страница «${shot.title}» в приложении HH-Auto-Response`}
+                    loading="lazy"
+                    decoding="async"
+                    class="block h-auto w-full"
+                  />
+                </picture>
               </div>
               <p class="body-sm mt-3 lg:hidden">{shot.text}</p>
             </div>

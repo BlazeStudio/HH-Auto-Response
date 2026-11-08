@@ -1,29 +1,33 @@
 @import "tailwindcss";
 
 /* Цвет на сайте значит то же, что в журнале приложения:
-   голубой — действие на hh, фиолетовый — работа нейросети, зелёный — готово, янтарный — пропуск. */
+   синий — действие на hh, фиолетовый — работа нейросети, зелёный — готово, янтарный — пропуск.
+   Здесь тёмная тема. Светлая ниже переопределяет те же переменные, а выбирает тему система. */
 @theme {
-  --color-ink-950: #070a12;
-  --color-ink-900: #0b0f19;
-  --color-ink-850: #111624;
-  --color-ink-800: #181e2e;
-  --color-line: rgb(150 175 220 / 0.13);
-  --color-line-strong: rgb(150 175 220 / 0.26);
+  --color-ink-950: #0e100f;
+  --color-ink-900: #131614;
+  --color-ink-850: #181b19;
+  --color-ink-800: #20241f;
+  --color-line: rgb(231 234 228 / 0.12);
+  --color-line-strong: rgb(231 234 228 / 0.26);
+  /* Основа полупрозрачных подложек: в тёмной теме светлая, в светлой тёмная */
+  --color-tint: #ffffff;
 
-  --color-fg: #edf1f8;
-  --color-fg-2: #aab4c7;
-  --color-fg-3: #7a859e;
+  --color-fg: #e7eae4;
+  --color-fg-2: #b4bbb2;
+  --color-fg-3: #8d958c;
 
-  --color-hh: #38bdf8;
-  --color-hh-deep: #2563eb;
-  --color-ai: #b59cff;
+  --color-hh: #8b9dff;
+  --color-hh-deep: #3d55e0;
+  --color-on-hh: #0b0f2a;
+  --color-ai: #b9a3ff;
   --color-ai-deep: #8b5cf6;
-  --color-ok: #34d399;
-  --color-ok-deep: #10b981;
-  --color-warn: #fbbf24;
+  --color-ok: #7fd69a;
+  --color-ok-deep: #2f9e5a;
+  --color-warn: #e8b25a;
 
-  --font-sans: "Onest Variable", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --font-sans: "Geologica Variable", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Martian Mono Variable", ui-monospace, "Cascadia Mono", Consolas, monospace;
 
   --ease-soft: cubic-bezier(0.22, 0.8, 0.24, 1);
   --ease-gentle: cubic-bezier(0.3, 0.1, 0.18, 1);
@@ -37,10 +41,58 @@
 @layer base {
   :root {
     interpolate-size: allow-keywords;
+    /* Сила свечений за первым экраном и окном приложения */
+    --glow: 16%;
+    --glow-strong: 24%;
+    --shadow-window: 0 50px 120px -40px rgb(0 0 0 / 0.85);
+    --shadow-lift: 0 24px 60px -30px rgb(0 0 0 / 0.7);
+    --shadow-menu: 0 24px 60px -20px rgb(0 0 0 / 0.8);
+    /* Цвета граней по краям, их читает facets.ts */
+    --facet-a: 125 147 255;
+    --facet-b: 185 163 255;
+    --facet-line: 165 177 214;
+    --facet-fill: 0.06;
+    --facet-edge: 0.055;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --color-ink-950: #edefea;
+      --color-ink-900: #f7f8f4;
+      --color-ink-850: #fbfcf9;
+      --color-ink-800: #e2e5de;
+      --color-line: rgb(17 19 17 / 0.12);
+      --color-line-strong: rgb(17 19 17 / 0.26);
+      --color-tint: #111311;
+
+      --color-fg: #111311;
+      --color-fg-2: #3a403a;
+      --color-fg-3: #5c625c;
+
+      --color-hh: #2a43d4;
+      --color-hh-deep: #2a43d4;
+      --color-on-hh: #ffffff;
+      --color-ai: #6a3fd0;
+      --color-ai-deep: #6a3fd0;
+      --color-ok: #1f7a3d;
+      --color-ok-deep: #1f7a3d;
+      --color-warn: #9a5b00;
+
+      --glow: 8%;
+      --glow-strong: 10%;
+      --shadow-window: 0 40px 90px -45px rgb(24 32 24 / 0.3);
+      --shadow-lift: 0 20px 50px -30px rgb(24 32 24 / 0.25);
+      --shadow-menu: 0 20px 50px -24px rgb(24 32 24 / 0.3);
+      --facet-a: 42 67 212;
+      --facet-b: 106 63 208;
+      --facet-line: 17 19 17;
+      --facet-fill: 0.045;
+      --facet-edge: 0.05;
+    }
   }
 
   html {
-    color-scheme: dark;
+    color-scheme: light dark;
     background: var(--color-ink-950);
     scroll-behavior: smooth;
     scroll-padding-top: 5.5rem;
@@ -61,7 +113,7 @@
   }
 
   ::selection {
-    background: rgb(56 189 248 / 0.32);
+    background: color-mix(in srgb, var(--color-hh) 30%, transparent);
   }
 
   /* Полоса прокрутки страницы: шире обычной и в цветах сайта. На телефонах остаётся системная. */
@@ -77,17 +129,17 @@
     html::-webkit-scrollbar-thumb {
       border: 2px solid var(--color-ink-950);
       border-radius: 999px;
-      background: linear-gradient(180deg, rgb(56 189 248 / 0.5), rgb(139 92 246 / 0.5)) padding-box;
+      background: color-mix(in srgb, var(--color-hh) 45%, transparent) padding-box;
     }
 
     html::-webkit-scrollbar-thumb:hover {
-      background: linear-gradient(180deg, rgb(56 189 248 / 0.8), rgb(139 92 246 / 0.8)) padding-box;
+      background: color-mix(in srgb, var(--color-hh) 75%, transparent) padding-box;
     }
 
     /* В Firefox ширину задать нельзя, поэтому только цвета */
     @supports not selector(::-webkit-scrollbar) {
       html {
-        scrollbar-color: rgb(120 140 220 / 0.6) var(--color-ink-950);
+        scrollbar-color: color-mix(in srgb, var(--color-hh) 55%, transparent) var(--color-ink-950);
       }
     }
   }
@@ -147,27 +199,41 @@
   .kicker {
     display: inline-flex;
     align-items: center;
-    gap: 0.625rem;
+    gap: 0.75rem;
     font-family: var(--font-mono);
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     color: var(--color-fg-2);
   }
 
   .kicker::before {
     content: "";
-    width: 0.4375rem;
-    height: 0.4375rem;
-    border-radius: 999px;
+    width: 0.5rem;
+    height: 0.5rem;
     background: var(--kicker, var(--color-hh));
-    box-shadow: 0 0 12px var(--kicker, var(--color-hh));
+  }
+
+  /* Номер раздела на главной, как в техпаспорте: «01 — Схема работы» */
+  .kicker[data-num]::before {
+    content: attr(data-num) " —";
+    width: auto;
+    height: auto;
+    background: none;
+    color: var(--kicker, var(--color-hh));
   }
 
   .h1 {
-    font-size: clamp(2.625rem, 6.1vw, 4.75rem);
+    font-size: clamp(2.625rem, 6.1vw, 4.875rem);
     font-weight: 600;
-    line-height: 1.04;
-    letter-spacing: -0.038em;
+    line-height: 1.02;
+    letter-spacing: -0.042em;
     text-wrap: balance;
+  }
+
+  .h1 .dim {
+    color: var(--color-fg-3);
+    font-weight: 400;
   }
 
   .h2 {
@@ -206,17 +272,6 @@
     text-wrap: pretty;
   }
 
-  .grad {
-    background: linear-gradient(96deg, #7dd3fc 0%, #60a5fa 32%, #a78bfa 68%, #e0b0ff 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    /* Иначе у букв с выносными элементами обрезается низ */
-    padding-bottom: 0.12em;
-    -webkit-box-decoration-break: clone;
-    box-decoration-break: clone;
-  }
-
   .link {
     color: var(--color-fg);
     text-decoration: underline;
@@ -231,7 +286,7 @@
 
   .inline-code {
     border: 1px solid var(--color-line);
-    border-radius: 0.375rem;
+    border-radius: 0.25rem;
     background: var(--color-ink-850);
     padding: 0.0625rem 0.375rem;
     color: var(--color-fg);
@@ -247,7 +302,7 @@
     justify-content: center;
     gap: 0.625rem;
     min-height: 3rem;
-    border-radius: 0.875rem;
+    border-radius: 0.5rem;
     padding: 0.625rem 1.25rem;
     font-size: 0.9375rem;
     font-weight: 550;
@@ -284,34 +339,29 @@
   }
 
   .btn-primary {
-    background: linear-gradient(180deg, #4ae3ae 0%, var(--color-ok-deep) 100%);
-    color: #03150e;
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.35),
-      0 8px 24px -10px rgb(16 185 129 / 0.7);
+    background: var(--color-hh);
+    color: var(--color-on-hh);
   }
 
   .btn-primary:hover {
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.4),
-      0 14px 40px -10px rgb(16 185 129 / 0.95);
+    background: color-mix(in srgb, var(--color-hh) 86%, var(--color-fg));
+    box-shadow: 0 12px 30px -16px color-mix(in srgb, var(--color-hh) 70%, transparent);
   }
 
   .btn-ghost {
     border: 1px solid var(--color-line-strong);
-    background: rgb(255 255 255 / 0.03);
+    background: transparent;
     color: var(--color-fg);
   }
 
   .btn-ghost:hover {
-    border-color: rgb(150 175 220 / 0.45);
-    background: rgb(255 255 255 / 0.06);
-    box-shadow: 0 10px 34px -14px rgb(56 189 248 / 0.55);
+    border-color: color-mix(in srgb, var(--color-fg) 45%, transparent);
+    background: color-mix(in srgb, var(--color-tint) 5%, transparent);
   }
 
   .btn-sm {
     min-height: 2.5rem;
-    border-radius: 0.6875rem;
+    border-radius: 0.4375rem;
     padding: 0.4375rem 0.875rem;
     font-size: 0.875rem;
   }
@@ -323,7 +373,7 @@
     top: 0;
     z-index: 40;
     border-bottom: 1px solid transparent;
-    background: rgb(7 10 18 / 0.66);
+    background: color-mix(in srgb, var(--color-ink-950) 78%, transparent);
     -webkit-backdrop-filter: blur(16px) saturate(150%);
     backdrop-filter: blur(16px) saturate(150%);
     transition: border-color 0.4s;
@@ -335,15 +385,15 @@
   }
 
   .nav-link {
-    border-radius: 0.5rem;
-    padding: 0.375rem 0.75rem;
+    border-radius: 0.375rem;
+    padding: 0.375rem 0.625rem;
     color: var(--color-fg-2);
     font-size: 0.9063rem;
     transition: color 0.3s, background-color 0.3s;
   }
 
   .nav-link:hover {
-    background: rgb(255 255 255 / 0.05);
+    background: color-mix(in srgb, var(--color-tint) 6%, transparent);
     color: var(--color-fg);
   }
 
@@ -353,7 +403,7 @@
     height: 2.5rem;
     place-items: center;
     border: 1px solid var(--color-line);
-    border-radius: 0.6875rem;
+    border-radius: 0.4375rem;
     list-style: none;
   }
 
@@ -369,10 +419,10 @@
     display: grid;
     gap: 0.125rem;
     border: 1px solid var(--color-line-strong);
-    border-radius: 1rem;
+    border-radius: 0.625rem;
     background: var(--color-ink-850);
     padding: 0.5rem;
-    box-shadow: 0 24px 60px -20px rgb(0 0 0 / 0.8);
+    box-shadow: var(--shadow-menu);
     transform-origin: top right;
     animation: menu-in 0.32s var(--ease-soft);
   }
@@ -391,13 +441,13 @@
   }
 
   .menu-panel a {
-    border-radius: 0.625rem;
+    border-radius: 0.375rem;
     padding: 0.625rem 0.75rem;
     color: var(--color-fg);
   }
 
   .menu-panel a:hover {
-    background: rgb(255 255 255 / 0.05);
+    background: color-mix(in srgb, var(--color-tint) 5%, transparent);
   }
 
   /* Карточка со световым пятном на рамке: положение пятна задаёт ui.ts */
@@ -408,7 +458,7 @@
     flex-direction: column;
     min-width: 0;
     border: 1px solid var(--color-line);
-    border-radius: 1rem;
+    border-radius: 0.625rem;
     background: linear-gradient(180deg, var(--color-ink-850) 0%, var(--color-ink-900) 100%);
     transition:
       transform 0.5s var(--ease-soft),
@@ -425,8 +475,8 @@
     padding: 1px;
     background: radial-gradient(
       18rem circle at var(--mx, 50%) var(--my, 0%),
-      rgb(125 190 255 / 0.75),
-      rgb(167 139 250 / 0.28) 45%,
+      color-mix(in srgb, var(--color-hh) 75%, transparent),
+      color-mix(in srgb, var(--color-ai) 25%, transparent) 45%,
       transparent 72%
     );
     -webkit-mask:
@@ -442,9 +492,9 @@
   }
 
   .card-hover:hover {
-    transform: translateY(-3px) scale(1.006);
+    transform: translateY(-2px);
     border-color: var(--color-line-strong);
-    box-shadow: 0 24px 60px -30px rgb(56 120 248 / 0.45);
+    box-shadow: var(--shadow-lift);
   }
 
   .card-hover:hover::before {
@@ -477,7 +527,7 @@
     flex: none;
     place-items: center;
     border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent);
-    border-radius: 0.875rem;
+    border-radius: 0.5rem;
     background: color-mix(in srgb, var(--tone) 12%, transparent);
     box-shadow: 0 0 26px -12px var(--tone);
     color: var(--tone);
@@ -489,13 +539,13 @@
   .contact-icon-lg {
     width: 3.5rem;
     height: 3.5rem;
-    border-radius: 1.125rem;
+    border-radius: 0.625rem;
   }
 
   .contact-icon-sm {
     width: 2.125rem;
     height: 2.125rem;
-    border-radius: 0.6875rem;
+    border-radius: 0.375rem;
   }
 
   .contact-tile:hover .contact-icon,
@@ -566,7 +616,7 @@
     padding: 1.75rem;
     background:
       radial-gradient(30rem 20rem at 100% 100%, color-mix(in srgb, var(--tone) 16%, transparent), transparent 72%),
-      radial-gradient(22rem 14rem at 0% 0%, rgb(139 92 246 / 0.12), transparent 72%),
+      radial-gradient(22rem 14rem at 0% 0%, color-mix(in srgb, var(--color-ai) var(--glow), transparent), transparent 72%),
       linear-gradient(180deg, var(--color-ink-850) 0%, var(--color-ink-900) 100%);
   }
 
@@ -623,8 +673,8 @@
 
   .inset-panel {
     border: 1px solid var(--color-line);
-    border-radius: 0.75rem;
-    background: rgb(7 10 18 / 0.62);
+    border-radius: 0.5rem;
+    background: color-mix(in srgb, var(--color-ink-950) 65%, transparent);
   }
 
   .chip {
@@ -633,7 +683,7 @@
     gap: 0.375rem;
     border: 1px solid var(--color-line);
     border-radius: 999px;
-    background: rgb(255 255 255 / 0.03);
+    background: color-mix(in srgb, var(--color-tint) 3%, transparent);
     padding: 0.1875rem 0.625rem;
     color: var(--color-fg-2);
     font-size: 0.8125rem;
@@ -643,7 +693,7 @@
   .tag {
     display: inline-flex;
     align-items: center;
-    border-radius: 0.375rem;
+    border-radius: 0.25rem;
     padding: 0.0625rem 0.4375rem;
     font-size: 0.75rem;
     font-weight: 500;
@@ -652,27 +702,27 @@
   }
 
   .tag-ok {
-    background: rgb(52 211 153 / 0.12);
+    background: color-mix(in srgb, var(--color-ok) 14%, transparent);
     color: var(--color-ok);
   }
 
   .tag-ai {
-    background: rgb(181 156 255 / 0.14);
+    background: color-mix(in srgb, var(--color-ai) 15%, transparent);
     color: var(--color-ai);
   }
 
   .tag-warn {
-    background: rgb(251 191 36 / 0.12);
+    background: color-mix(in srgb, var(--color-warn) 14%, transparent);
     color: var(--color-warn);
   }
 
   .tag-mute {
-    background: rgb(150 175 220 / 0.1);
+    background: color-mix(in srgb, var(--color-tint) 8%, transparent);
     color: var(--color-fg-2);
   }
 
   .tag-hh {
-    background: rgb(56 189 248 / 0.12);
+    background: color-mix(in srgb, var(--color-hh) 14%, transparent);
     color: var(--color-hh);
   }
 
@@ -758,8 +808,8 @@
     bottom: -0.625rem;
     width: 12rem;
     border: 1px solid var(--color-line);
-    border-radius: 1rem;
-    background: rgb(11 15 25 / 0.84);
+    border-radius: 0.5rem;
+    background: color-mix(in srgb, var(--color-ink-900) 88%, transparent);
     -webkit-backdrop-filter: blur(14px);
     backdrop-filter: blur(14px);
     opacity: 0;
@@ -816,8 +866,8 @@
     display: block;
     width: 0.75rem;
     height: 3px;
-    border-radius: 3px;
-    background: rgb(150 175 220 / 0.3);
+    border-radius: 1px;
+    background: var(--color-line-strong);
     transition:
       width 0.5s var(--ease-soft),
       background-color 0.3s;
@@ -828,8 +878,7 @@
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    background: linear-gradient(90deg, var(--color-hh), var(--color-ai));
-    box-shadow: 0 0 10px rgb(56 189 248 / 0.55);
+    background: var(--color-hh);
     opacity: 0;
     transition: opacity 0.4s;
   }
@@ -892,8 +941,8 @@
     z-index: -1;
     height: 56rem;
     background:
-      radial-gradient(58rem 26rem at 82% -8%, rgb(139 92 246 / 0.17), transparent 72%),
-      radial-gradient(48rem 24rem at 12% -12%, rgb(14 165 233 / 0.15), transparent 72%);
+      radial-gradient(58rem 26rem at 82% -8%, color-mix(in srgb, var(--color-ai) var(--glow), transparent), transparent 72%),
+      radial-gradient(48rem 24rem at 12% -12%, color-mix(in srgb, var(--color-hh) var(--glow), transparent), transparent 72%);
     pointer-events: none;
   }
 
@@ -902,11 +951,12 @@
     align-items: center;
     gap: 0.5rem;
     border: 1px solid var(--color-line);
-    border-radius: 999px;
-    background: rgb(255 255 255 / 0.03);
-    padding: 0.3125rem 0.75rem;
+    border-radius: 0.375rem;
+    background: color-mix(in srgb, var(--color-tint) 3%, transparent);
+    padding: 0.375rem 0.75rem;
     color: var(--color-fg-2);
-    font-size: 0.8125rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
     line-height: 1.4;
     transition: border-color 0.3s, color 0.3s;
   }
@@ -930,29 +980,18 @@
     z-index: -1;
     height: 72%;
     background:
-      radial-gradient(48% 62% at 28% 42%, rgb(14 165 233 / 0.3), transparent 72%),
-      radial-gradient(44% 62% at 74% 36%, rgb(139 92 246 / 0.34), transparent 72%);
+      radial-gradient(48% 62% at 28% 42%, color-mix(in srgb, var(--color-hh) var(--glow-strong), transparent), transparent 72%),
+      radial-gradient(44% 62% at 74% 36%, color-mix(in srgb, var(--color-ai) var(--glow-strong), transparent), transparent 72%);
     filter: blur(36px);
     pointer-events: none;
   }
 
   .appwin {
     position: relative;
-    border: 1px solid transparent;
-    border-radius: 1.25rem;
-    background:
-      linear-gradient(var(--color-ink-900), var(--color-ink-900)) padding-box,
-      linear-gradient(
-          115deg,
-          rgb(56 189 248 / 0.85) 0%,
-          rgb(150 175 220 / 0.2) 30%,
-          rgb(150 175 220 / 0.2) 68%,
-          rgb(167 139 250 / 0.85) 100%
-        )
-        border-box;
-    box-shadow:
-      0 50px 120px -40px rgb(0 0 0 / 0.9),
-      0 0 60px -28px rgb(56 189 248 / 0.45);
+    border: 1px solid var(--color-line-strong);
+    border-radius: 0.75rem;
+    background: var(--color-ink-900);
+    box-shadow: var(--shadow-window);
   }
 
   /* Подсветка выбранной вкладки скользит к новой. Положение задаёт tabs.ts;
@@ -994,18 +1033,17 @@
 
   .tabs-win {
     --glide-bg: var(--color-hh-deep);
-    --glide-radius: 0.625rem;
+    --glide-radius: 0.375rem;
   }
 
   .tabs-pill {
-    --glide-bg: rgb(255 255 255 / 0.09);
-    --glide-radius: 0.6875rem;
-    --glide-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+    --glide-bg: color-mix(in srgb, var(--color-tint) 9%, transparent);
+    --glide-radius: 0.375rem;
   }
 
   .tabs-shot {
-    --glide-bg: rgb(255 255 255 / 0.06);
-    --glide-radius: 0.75rem;
+    --glide-bg: color-mix(in srgb, var(--color-tint) 6%, transparent);
+    --glide-radius: 0.375rem;
   }
 
   /* Содержимое вкладки проявляется, а не появляется скачком */
@@ -1017,7 +1055,7 @@
     display: flex;
     align-items: center;
     gap: 0.625rem;
-    border-radius: 0.625rem;
+    border-radius: 0.375rem;
     padding: 0.5rem 0.75rem;
     color: var(--color-fg-2);
     font-size: 0.875rem;
@@ -1028,7 +1066,7 @@
   }
 
   .appwin-tab:hover {
-    background: rgb(255 255 255 / 0.05);
+    background: color-mix(in srgb, var(--color-tint) 5%, transparent);
     color: var(--color-fg);
   }
 
@@ -1040,8 +1078,8 @@
   .stat-tile {
     min-width: 0;
     border: 1px solid var(--color-line);
-    border-radius: 0.75rem;
-    background: rgb(255 255 255 / 0.015);
+    border-radius: 0.375rem;
+    background: color-mix(in srgb, var(--color-tint) 2%, transparent);
     padding: 0.625rem 0.75rem;
   }
 
@@ -1068,13 +1106,13 @@
 
   .segs i {
     height: 0.375rem;
-    border-radius: 2px;
-    background: rgb(150 175 220 / 0.14);
+    border-radius: 1px;
+    background: var(--color-line);
     transition: background-color 0.7s var(--ease-gentle);
   }
 
   .segs i.on {
-    background: linear-gradient(180deg, #60a5fa, var(--color-hh-deep));
+    background: var(--color-hh);
   }
 
   /* Журнал: новые строки появляются снизу, старые уходят под маску сверху */
@@ -1128,8 +1166,8 @@
   .bar-track {
     height: 0.375rem;
     overflow: hidden;
-    border-radius: 999px;
-    background: rgb(150 175 220 / 0.14);
+    border-radius: 1px;
+    background: var(--color-line);
   }
 
   .bar-fill {
@@ -1147,7 +1185,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    border-radius: 0.6875rem;
+    border-radius: 0.375rem;
     padding: 0.5rem 0.875rem;
     color: var(--color-fg-2);
     font-size: 0.9063rem;
@@ -1169,34 +1207,62 @@
   }
 
   .pill-tab[aria-selected="true"] {
-    background: rgb(255 255 255 / 0.09);
+    background: color-mix(in srgb, var(--color-tint) 9%, transparent);
     color: var(--color-fg);
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
   }
 
   .shot-tab {
     display: block;
     width: 100%;
-    border-radius: 0.75rem;
+    border-radius: 0.375rem;
     padding: 0.75rem 1rem;
     text-align: left;
     transition: background-color 0.3s;
   }
 
   .shot-tab:hover {
-    background: rgb(255 255 255 / 0.03);
+    background: color-mix(in srgb, var(--color-tint) 3%, transparent);
   }
 
   .shot-tab[aria-selected="true"] {
-    background: rgb(255 255 255 / 0.06);
+    background: color-mix(in srgb, var(--color-tint) 6%, transparent);
   }
 
   .shot-frame {
     overflow: hidden;
     border: 1px solid var(--color-line-strong);
-    border-radius: 0.875rem;
+    border-radius: 0.5rem;
     background: var(--color-ink-900);
-    box-shadow: 0 30px 80px -40px rgb(0 0 0 / 0.9);
+    box-shadow: var(--shadow-lift);
+  }
+
+  /* Схема работы: клетки на общей сетке линий, как в техпаспорте */
+
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
+    border-top: 1px solid var(--color-line-strong);
+    border-left: 1px solid var(--color-line);
+  }
+
+  .flow-step {
+    min-width: 0;
+    border-right: 1px solid var(--color-line);
+    border-bottom: 1px solid var(--color-line);
+    background: color-mix(in srgb, var(--color-ink-900) 70%, transparent);
+    padding: 1.125rem 1.125rem 1.375rem;
+    transition: background-color 0.3s;
+  }
+
+  .flow-step:hover {
+    background: var(--color-ink-900);
+  }
+
+  /* В один столбец шаги идут сверху вниз, и стрелки тоже */
+  @media (max-width: 27.99rem) {
+    .flow-arrow {
+      transform: rotate(90deg);
+    }
   }
 
   /* Шаги */
@@ -1224,10 +1290,10 @@
     height: 1.75rem;
     place-items: center;
     border: 1px solid var(--color-line-strong);
-    border-radius: 0.5rem;
+    border-radius: 0.25rem;
     color: var(--color-fg);
     font-family: var(--font-mono);
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
   }
 
   /* Терминал */
@@ -1236,8 +1302,8 @@
     min-width: 0;
     overflow: hidden;
     border: 1px solid var(--color-line);
-    border-radius: 0.875rem;
-    background: #06080f;
+    border-radius: 0.5rem;
+    background: var(--color-ink-950);
   }
 
   .term-bar {
@@ -1270,14 +1336,14 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: start;
     gap: 0.625rem;
-    border-radius: 0.5rem;
+    border-radius: 0.25rem;
     margin-inline: -0.375rem;
     padding: 0.25rem 0.375rem;
     transition: background-color 0.2s;
   }
 
   .term-line:hover {
-    background: rgb(255 255 255 / 0.04);
+    background: color-mix(in srgb, var(--color-tint) 4%, transparent);
   }
 
   .term-prompt {
@@ -1302,7 +1368,7 @@
   }
 
   .term-copy:hover {
-    background: rgb(255 255 255 / 0.08);
+    background: color-mix(in srgb, var(--color-tint) 8%, transparent);
     color: var(--color-fg);
   }
 
@@ -1319,8 +1385,8 @@
     justify-content: space-between;
     gap: 0.75rem;
     border: 1px solid var(--color-line);
-    border-radius: 0.625rem;
-    background: rgb(255 255 255 / 0.02);
+    border-radius: 0.375rem;
+    background: color-mix(in srgb, var(--color-tint) 2%, transparent);
     padding: 0.5rem 0.75rem;
     font-size: 0.9063rem;
     line-height: 1.3;
@@ -1337,8 +1403,8 @@
   }
 
   .skill-toggle[aria-pressed="true"] {
-    border-color: rgb(52 211 153 / 0.55);
-    background: rgb(52 211 153 / 0.09);
+    border-color: color-mix(in srgb, var(--color-ok) 55%, transparent);
+    background: color-mix(in srgb, var(--color-ok) 9%, transparent);
   }
 
   .skill-toggle .box {
@@ -1359,7 +1425,7 @@
   .skill-toggle[aria-pressed="true"] .box {
     border-color: var(--color-ok);
     background: var(--color-ok);
-    color: #03150e;
+    color: var(--color-ink-950);
   }
 
   /* FAQ */

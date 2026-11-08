@@ -5,10 +5,10 @@ import { contacts, links, sitePath } from '../config';
 
 <section class="pb-[clamp(4.5rem,10vw,7rem)]">
   <div class="wrap">
-    <div class="reveal relative isolate overflow-hidden rounded-3xl border border-line bg-ink-900 px-6 py-14 sm:px-12 lg:py-20">
+    <div class="reveal relative isolate overflow-hidden rounded-xl border border-line bg-ink-900 px-6 py-14 sm:px-12 lg:py-20">
       <div
         class="absolute inset-0 -z-10"
-        style="background: radial-gradient(40rem 22rem at 90% 110%, rgb(139 92 246 / 0.22), transparent 70%), radial-gradient(36rem 20rem at 0% 110%, rgb(14 165 233 / 0.16), transparent 70%)"
+        style="background: radial-gradient(40rem 22rem at 90% 110%, color-mix(in srgb, var(--color-ai) var(--glow-strong), transparent), transparent 70%), radial-gradient(36rem 20rem at 0% 110%, color-mix(in srgb, var(--color-hh) var(--glow), transparent), transparent 70%)"
         aria-hidden="true"
       >
       </div>
@@ -17,7 +17,7 @@ import { contacts, links, sitePath } from '../config';
         <div>
           <h2 class="h2 mt-0!">
             Займитесь собеседованиями.
-            <span class="grad block">Откликами займётся робот.</span>
+            <span class="dim block">Откликами займётся робот.</span>
           </h2>
           <div class="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             <a class="btn btn-primary" href="#install">
@@ -26,7 +26,7 @@ import { contacts, links, sitePath } from '../config';
             </a>
             <a class="btn btn-ghost" href={links.repo}>
               <Icon name="github" />
-              Смотреть код на GitHub
+              Исходный код
             </a>
           </div>
         </div>

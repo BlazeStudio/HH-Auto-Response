@@ -35,6 +35,7 @@ export const nav = [
   { label: 'Установка', href: sitePath('/#install') },
   { label: 'Анализ резюме', href: sitePath('/#analysis') },
   { label: 'FAQ', href: sitePath('/#faq') },
+  { label: 'Контакты', href: sitePath('/contacts') },
 ];
 
 // Версия на случай, если GitHub API недоступен при сборке.
