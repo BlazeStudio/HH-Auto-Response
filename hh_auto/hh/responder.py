@@ -181,6 +181,36 @@ class Responder:
     def on_search_page(self) -> bool:
         return urlparse(self.page.url).path.startswith("/search/vacancy")
 
+    def hide(self, vac: Vacancy) -> bool:
+        """Скрыть вакансию на hh: «глаз» в карточке → «Скрыть эту вакансию». В выдаче она больше не появится
+        (вернуть можно на hh, в списке скрытых). Не вышло — не беда: вакансия просто пропущена, как и раньше."""
+        if not self.on_search_page() or captcha_shown(self.page):
+            return False
+        card = self._card(vac.id)
+        try:
+            button = card.locator(S.HIDE_BUTTON).first
+            if card.count() == 0 or button.count() == 0:
+                log.debug("  скрыть не получилось: в выдаче нет карточки или кнопки «Скрыть»")
+                return False
+            card.scroll_into_view_if_needed()
+            self._pause()
+            self.clicked = True
+            button.click()
+            item = self.page.locator(S.HIDE_VACANCY).filter(visible=True).first
+            item.wait_for(state="visible", timeout=5_000)
+            control.sleep(random.uniform(0.3, 0.8))
+            item.click()
+            item.wait_for(state="hidden", timeout=5_000)  # меню закрылось — hh принял
+            return True
+        except PlaywrightError as e:
+            log.debug(f"  скрыть не получилось: {str(e).splitlines()[0]}")
+            try:
+                if self.page.locator(S.HIDE_VACANCY).filter(visible=True).count():
+                    self.page.keyboard.press("Escape")  # меню осталось открытым — не мешать следующей вакансии
+            except PlaywrightError:
+                pass
+            return False
+
     def back_to_results(self, url: str) -> None:
         """После вакансии убеждаемся, что мы всё ещё в выдаче и авторизованы."""
         if is_auth_url(self.page.url) or hh_role(self.page) == "anonymous":

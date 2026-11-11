@@ -22,7 +22,7 @@ from .search import (Vacancy, collect_vacancies, describe_hh_filters, next_page_
                      results_page_url, search_urls, wait_all_cards)
 from ..reports.results import ResultsBook
 from ..core.state import State, company_key
-from .vacancy_meta import SkillStats, skip_reason
+from .vacancy_meta import SkillStats, skip_reason, unwanted
 
 
 RESCANS = 2  # сколько раз дособрать вакансии, которые hh подвинул на текущую страницу
@@ -45,6 +45,7 @@ class Stats:
     failed: int = 0
     already: int = 0
     dry_run: int = 0
+    hidden: int = 0  # нежелательные, скрытые на hh ([filters] hide_unwanted)
     skipped: Counter = field(default_factory=Counter)
     # последние обработанные вакансии — для окошка на странице «Отклики»: {id, at, title, company, url, status, note}
     recent: list = field(default_factory=list)
@@ -99,6 +100,16 @@ def run(
     handled: set[str] = set()  # вакансии этого запуска: в выдаче другого запроса их второй раз не смотрим
     planned: Counter = Counter()  # пробный прогон: «откликнулись бы» по компаниям — для лимита per_company
 
+    def hide(vac: Vacancy) -> None:
+        """Нежелательную вакансию ещё и скрыть на hh, чтобы она больше не попадалась в выдаче."""
+        if not cfg.filters.hide_unwanted or opts.dry_run:
+            return
+        if responder.hide(vac):
+            stats.hidden += 1
+            log.info("  скрыл на hh — в выдаче больше не появится")
+        else:
+            log.info("  скрыть на hh не получилось — просто пропущена")
+
     def handle(vac: Vacancy, tag: str, url: str, label: str) -> bool:
         """Одна вакансия: фильтры → отклик → итог. False — запуск пора заканчивать."""
         nonlocal errors_in_row
@@ -123,17 +134,20 @@ def run(
             stats.skipped[f"в названии «{excluded}»"] += 1
             stats.seen(vac, "skipped", f"в названии «{excluded}»")
             log.info(f"{tag} «{vac.title}» — в названии «{excluded}» ([filters]), пропускаю")
+            hide(vac)
             return True
         company_word = _find_word(vac.company, cfg.filters.exclude_company_words)
         if company_word:
             stats.skipped[f"компания: «{company_word}»"] += 1
             stats.seen(vac, "skipped", f"компания: «{company_word}»")
             log.info(f"{tag} «{vac.title}» — компания «{vac.company}» содержит «{company_word}» ([filters]), пропускаю")
+            hide(vac)
             return True
         if cfg.filters.include_company_words and not _find_word(vac.company, cfg.filters.include_company_words):
             stats.skipped["компания не из списка ([filters] include_company_words)"] += 1
             stats.seen(vac, "skipped", "компания не из списка")
             log.info(f"{tag} «{vac.title}» — компания «{vac.company}» не из списка include_company_words, пропускаю")
+            hide(vac)
             return True
         if cfg.filters.include_words:
             where = f"{vac.title} {vac.snippet}" if cfg.filters.include_in_snippet else vac.title
@@ -141,12 +155,15 @@ def run(
                 stats.skipped["нет нужных слов ([filters] include_words)"] += 1
                 stats.seen(vac, "skipped", "нет нужных слов")
                 log.info(f"{tag} «{vac.title}» — нет ни одного слова из [filters] include_words, пропускаю")
+                hide(vac)
                 return True
         skip = skip_reason(vac.title, vac.snippet, vac.meta, cfg)  # уровень, данные hh, вопросы при отклике
         if skip:
             stats.skipped[skip[0]] += 1
             stats.seen(vac, "skipped", skip[1])
             log.info(f"{tag} «{vac.title}» — {skip[1]}, пропускаю")
+            if unwanted(skip[0]):
+                hide(vac)
             return True
         if limits.per_company and vac.company:
             sent = state.company_applied(vac.company, limits.per_company_days) + planned[company_key(vac.company)]
@@ -167,6 +184,8 @@ def run(
                     # таблице на листе «Пропущенные» видно, что и почему отсеяно, — по ней удобно править описание
                     state.mark_skipped(vac, f"{AI_SKIP} [{criteria_key}]: {ai_reason}")
                     results.add(vac, Result(Status.SKIPPED, ai_reason, remember=True))
+                if rejected:  # сбой нейросети — не повод скрывать
+                    hide(vac)
                 return True
 
         log.info("")
@@ -307,7 +326,7 @@ def log_summary(stats: Stats, elapsed: float) -> None:
     log.success(f"  откликов отправлено:        {stats.applied} (из них с письмом: {stats.with_letter})")
     if stats.dry_run:
         log.info(f"  [dry-run] вакансий к отклику: {stats.dry_run}")
-    log.info(f"  пропущено в этом запуске:   {sum(stats.skipped.values())}")
+    log.info(f"  пропущено в этом запуске:   {sum(stats.skipped.values())}" + (f" (из них скрыто на hh: {stats.hidden})" if stats.hidden else ""))
     for reason, count in stats.skipped.most_common():
         log.info(f"      {count} × {reason}")
     log.info(f"  уже откликались / ранее:    {stats.already}")

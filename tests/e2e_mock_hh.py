@@ -221,6 +221,36 @@ def part_dry_run() -> None:
               or '"101"' not in (root / "data" / "state.json").read_text(encoding="utf-8"))
 
 
+def part_hide() -> None:
+    """[filters] hide_unwanted: отсеянные фильтрами вакансии скрываются на hh («глаз» → «Скрыть эту вакансию»),
+    остальные — как обычно. В пробном прогоне ничего не скрывается."""
+    def pages() -> list[list[dict]]:
+        return [[vacancy(601, "Python-разработчик", "modal"), vacancy(602, "Преподаватель Python", "modal"),
+                 vacancy(603, "Junior Python-разработчик", "modal"), vacancy(604, "Бэкенд-разработчик", "modal",
+                                                                             company="Сбер Технологии")]]
+
+    settings = {"filters__hide_unwanted": True, "filters__levels": ["middle", "senior"],
+                "filters__exclude_company_words": ["сбер"]}
+    mock = MockHh(pages=pages())
+    with session(mock, **settings) as root:
+        stats = Stats()
+        code = run_responses(cfg_of(root), RunOptions(dry_run=True), root, stats, log_of(root))
+        check("скрытие: пробный прогон ничего не скрывает", code == EXIT_OK and not mock.hidden, mock.hidden)
+    mock = MockHh(pages=pages())
+    with session(mock, **settings) as root:
+        log_path = log_of(root)
+        stats = Stats()
+        code = run_responses(cfg_of(root), RunOptions(), root, stats, log_path)
+        check("скрытие: запуск без ошибок", code == EXIT_OK, f"код {code}")
+        check("скрытие: слово в названии, уровень, компания", sorted(mock.hidden) == ["602", "603", "604"], mock.hidden)
+        check("скрытие: подходящая — отклик, не скрыта", len(by_id(mock.sent, "601")) == 1 and "601" not in mock.hidden)
+        check("скрытие: счётчик в итогах", stats.hidden == 3 and "скрыто на hh: 3" in text_of(log_path), stats.hidden)
+    mock = MockHh(pages=pages())
+    with session(mock, filters__levels=["middle", "senior"]) as root:
+        run_responses(cfg_of(root), RunOptions(), root, Stats(), log_of(root))
+        check("скрытие: выключено — только пропуск", not mock.hidden, mock.hidden)
+
+
 def part_failures() -> None:
     # лимит hh: останавливаемся сразу и больше не кликаем
     mock = MockHh(pages=[[vacancy(501, "Первая", "modal"), vacancy(502, "Лимит", "limit"), vacancy(503, "Лишняя", "modal")]])
@@ -411,7 +441,7 @@ def part_captcha() -> None:
 
 
 PARTS = {"responses": part_responses, "documents": part_documents, "letters": part_letters, "dry_run": part_dry_run,
-         "failures": part_failures, "chats": part_chats, "resume": part_resume, "background": part_background,
+         "hide": part_hide, "failures": part_failures, "chats": part_chats, "resume": part_resume, "background": part_background,
          "market": part_market, "captcha": part_captcha}
 
 

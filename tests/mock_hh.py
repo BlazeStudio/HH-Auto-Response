@@ -111,7 +111,7 @@ def default_chats() -> list[MockChat]:
 
 
 _PAGE_STYLE = """<style>body{font:14px sans-serif;margin:0} .dlg{position:fixed;left:20px;top:20px;right:20px;background:#fff;
-border:1px solid #888;padding:12px;z-index:5} textarea{width:90%;height:60px;display:block} #app{display:flex}
+border:1px solid #888;padding:12px;z-index:5} .drop{position:fixed;right:20px;top:60px;background:#fff;border:1px solid #888;z-index:6} textarea{width:90%;height:60px;display:block} #app{display:flex}
 #list{width:300px;height:400px;overflow:auto} #panel{flex:1;padding:8px} .msg{margin:4px 0} #messages{min-height:120px}
 #answers{display:flex;flex-direction:column;align-items:flex-start}</style>"""
 
@@ -165,6 +165,23 @@ function modal(card, id, flow, letter) {
   };
   return box;
 }
+// «Глаз» в карточке: меню «Скрыть эту вакансию» / «Скрыть вакансии компании» — отдельным слоем поверх страницы
+document.addEventListener('click', (event) => {
+  const eye = event.target.closest('[data-qa="vacancy__blacklist-show-add"]');
+  if (!eye) return;
+  const card = eye.closest('[data-qa="vacancy-serp__vacancy"]');
+  const menu = document.createElement('div');
+  menu.className = 'drop';
+  menu.innerHTML = '<button type="button" data-qa="vacancy__blacklist-menu-add-vacancy">Скрыть эту вакансию</button>'
+    + '<button type="button" data-qa="vacancy__blacklist-menu-add-employer">Скрыть вакансии компании</button>';
+  document.body.appendChild(menu);
+  qa(menu, 'vacancy__blacklist-menu-add-vacancy').onclick = async () => {
+    await fetch('/mock/hidden', {method: 'POST', body: JSON.stringify({id: card.dataset.id})});
+    menu.remove();
+    card.innerHTML = 'Вакансия скрыта';
+  };
+  qa(menu, 'vacancy__blacklist-menu-add-employer').onclick = () => { menu.remove(); };
+});
 document.addEventListener('click', (event) => {
   const button = event.target.closest('[data-qa="vacancy-serp__vacancy_response"]');
   if (!button) return;
@@ -286,6 +303,7 @@ class MockHh:
         self.chats = chats if chats is not None else default_chats()
         self.sent: list[dict] = []  # что ушло работодателям с откликами
         self.chat_sent: list[dict] = []  # что ушло в чаты
+        self.hidden: list[str] = []  # вакансии, скрытые «глазом» в карточке («Скрыть эту вакансию»)
         self.touches: list[str] = []  # поднятые резюме
         self.touch_status = 200
         self.role = "applicant"
@@ -321,6 +339,9 @@ class MockHh:
         if path == "/mock/sent":
             record = json.loads(data or "{}")
             self.sent.append(record)
+            return 200, "ok", text
+        if path == "/mock/hidden":
+            self.hidden.append(json.loads(data or "{}").get("id", ""))
             return 200, "ok", text
         if path == "/mock/chat":
             self.chat_sent.append(json.loads(data or "{}"))
@@ -372,6 +393,8 @@ class MockHh:
         for v in cards:
             if self.hide_responded and v["id"] in done:
                 continue
+            if v["id"] in self.hidden:  # как hh: скрытую вакансию выдача больше не показывает
+                continue
             label = "Откликнуться" if v["flow"] != "none" and v["id"] not in done else "Вы откликнулись"
             remote = '<span data-qa="vacancy-label-work-schedule-remote">Можно удалённо</span>' if v["remote"] else ""
             items.append(
@@ -380,7 +403,8 @@ class MockHh:
                 f'<span data-qa="serp-item__title-text">{html.escape(v["title"])}</span></a> '
                 f'<span data-qa="vacancy-serp__vacancy-employer-text">{html.escape(v["company"])}</span> {remote}'
                 f'<div data-qa="vacancy-serp__vacancy_snippet_responsibility">{html.escape(v["snippet"])}</div>'
-                f'<a href="#" data-qa="vacancy-serp__vacancy_response" data-flow="{v["flow"]}">{label}</a></div>')
+                f'<a href="#" data-qa="vacancy-serp__vacancy_response" data-flow="{v["flow"]}">{label}</a>'
+                '<button type="button" aria-label="Скрыть" data-qa="vacancy__blacklist-show-add">◉</button></div>')
         pager = "".join(f'<a data-qa="pager-page" href="?page={i}">{i + 1}</a>' for i in range(len(self.pages)))
         script = (f"const RESUME_TITLE = {json.dumps(RESUME_TITLE, ensure_ascii=False)};\n"
                   f"const NO_GENERATE = {json.dumps(self.no_generate)};\n"

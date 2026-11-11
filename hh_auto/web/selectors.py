@@ -16,6 +16,10 @@ SNIPPET = '[data-qa="vacancy-serp__vacancy_snippet_responsibility"], [data-qa="v
 PAGER_NEXT = '[data-qa="pager-next"]'  # бывает не всегда: hh иногда показывает только номера страниц
 PAGER_PAGE = '[data-qa="pager-page"]'
 SEARCH_HEADER = '[data-qa="vacancies-search-header"]'  # «Найдено 426 подходящих вакансий…»
+# «Глаз» в карточке (aria-label «Скрыть») → меню: «Скрыть эту вакансию» / «Скрыть вакансии компании».
+# Меню — выпадающее, в узком окне — шторка снизу (role="dialog"); пункты у них одинаковые
+HIDE_BUTTON = '[data-qa="vacancy__blacklist-show-add"]'
+HIDE_VACANCY = '[data-qa="vacancy__blacklist-menu-add-vacancy"]'
 
 # --- Окно отклика с сопроводительным (bottom-sheet / модалка) ---
 MODAL_FORM = "#RESPONSE_MODAL_FORM_ID"
