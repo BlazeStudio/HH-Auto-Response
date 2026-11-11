@@ -369,9 +369,50 @@ def part_market() -> None:
         check("анализ резюме: отчёт построен", built.score >= 0 and report.to_text(built), built.score)
 
 
+def part_captcha() -> None:
+    """Капча на «Откликнуться»: человек решил её, hh сам дослал отклик и спрятал вакансию из выдачи. Отклик
+    засчитан, а дальше отклики идут сериями с перерывами. Последней частью: после капчи паузы до 20 минут длиннее."""
+    import json
+
+    import hh_auto.app as app
+    from dataclasses import replace
+    from hh_auto.web import browser
+
+    mock = MockHh(pages=[[vacancy(301, "Python с капчей", "captcha"), vacancy(302, "Python после капчи", "modal"),
+                          vacancy(303, "Ещё Python", "modal"), vacancy(304, "И ещё Python", "modal")]])
+    mock.hide_responded = True
+    breather, browser.BREATHER = browser.BREATHER, (0, 0)
+    with session(mock, limits__captcha_rest=0.01) as root:
+        mocked = app.launch
+
+        def launch(pw, cfg):  # браузер без окна, но капчу «решает человек» (окно для неё не нужно)
+            context = mocked(pw, cfg)
+            browser._cfg = replace(cfg, browser=replace(cfg.browser, headless=False))
+            return context
+
+        app.launch = launch
+        try:
+            stats = Stats()
+            log_path = log_of(root)
+            code = run_responses(cfg_of(root), RunOptions(), root, stats, log_path)
+        finally:
+            app.launch, browser.BREATHER = mocked, breather
+        log = text_of(log_path)
+        check("капча: запуск без ошибки", code == EXIT_OK, f"код {code}")
+        check("капча: отклик ушёл один раз", len(by_id(mock.sent, "301")) == 1, mock.sent)
+        check("капча: отклик после капчи засчитан", "hh принял его после капчи" in log and stats.applied == 4,
+              f"отправлено {stats.applied}")
+        state = json.loads((root / "data" / "state.json").read_text(encoding="utf-8"))
+        check("капча: отклик в памяти", "301" in state.get("applied", {}), list(state.get("applied", {})))
+        pacing = json.loads((root / "data" / "pacing.json").read_text(encoding="utf-8"))
+        check("капча: серия запомнена", pacing.get("series") == 2, pacing)
+        check("капча: перерывы после капчи и после серии",
+              "перерыв" in log and "после капчи" in log and "после серии из 2 откл." in log)
+
+
 PARTS = {"responses": part_responses, "documents": part_documents, "letters": part_letters, "dry_run": part_dry_run,
          "failures": part_failures, "chats": part_chats, "resume": part_resume, "background": part_background,
-         "market": part_market}
+         "market": part_market, "captcha": part_captcha}
 
 
 def main() -> int:

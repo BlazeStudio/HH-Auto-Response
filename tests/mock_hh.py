@@ -148,7 +148,17 @@ function modal(card, id, flow, letter) {
   qa(box, 'vacancy-response-submit-popup').onclick = async () => {
     const area = box.querySelector('textarea');
     const text = area ? area.value : (box.dataset.letter || '');
-    if (flow === 'modal' && !text) return;  // письмо обязательное: hh не отправит
+    if ((flow === 'modal' || flow === 'captcha') && !text) return;  // письмо обязательное: hh не отправит
+    if (flow === 'captcha') {  // hh просит капчу; когда человек её решил, отклик уходит сам
+      const captcha = dialog('<div data-qa="account-captcha-input">Введите символы с картинки</div>');
+      setTimeout(async () => {
+        await post({id, flow, letter: text});
+        captcha.remove();
+        box.remove();
+        responded(card);
+      }, CAPTCHA_MS);
+      return;
+    }
     await post({id, flow, letter: text});
     box.remove();
     responded(card);
@@ -161,7 +171,7 @@ document.addEventListener('click', (event) => {
   event.preventDefault();
   const card = button.closest('[data-qa="vacancy-serp__vacancy"]');
   const id = card.dataset.id, flow = button.dataset.flow;
-  if (flow === 'modal') modal(card, id, flow, LETTER);
+  if (flow === 'modal' || flow === 'captcha') modal(card, id, flow, LETTER);
   else if (flow === 'optional') {
     const box = modal(card, id, flow,
       '<button type="button" data-qa="vacancy-response-letter-toggle">Добавить сопроводительное</button><div class="slot"></div>');
@@ -281,6 +291,8 @@ class MockHh:
         self.role = "applicant"
         self.expire_after_sent = 0  # после стольких откликов сессия «истекает»
         self.no_generate = False  # кнопка «Сгенерировать» не даёт письма (нет подписки)
+        self.hide_responded = False  # выдача прячет вакансии с откликом (как «подходящие к резюме» после капчи)
+        self.captcha_ms = 3000  # сколько «человек» решает капчу (вакансии с flow="captcha")
         self.visited: list[str] = []
         self.outside: list[str] = []  # запросы мимо hh: их быть не должно
 
@@ -324,6 +336,8 @@ class MockHh:
             return 200, self._search(query), page
         if path == "/applicant/vacancy_response":
             return 200, self._questions(query), page
+        if path.startswith("/vacancy/"):
+            return 200, self._vacancy(path.rstrip("/").rsplit("/", 1)[-1]), page
         if path == "/chat" or path.startswith("/chat/"):
             return 200, self._chat(), page
         return 200, f"<!doctype html><title>hh</title>{_PAGE_STYLE}<body><main>Главная</main></body>", page
@@ -356,6 +370,8 @@ class MockHh:
         done = {r["id"] for r in self.sent}
         items = []
         for v in cards:
+            if self.hide_responded and v["id"] in done:
+                continue
             label = "Откликнуться" if v["flow"] != "none" and v["id"] not in done else "Вы откликнулись"
             remote = '<span data-qa="vacancy-label-work-schedule-remote">Можно удалённо</span>' if v["remote"] else ""
             items.append(
@@ -367,7 +383,8 @@ class MockHh:
                 f'<a href="#" data-qa="vacancy-serp__vacancy_response" data-flow="{v["flow"]}">{label}</a></div>')
         pager = "".join(f'<a data-qa="pager-page" href="?page={i}">{i + 1}</a>' for i in range(len(self.pages)))
         script = (f"const RESUME_TITLE = {json.dumps(RESUME_TITLE, ensure_ascii=False)};\n"
-                  f"const NO_GENERATE = {json.dumps(self.no_generate)};\n{_SEARCH_JS}")
+                  f"const NO_GENERATE = {json.dumps(self.no_generate)};\n"
+                  f"const CAPTCHA_MS = {self.captcha_ms};\n{_SEARCH_JS}")
         expired_tail = ""
         if self.expire_after_sent:
             # сессия истекает прямо после отправки: следующая проверка программы увидит гостя
@@ -379,6 +396,16 @@ class MockHh:
                 f'<h1 data-qa="vacancies-search-header">Найдено {total} вакансий</h1>'
                 f'<template id="HH-Lux-InitialState">{html.escape(self._state(cards, total), quote=False)}</template>'
                 f'<div id="cards">{"".join(items)}</div><div>{pager}</div><script>{expired_tail}{script}</script></body>')
+
+    def _vacancy(self, vacancy_id: str) -> str:
+        """Страница вакансии: «Вы откликнулись», если отклик уже ушёл."""
+        vac = next((v for page in self.pages for v in page if v["id"] == vacancy_id), None)
+        title = html.escape(vac["title"]) if vac else "Вакансия"
+        state = ('<div data-qa="vacancy-response-link-view-topic">Вы откликнулись</div>'
+                 if vacancy_id in {r["id"] for r in self.sent} else
+                 '<a href="#" data-qa="vacancy-response-link-top">Откликнуться</a>')
+        return (f"<!doctype html><meta charset=utf-8><title>{title}</title>{_PAGE_STYLE}<body>"
+                f'<h1 data-qa="vacancy-title">{title}</h1>{state}</body>')
 
     def _questions(self, query: dict) -> str:
         wanted = query.get("vacancyId", [""])[0]

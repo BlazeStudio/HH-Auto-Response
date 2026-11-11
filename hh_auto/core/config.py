@@ -33,6 +33,9 @@ class Limits:
     # компания с десятком похожих вакансий не получит десяток одинаковых откликов
     per_company: int = 0
     per_company_days: int = 30
+    # Перерыв после капчи, мин. Дальше отклики идут сериями чуть короче той, на которой hh попросил капчу,
+    # с перерывами между ними (hh/pacing.py). 0 — без перерывов: только паузы между вакансиями длиннее
+    captcha_rest: float = 5
 
 
 SEARCH_MODES = ("resume", "query")
@@ -130,8 +133,11 @@ class Chats:
 AI_PROVIDERS = {
     "deepseek": ("https://api.deepseek.com", "deepseek-chat",
                  "platform.deepseek.com → API keys. Платно, но очень дёшево (копейки за анкету)"),
-    "openrouter": ("https://openrouter.ai/api/v1", "deepseek/deepseek-chat-v3-0324:free",
-                   "openrouter.ai → Keys. Бесплатные модели — с пометкой :free (актуальные — на openrouter.ai/models)"),
+    # openrouter/free — OpenRouter сам выбирает бесплатную модель из работающих. Конкретная бесплатная модель
+    # (раньше по умолчанию была deepseek-chat-v3-0324:free) рано или поздно становится платной
+    "openrouter": ("https://openrouter.ai/api/v1", "openrouter/free",
+                   "openrouter.ai → Keys. openrouter/free — OpenRouter сам выбирает бесплатную модель; конкретные "
+                   "бесплатные — с пометкой :free на openrouter.ai/models"),
     "ollama": ("http://localhost:11434/v1", "qwen3:8b",
                "ollama.com — нейросеть на вашем компьютере, бесплатно, ключ не нужен"),
     "custom": ("", "", "любой OpenAI-совместимый сервис: укажите base_url и model"),
@@ -536,6 +542,8 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError("[letter] mode = template, но template_text пустой")
     if cfg.limits.delay_min > cfg.limits.delay_max:
         raise ConfigError("[limits] delay_min больше delay_max")
+    if cfg.limits.captcha_rest < 0:
+        raise ConfigError("[limits] captcha_rest не может быть отрицательным (0 — без перерывов после капчи)")
     if cfg.ai_filter.enabled and not cfg.ai_filter.criteria.strip():
         raise ConfigError("[ai_filter] включён (enabled = true), но не заполнено поле criteria — "
                           "опишите, что вы ищете и чего не хотите")

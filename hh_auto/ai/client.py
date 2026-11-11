@@ -21,6 +21,7 @@ import urllib.request
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
+from .. import __version__
 from ..core.config import AI_PROVIDERS, Ai
 
 KINDS = ("question", "info", "human", "wait")
@@ -600,6 +601,120 @@ def review(decision: Decision, transcript: str, sent: list[str]) -> str:
     return ""
 
 
+# ─────────── ошибки сервиса ИИ — понятными словами ───────────
+
+FREE_ROUTER = "openrouter/free"  # OpenRouter сам выбирает бесплатную модель из тех, что работают сейчас
+USER_AGENT = f"HH-Auto-Response/{__version__}"  # urllib по умолчанию — «Python-urllib», его режут защиты от ботов
+# Соединение оборвалось (часто ещё при установке HTTPS): так его режут VPN, антивирус или провайдер.
+# Бывает и разовым — такой запрос повторяем один раз
+_CUT = re.compile(r"UNEXPECTED_EOF|EOF occurred|connection reset|connection aborted|remote end closed|"
+                  r"forcibly closed|WinError 1005[34]|Errno 104\b", re.I)
+_RETRY_HTTP = (502, 503, 504)  # сервис перегружен или перезапускается — повторяем один раз
+_KEY_PAGES = {"openrouter": "openrouter.ai → Keys", "deepseek": "platform.deepseek.com → API keys"}
+_FAR_FIX = "Не помогло — выберите в «Нейросеть» DeepSeek или Ollama"
+
+
+def _host(url: str) -> str:
+    return urllib.parse.urlparse(url).hostname or url
+
+
+def service_message(body: str) -> str | None:
+    """Текст ошибки, если её прислал сам сервис ИИ: OpenAI-совместимые API отвечают {"error": {"message": …}},
+    Ollama — {"error": "…"}. None — ответил кто-то другой: HTML-страница, VPN, прокси или антивирус
+    (например, { "success": false, "error": "Access denied by security policy." })."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict) and error.get("message"):
+        return " ".join(str(error["message"]).split())
+    if isinstance(error, str) and error.strip() and set(data) == {"error"}:
+        return " ".join(error.split())
+    return None
+
+
+def explain_http_error(code: int, body: str, base_url: str, provider: str, model: str,
+                       free_models: list[str] | None = None) -> str:
+    """Ошибка HTTP от сервиса ИИ: что случилось и что сделать. free_models — модели, бесплатные на OpenRouter
+    сейчас: подсказка, если выбранная перестала быть бесплатной."""
+    host = _host(base_url)
+    message = service_message(body)
+    shown = message or " ".join(body.split())[:300] or "пустой ответ"
+    raw = f"HTTP {code}: {shown}"
+    low = shown.lower()
+    openrouter = host == "openrouter.ai" or host.endswith(".openrouter.ai")
+    if message is None and code in (401, 403, 407, 451):
+        return (f"запрос к {host} отклонил не сам сервис ИИ, а что-то по пути: VPN, антивирус, прокси, сеть на работе "
+                f"или защита сайта от ботов ({raw}). Попробуйте выключить VPN или включить другой и добавьте {host} "
+                f"в исключения антивируса. {_FAR_FIX}")
+    if code == 401:
+        where = _KEY_PAGES.get(provider, "в личном кабинете сервиса")
+        return (f"{host} не принял API-ключ ({raw}) — скопируйте ключ заново ({where}) и вставьте в «API-ключ» "
+                "целиком, без пробелов")
+    if code == 402:
+        free = f" или впишите в «Модель» {FREE_ROUTER} — это бесплатно" if openrouter else ""
+        return f"на балансе {host} не хватает денег на модель «{model}» ({raw}) — пополните баланс{free}"
+    if openrouter and "data policy" in low:
+        return ("OpenRouter не даёт бесплатные модели при ваших настройках приватности (" + raw + "). Откройте "
+                "openrouter.ai/settings/privacy и разрешите бесплатные модели. Учтите: такие модели могут сохранять "
+                "запросы, а в запросах — ваше резюме. Не хотите — выберите платную модель, DeepSeek или Ollama")
+    if openrouter and code in (400, 404) and re.search(r"free|no endpoints|not a valid model|not found|"
+                                                       r"does not exist", low):
+        gone = "бесплатно больше нет" if "free" in low else "нет"
+        text = (f"модели «{model}» на OpenRouter {gone} ({raw}). Впишите в «Модель» {FREE_ROUTER} — OpenRouter "
+                "сам выберет бесплатную")
+        others = [m for m in free_models or [] if m != model][:5]
+        if others:
+            text += f", или одну из бесплатных сейчас: {', '.join(others)}"
+        paid = re.search(r"slug instead:?\s*([\w.\-/:]+)", shown)
+        if paid and paid.group(1).rstrip(".") != model:
+            text += f". Платная версия — «{paid.group(1).rstrip('.')}», для неё нужен баланс на openrouter.ai"
+        return text
+    if code == 429:
+        if openrouter and (model.endswith(":free") or model == FREE_ROUTER):
+            tip = ("У бесплатных моделей OpenRouter есть лимит запросов в минуту и в сутки: подождите или пополните "
+                   f"баланс — лимит вырастет. {_FAR_FIX}")
+        else:
+            tip = "Подождите минуту и повторите"
+        return f"{host} просит помедленнее: слишком много запросов ({raw}). {tip}"
+    if code == 403:
+        region = re.search(r"region|country|territor|location", low)
+        return f"{host} отказал в доступе ({raw})" + (" — модель недоступна в вашей стране, выберите другую"
+                                                      if region else "")
+    if code >= 500:
+        return f"сервис ИИ {host} сейчас сбоит ({raw}) — попробуйте позже"
+    return f"сервис ИИ ответил {raw}"
+
+
+def explain_network_error(error: BaseException, base_url: str) -> str:
+    """Нет связи с сервисом ИИ (не Ollama): почему и что проверить."""
+    host = _host(base_url)
+    reason = str(getattr(error, "reason", error))
+    if _CUT.search(reason):
+        return (f"соединение с {host} обрывается ({reason}). Обычно так его режет VPN, антивирус или провайдер: "
+                f"проверьте, открывается ли https://{host} в браузере, попробуйте выключить VPN или включить другой, "
+                f"добавьте {host} в исключения антивируса. {_FAR_FIX}")
+    if re.search(r"CERTIFICATE_VERIFY_FAILED|certificate verify failed", reason, re.I):
+        return (f"не удалось проверить HTTPS-сертификат {host} ({reason}) — обычно его подменяет антивирус или прокси. "
+                f"Добавьте {host} в исключения проверки HTTPS в антивирусе")
+    if re.search(r"getaddrinfo|name or service not known|nodename nor servname|no address associated|"
+                 r"temporary failure in name resolution", reason, re.I):
+        return (f"не нашёлся адрес {host} ({reason}) — нет интернета, опечатка в «Адрес API» или {host} "
+                "заблокирован у вашего провайдера")
+    return f"нет связи с сервисом ИИ ({base_url}): {error}"
+
+
+def _short_pause(seconds: float) -> None:
+    """Пауза перед повтором запроса: в рабочем потоке — с «Остановить», в окне песочницы — просто ждём."""
+    if threading.current_thread().name == "worker":
+        from ..core import control
+
+        control.sleep(seconds)
+    else:
+        time.sleep(seconds)
+
+
 class AiClient:
     def __init__(self, cfg: Ai):
         self.cfg = cfg
@@ -666,37 +781,64 @@ class AiClient:
             # Режим «строго JSON»: модель не может ответить пересказом переписки вместо решения
             payload["response_format"] = {"type": "json_object"}
         body = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        request = urllib.request.Request(f"{self.base_url}/chat/completions", data=body, headers=headers)
-        try:
-            data = json.loads(_read_interruptible(request, self.cfg.timeout).decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace")[:300]
-            if e.code == 404 and "page not found" in detail.lower():  # адрес не того API, а не нехватка модели
-                raise AiError(f"по адресу {self.base_url} нет API нейросети (HTTP 404: {detail.strip()}) — проверьте "
-                              "«Адрес API»" + (": для Ollama это http://адрес:11434" if self.cfg.provider == "ollama"
-                                               else ", обычно он заканчивается на /v1")) from e
-            if self.cfg.provider == "ollama" and e.code == 404:
-                raise AiError(self._model_missing(ollama_models(ollama_root(self.base_url)))) from e
-            raise AiError(f"сервис ИИ ответил HTTP {e.code}: {detail}") from e
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            if isinstance(e, TimeoutError) or "timed out" in str(e):  # связь есть, модель не успела ответить
-                raise AiError(f"нейросеть не успела ответить за {self.cfg.timeout:g} с — увеличьте «[ai] timeout» "
-                              "в настройках (на процессоре без видеокарты — 180 и больше)") from e
-            if self.cfg.provider == "ollama" and self.local:
-                raise AiError("Ollama не отвечает — запустите приложение Ollama (ollama.com) и повторите") from e
-            if self.cfg.provider == "ollama":
-                raise AiError(f"Ollama на {self.base_url} не отвечает: {e}. Проверьте компьютер с Ollama, сеть "
-                              "или SSH-туннель — см. docs/ollama.md") from e
-            raise AiError(f"нет связи с сервисом ИИ ({self.base_url}): {e}") from e
+        request = urllib.request.Request(f"{self.base_url}/chat/completions", data=body, headers=self._headers())
+        for attempt in (1, 2):  # обрыв связи или перегрузка сервиса бывают разовыми — один повтор
+            try:
+                data = json.loads(_read_interruptible(request, self.cfg.timeout).decode("utf-8"))
+                break
+            except urllib.error.HTTPError as e:
+                if attempt == 1 and e.code in _RETRY_HTTP:
+                    _short_pause(3)
+                    continue
+                raise self._http_error(e) from e
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                if isinstance(e, TimeoutError) or "timed out" in str(e):  # связь есть, модель не успела ответить
+                    raise AiError(f"нейросеть не успела ответить за {self.cfg.timeout:g} с — увеличьте «[ai] timeout» "
+                                  "в настройках (на процессоре без видеокарты — 180 и больше)") from e
+                if self.cfg.provider == "ollama" and self.local:
+                    raise AiError("Ollama не отвечает — запустите приложение Ollama (ollama.com) и повторите") from e
+                if self.cfg.provider == "ollama":
+                    raise AiError(f"Ollama на {self.base_url} не отвечает: {e}. Проверьте компьютер с Ollama, сеть "
+                                  "или SSH-туннель — см. docs/ollama.md") from e
+                if attempt == 1 and _CUT.search(str(getattr(e, "reason", e))):
+                    _short_pause(2)
+                    continue
+                raise AiError(explain_network_error(e, self.base_url)) from e
         try:
             content = data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as e:
             raise AiError(f"непонятный ответ сервиса ИИ: {str(data)[:300]}") from e
         # «Рассуждающие» модели (qwen3, deepseek-r1) пишут ход мыслей в <think>…</think> — он нам не нужен
         return re.sub(r"<think>.*?(</think>|$)", "", content, flags=re.S).strip()
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key.strip()}"
+        return headers
+
+    def _http_error(self, e: urllib.error.HTTPError) -> AiError:
+        detail = e.read().decode("utf-8", errors="replace")[:600]
+        if e.code == 404 and "page not found" in detail.lower():  # адрес не того API, а не нехватка модели
+            return AiError(f"по адресу {self.base_url} нет API нейросети (HTTP 404: {detail.strip()[:300]}) — проверьте "
+                           "«Адрес API»" + (": для Ollama это http://адрес:11434" if self.cfg.provider == "ollama"
+                                            else ", обычно он заканчивается на /v1"))
+        if self.cfg.provider == "ollama" and e.code == 404:
+            return AiError(self._model_missing(ollama_models(ollama_root(self.base_url))))
+        free = self.free_models() if e.code in (400, 404) and _host(self.base_url).endswith("openrouter.ai") else None
+        return AiError(explain_http_error(e.code, detail, self.base_url, self.cfg.provider, self.model, free))
+
+    def free_models(self, limit: int = 5) -> list[str]:
+        """Бесплатные сейчас модели OpenRouter (с пометкой :free), сначала новые. Не удалось узнать — []."""
+        request = urllib.request.Request(f"{self.base_url}/models", headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                models = json.loads(response.read().decode("utf-8")).get("data", [])
+            free = [m for m in models if str(m.get("id", "")).endswith(":free")]
+        except (urllib.error.URLError, OSError, ValueError, AttributeError):
+            return []
+        free.sort(key=lambda m: m.get("created") or 0, reverse=True)
+        return [m["id"] for m in free[:limit]]
 
     def ping(self) -> str:
         """Проверка подключения: короткий запрос, возвращает ответ модели."""

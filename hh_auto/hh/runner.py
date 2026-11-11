@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import random
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +16,7 @@ from ..ai.client import AiError
 from ..web.browser import FatalError
 from ..core.config import Config
 from ..core.logger import log
+from .pacing import FILE as PACING_FILE, Pacer
 from .responder import MOVED, Responder, Result, Status
 from .search import (Vacancy, collect_vacancies, describe_hh_filters, next_page_info, open_results_page,
                      results_page_url, search_urls, wait_all_cards)
@@ -90,6 +91,8 @@ def run(
     # нейросеть, но письма от этого писать ей нельзя: резюме для фильтра даже не загружается.
     responder_ai = ai if (cfg.ai.enabled or cfg.letter.mode == "ai") else None
     responder = Responder(page, cfg, snapshots_dir, resume_title, responder_ai, resume_text)
+    # после капчи — серии откликов с перерывами; пробный прогон ничего не отправляет, ему они не нужны
+    pacer = Pacer(limits if not opts.dry_run else replace(limits, captcha_rest=0), state.path.parent / PACING_FILE)
     errors_in_row = 0
     filters_warned = False
     criteria_key = _criteria_key(cfg)
@@ -188,6 +191,7 @@ def run(
         else:
             handled.discard(vac.id)  # hh увёз её на другую страницу — встретим там и обработаем
         if result.status is Status.APPLIED:
+            pacer.sent()
             stats.applied += 1
             stats.with_letter += result.letter
             state.mark_applied(vac, result.letter)
@@ -218,7 +222,9 @@ def run(
             return False
 
         responder.back_to_results(url)
-        if responder.clicked:
+        if pacer.rest_if_due():  # была капча или серия откликов набрана — перерыв вместо обычной паузы
+            pass
+        elif responder.clicked:
             _sleep(limits.delay_min, limits.delay_max, "перед следующей вакансией")
         else:  # в hh ничего не нажимали (вакансия уехала, кнопки уже нет) — паузе 6–15 с нечего разделять
             log.debug("  в hh ничего не нажимали — без паузы")

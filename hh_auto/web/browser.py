@@ -353,7 +353,13 @@ def captcha_shown(page: Page) -> bool:
 
 # Капча — знак, что hh считает, что мы торопимся. Обходить её программа не будет: она замедляется сама.
 SLOW_FOR = 20 * 60  # с: столько после капчи паузы между действиями длиннее
+BREATHER = (20, 40)  # с: передышка сразу после капчи (× slowdown / 2)
 _captchas: list[float] = []  # когда за этот сеанс hh показывал капчу (time.monotonic)
+
+
+def captcha_count() -> int:
+    """Сколько капч решили за этот сеанс программы — так серии откликов (hh/pacing.py) замечают новую."""
+    return len(_captchas)
 
 
 def slowdown() -> float:
@@ -383,7 +389,7 @@ def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
     log.success("  ✓ капча пройдена, продолжаю")
     hide_after_user(was_hidden)
     _captchas.append(time.monotonic())
-    rest = random.uniform(20, 40) * slowdown() / 2
+    rest = random.uniform(*BREATHER) * slowdown() / 2
     log.info(f"  hh просит помедленнее: передышка {rest:.0f} с, следующие {SLOW_FOR // 60} мин паузы "
              f"между действиями ×{slowdown():g}")
     control.sleep(rest)
