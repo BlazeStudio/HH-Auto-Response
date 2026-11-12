@@ -20,7 +20,7 @@ from .web import browser
 from .web.browser import FatalError, check_region, launch
 from .hh.chats import ChatStats, check_invitations, log_chat_summary, read_rejections
 from .core.config import Config
-from .core import control
+from .core import control, power
 from .core.control import BrowserClosed, StopRequested
 from .core.logger import log
 from .hh import raising
@@ -196,7 +196,8 @@ def _with_browser(cfg: Config, root: Path, work, auto_raise: bool = True, login:
     """auto_raise — заодно поднять резюме, если пора; login — нет входа: показать окно входа и ждать
     (False — сразу закончить с ошибкой: так работают фоновые запуски, чтобы окно не выскакивало само)."""
     try:
-        return _browser_session(cfg, root, work, auto_raise, login)
+        with power.awake("работа"):  # отошли от компьютера — он не уснёт посреди откликов (экран гаснуть может)
+            return _browser_session(cfg, root, work, auto_raise, login)
     except Exception:
         if not control.user_stopped():
             raise

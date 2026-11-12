@@ -25,7 +25,7 @@ import tkinter
 import customtkinter as ctk
 
 from .. import __version__
-from ..core import control
+from ..core import control, power
 from ..app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_background, run_chats, run_market, run_responses
 from ..analysis import market as analysis_market, report as analysis, resume as analysis_resume
 from ..hh.chats import ChatStats
@@ -48,6 +48,7 @@ from ..web import browser, window as browser_window
 from ..hh import raising, watch
 from ..core import updater
 from .mini import BrowserPreview, MiniWindow
+from . import tray as tray_icon
 from . import dialogs as messagebox  # свои окна в стиле приложения вместо стандартных окон Windows
 from .widgets import (Chart, ChipGroup, ItemList, MENU_BUTTONS, crossfade, PlainFrame, QuietToplevel, RichText,
                       SelectableText, TextLabel, flush_paint, frozen, install_editing, precise_timer, set_titlebar_dark,
@@ -1228,6 +1229,10 @@ SETTINGS = [
         ("schedule", "days", "По каким дням", "multi", ""),
         ("schedule", "chats_after", "После откликов прочитать отказы в чатах", "bool",
          "И ответить ботам hh, если включены «ИИ-ответы в чатах», а на странице «Чаты» выбрано «Отказы и ответы ИИ»"),
+        ("schedule", "keep_awake", "Не давать компьютеру уснуть, пока приложение открыто", "bool",
+         "Когда включено расписание, поднятие резюме или фоновая проверка. Экран гаснет как обычно — не засыпает "
+         "только сам компьютер, и запуск в назначенное время случится. Во время откликов и чатов компьютер "
+         "не засыпает всегда"),
     ]),
     ("Поднятие резюме", [
         ("raising", "enabled", "Поднимать резюме в поиске каждые 4 часа", "bool",
@@ -1265,6 +1270,10 @@ SETTINGS = [
          "«Чатах» и фоновой проверке. Сообщает один раз и только о непрочитанном приглашении"),
         ("notify", "telegram_chat_id", "Ваш chat id", "str",
          "Напишите боту что-нибудь и откройте api.telegram.org/bot<токен>/getUpdates — там будет chat.id"),
+        ("notify", "telegram_captcha", "Капча — в Telegram: ответить можно с телефона", "bool",
+         "Нужен Telegram выше. Бот пришлёт картинку капчи — ответьте ему символами с неё, программа введёт их "
+         "сама. Решить капчу в окне браузера тоже можно, кто первый. Не подошло — придёт новая картинка; "
+         "ответ «другая» — другая картинка"),
     ]),
     ("Статистика", [
         ("stats", "disabled", "Не вести статистику", "bool",
@@ -1567,6 +1576,18 @@ class SettingsPage(Page):
         if app.prefs.get("mini_on_minimize", True):
             self.mini_switch.select()
         self.mini_switch.pack(side="left")
+        if tray_icon.available():
+            row = PlainFrame(danger)
+            row.pack(fill="x", padx=16, pady=(0, 14))
+            self.tray_switch = ctk.CTkSwitch(row, text=f"Сворачивать в трей (значок {tray_icon.PLACE})",
+                                             command=self._tray_switched)
+            if app.prefs.get("tray", True):
+                self.tray_switch.select()
+            self.tray_switch.pack(side="left")
+            SelectableText(row, f"Свёрнутое окно уходит {tray_icon.PLACE}, а не на панель задач; расписание "
+                                "и отклики идут как обычно. Пока идёт работа, сначала — мини-окно, если оно "
+                                "включено выше",
+                           color=MUTED, size=12, width_px=420).pack(side="left", fill="x", expand=True, padx=12)
         self.current_tab = ""
         saved = app.prefs.get("settings_tab")
         self.show_tab(saved if saved in self.tabs else SETTINGS_TABS[0][0])
@@ -1577,6 +1598,11 @@ class SettingsPage(Page):
         _secondary_button(footer, "Отменить изменения", lambda: self.load(force=True), width=180).pack(
             side="left", padx=10)
         _secondary_button(footer, "Открыть config.toml", lambda: open_path(app.config_path), width=180).pack(side="right")
+
+    def _tray_switched(self) -> None:
+        on = bool(self.tray_switch.get())
+        self.app.save_prefs(tray=on)
+        self.app.set_tray(on)
 
     def show_tab(self, name: str) -> None:
         """Вкладка настроек: на экране только она — остальные не рисуются вовсе."""
@@ -3170,12 +3196,14 @@ class App(ctk.CTk):
         self.closing = False
         self.mini: MiniWindow | None = None  # одно на сеанс: создаётся заранее, потом только показывается
         self.mini_mode = False  # сейчас вместо окна программы — мини-окно
+        self.tray: tray_icon.Tray | None = None  # значок в трее: свёрнутое окно уходит туда
         self._frames_wanted = True  # кадры браузера кому-то видны (окно программы или мини-окно)
         self._poll_count = 0
         self.last_frame: bytes | None = None  # последний кадр браузера (для превью и мини-окна)
         self._browser_check = 0.0  # когда в последний раз смотрели на окно браузера
         self._crash_shown = False
         self.waiting_captcha = False  # hh показал капчу, работа ждёт человека
+        self.captcha_where = "в окне браузера"  # где её решить: ещё и ответом боту, если капча в Telegram
         self.update_release: updater.Release | None = None  # найденная новая версия
         self.update_root: Path | None = None  # скачанная и распакованная новая версия
         self.update_busy = False
@@ -3217,6 +3245,9 @@ class App(ctk.CTk):
             threading.Thread(target=lambda: (time.sleep(20), updater.cleanup()), daemon=True).start()
         self.after(4000, self.check_updates)
         self.after(3000, self._schedule_tick)
+        self.after(1500, lambda: self.set_tray(self.tray_wanted()))
+        if sys.platform == "darwin":  # щелчок по значку в Dock — вернуть окно (из трея тоже)
+            self.createcommand("::tk::mac::ReopenApplication", self.show_from_tray)
 
     # ---------- построение окна ----------
 
@@ -3390,10 +3421,18 @@ class App(ctk.CTk):
             return
         if self.cfg.schedule != before:  # включили или поменяли время — уже прошедшее сегодня не запускаем
             self.schedule_since = datetime.now()
+        self._keep_awake()
         self._show_next_run()
         self.pages["responses"].refresh_config(self.cfg)
         self.pages["chats"].refresh_config(self.cfg)
         self.pages["ai"].invalidate()
+
+    def _keep_awake(self) -> None:
+        """[schedule] keep_awake: пока приложение открыто и есть что запускать по времени — компьютер не засыпает
+        (экран гаснет как обычно). Во время самой работы он не засыпает всегда (app._with_browser)."""
+        cfg = self.cfg
+        timed = cfg.schedule.enabled or cfg.raising.enabled or cfg.watch.invitations or cfg.dream.enabled
+        power.set_held("расписание", cfg.schedule.keep_awake and timed)
 
     def _load_prefs(self) -> dict:
         try:
@@ -3860,6 +3899,8 @@ class App(ctk.CTk):
         self.pages["chats"].set_running(running)
         self.pages["ai"].set_running(running)
         self.pages["analysis"].set_running(running)
+        if self.tray is not None:
+            self.tray.refresh()
 
     def _recent_items(self) -> list[dict]:
         """Последние вакансии для окошка на «Откликах»: этого запуска (с пропущенными фильтрами) и из журнала."""
@@ -3982,7 +4023,9 @@ class App(ctk.CTk):
                         self.pages["responses"].current.configure(text=text.split("▶", 1)[1].strip())
                     if "показал капчу" in text and self.running_kind:  # ждём человека — видно и в меню слева
                         self.waiting_captcha = True
-                        self._set_status("●  Нужна капча", AMBER, "решите её в окне браузера")
+                        self.captcha_where = ("в браузере или ответом боту в Telegram" if "Telegram" in text
+                                              else "в окне браузера")
+                        self._set_status("●  Нужна капча", AMBER, f"решите её {self.captcha_where}")
                         self.bell()
                     if "★ Приглашение:" in text:
                         self._on_invitation(text.split("★", 1)[1].strip())
@@ -4010,6 +4053,8 @@ class App(ctk.CTk):
                     self._on_update_progress(*event[1:])
                 elif event[0] == "update_ready":
                     self._on_update_ready(*event[1:])
+                elif event[0] == "tray":
+                    self._on_tray(event[1])
         except queue.Empty:
             pass
         if self.destroyed:
@@ -4024,7 +4069,7 @@ class App(ctk.CTk):
             self.pages["chats"].update_stats(self.chat_stats)
         if self.running_kind and not control.stop_requested():
             minutes, seconds = divmod(int(time.monotonic() - self.started_at), 60)
-            what = ("решите капчу в окне браузера • " if self.waiting_captcha else
+            what = (f"решите капчу {self.captcha_where} • " if self.waiting_captcha else
                     ("на паузе • " if control.holding() else "ставлю на паузу — дождусь конца шага • ")
                     if control.paused() else "идёт ")
             self.status_detail.configure(text=f"{what}{minutes:02d}:{seconds:02d}")
@@ -4032,6 +4077,8 @@ class App(ctk.CTk):
             self._browser_check = time.monotonic()
             self._watch_browser()
         self._poll_count += 1
+        if self.tray is not None and self._poll_count % 8 == 0:
+            self.tray.set_tip(self._tray_tip())
         if self.mini is not None and not self.mini.winfo_exists():  # мини-окно пропало — вернуть окно программы
             self.mini = None
             if self.mini_mode:
@@ -4139,10 +4186,14 @@ class App(ctk.CTk):
         step(1)
 
     def _on_unmap(self, event) -> None:
-        """Свернули окно, пока идёт работа — вместо панели задач мини-окно в углу (если так настроено)."""
-        if (event.widget is self and not self.mini_mode and self.running_kind
-                and self.prefs.get("mini_on_minimize", True) and self.state() == "iconic"):
+        """Свернули окно: пока идёт работа — мини-окно в углу (если так настроено), иначе — в трей (если он
+        включён). Без трея — на панель задач, как раньше."""
+        if event.widget is not self or self.mini_mode or self.state() != "iconic":
+            return
+        if self.running_kind and self.prefs.get("mini_on_minimize", True):
             self.after(10, self._minimize_to_mini)
+        elif self.tray is not None:
+            self.after(10, self._minimize_to_tray)
 
     def _minimize_to_mini(self) -> None:
         """Свёрнутое окно Windows держит в стороне (-32000); если спрятать его прямо таким, при разворачивании
@@ -4157,6 +4208,87 @@ class App(ctk.CTk):
         self.state("normal")
         self.update_idletasks()
         self.to_mini()
+
+    # ---------- значок в трее ----------
+
+    def tray_wanted(self) -> bool:
+        return tray_icon.available() and self.prefs.get("tray", True)
+
+    def set_tray(self, on: bool) -> None:
+        """Включить или убрать значок в трее («Настройки» → «Прочее» → «Сворачивать в трей»)."""
+        if self.destroyed:
+            return
+        if on and self.tray is None and tray_icon.available():
+            tray = tray_icon.Tray(self.events, lambda: bool(self.running_kind))
+            if tray.start():
+                self.tray = tray
+        elif not on and self.tray is not None:
+            self.tray.stop()
+            self.tray = None
+            # окно (или мини-окно) было в трее — без значка его иначе не вернуть
+            if self.mini_mode and self.mini is not None and not self.mini.visible:
+                self.from_mini()
+            elif self.state() == "withdrawn" and not self.mini_mode:
+                self._reveal()
+
+    def _minimize_to_tray(self) -> None:
+        """Окно — в трей. Как и с мини-окном: сначала невидимо вернуть обычное окно, потом спрятать — иначе
+        Windows при разворачивании искажает размер рамки."""
+        if self.mini_mode or self.tray is None or self.state() != "iconic":
+            return
+        try:
+            self.attributes("-alpha", 0.0)
+        except tkinter.TclError:
+            pass
+        self.state("normal")
+        self.update_idletasks()
+        self.withdraw()
+        try:
+            self.attributes("-alpha", self.FULL_ALPHA)
+        except tkinter.TclError:
+            pass
+        if not self.prefs.get("tray_hint_shown"):
+            self.save_prefs(tray_hint_shown=True)
+            self.tray.notify(f"Программа свернулась {tray_icon.PLACE}: расписание и отклики идут как обычно. "
+                             "Щелчок по значку — открыть окно")
+
+    def mini_to_tray(self) -> None:
+        """«—» у мини-окна при включённом трее: мини-окно тоже уходит в трей."""
+        if self.mini is not None and self.mini.visible:
+            self.mini.hide()
+
+    def show_from_tray(self) -> None:
+        if self.mini_mode:
+            self.from_mini()
+        elif self.state() in ("withdrawn", "iconic"):
+            self._reveal()
+        else:
+            self.lift()
+            self.focus_force()
+
+    def _on_tray(self, action: str) -> None:
+        if self.destroyed:
+            return
+        if action == "open":
+            self.show_from_tray()
+        elif action == "start":
+            if not (self.worker and self.worker.is_alive()):
+                self.start_responses(False)
+                if not (self.worker and self.worker.is_alive()):
+                    self.show_from_tray()  # не запустилось (ошибка в настройках) — показать, что не так
+        elif action == "stop":
+            self.stop()
+        elif action == "browser":
+            self.show_browser()
+        elif action == "quit":
+            if self.worker and self.worker.is_alive():
+                self.show_from_tray()  # спросит «остановить и закрыть?» — в окне программы
+            self.on_close()
+
+    def _tray_tip(self) -> str:
+        status = self.status.cget("text").replace("●", "").strip()
+        detail = self.status_detail.cget("text").strip()
+        return f"{APP_NAME}\n{status}" + (f" • {detail}" if detail else "")
 
     def _ctrl_key(self, event) -> None:
         if event.keycode == 77 or (event.keysym or "").lower() in ("m", "cyrillic_softsign"):  # Ctrl+M (Ctrl+Ь)
@@ -4180,6 +4312,10 @@ class App(ctk.CTk):
 
     def destroy(self) -> None:
         self.destroyed = True
+        if self.tray is not None:
+            self.tray.stop()
+            self.tray = None
+        power.release("расписание")
         super().destroy()
 
     def on_close(self) -> None:

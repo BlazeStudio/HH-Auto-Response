@@ -4,7 +4,7 @@ import re
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).parent
 # версия одна на всё: hh_auto/__init__.py (её же проверяет workflow перед релизом)
@@ -23,6 +23,9 @@ datas += [
     (str(ROOT / "config.example.toml"), "."),
 ]
 
+TRAY = ({"win32": ["pystray._win32"], "darwin": ["pystray._darwin"]}.get(sys.platform)
+        or ["pystray._xorg"] + collect_submodules("Xlib"))
+
 a = Analysis(
     [str(ROOT / "scripts" / "gui.py")],
     pathex=[str(ROOT)],
@@ -30,7 +33,9 @@ a = Analysis(
     # Картинки в окне (значки меню) на Linux и macOS идут через PIL._imagingtk, а он ищет Tk модулем
     # PIL._tkinter_finder. Хук PyInstaller для Pillow вырезает из него импорт tkinter, и модуль в сборку не попадал:
     # Linux-версия падала при запуске («No module named 'PIL._tkinter_finder'»)
-    hiddenimports=["PIL._tkinter_finder"],
+    # Значок в трее: pystray выбирает часть под ОС при запуске (importlib), сам PyInstaller её не находит.
+    # Linux — значок X11 (python-xlib грузит свои расширения по имени — берём все его модули)
+    hiddenimports=["PIL._tkinter_finder"] + TRAY,
     excludes=["numpy", "pandas", "matplotlib", "scipy", "pytest", "IPython"],
     noarchive=False,
 )

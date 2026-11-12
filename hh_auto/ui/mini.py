@@ -224,7 +224,11 @@ class MiniWindow(QuietToplevel, ctk.CTkToplevel):
             ctypes.windll.user32.ShowWindow(hwnd, command)
 
     def minimize(self) -> None:
-        """«—»: на панель задач; щелчок по кнопке «HH-Auto-Response» там — снова мини-окно."""
+        """«—»: на панель задач; щелчок по кнопке «HH-Auto-Response» там — снова мини-окно. Включён трей —
+        в трей, как и окно программы: щелчок по значку вернёт окно программы."""
+        if self.app.tray is not None:
+            self.app.mini_to_tray()
+            return
         if sys.platform == "win32":
             self._show_window(6)  # SW_MINIMIZE (Tk не сворачивает окна без рамки)
         else:

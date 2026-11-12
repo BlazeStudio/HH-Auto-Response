@@ -98,6 +98,60 @@ def telegram(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
+class TelegramError(Exception):
+    def __init__(self, text: str, code: int = 0):
+        super().__init__(text)
+        self.code = code  # 409 — сообщения бота забирает кто-то другой (вебхук или другая программа)
+
+
+def bot_token(token: str) -> str:
+    return token or os.environ.get("HH_TELEGRAM_TOKEN", "")
+
+
+def telegram_call(token: str, method: str, params: dict | None = None, files: dict | None = None,
+                  timeout: float = 20) -> object:
+    """Вызов Bot API: поле result ответа или TelegramError. files — {поле: (имя файла, байты, тип)}.
+    Токен — только в адресе запроса: в тексте ошибок его нет."""
+    params = {key: json.dumps(value) if isinstance(value, (list, dict)) else str(value)
+              for key, value in (params or {}).items()}
+    if files:
+        boundary = os.urandom(12).hex()
+        body = _multipart(params, files, boundary)
+        kind = f"multipart/form-data; boundary={boundary}"
+    else:
+        body, kind = urllib.parse.urlencode(params).encode(), "application/x-www-form-urlencoded"
+    request = urllib.request.Request(f"https://api.telegram.org/bot{token}/{method}", data=body,
+                                     headers={"Content-Type": kind})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            data = json.loads(e.read().decode("utf-8"))
+        except (OSError, ValueError):
+            raise TelegramError(f"HTTP {e.code}", e.code) from None
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise TelegramError(str(getattr(e, "reason", "") or e)) from None
+    if not isinstance(data, dict) or not data.get("ok"):
+        description = data.get("description", "") if isinstance(data, dict) else ""
+        raise TelegramError(description or "Telegram не принял запрос",
+                            data.get("error_code", 0) if isinstance(data, dict) else 0)
+    return data.get("result")
+
+
+def _multipart(fields: dict[str, str], files: dict, boundary: str) -> bytes:
+    out = bytearray()
+    for name, value in fields.items():
+        out += f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        out += value.encode("utf-8") + b"\r\n"
+    for name, (filename, data, kind) in files.items():
+        out += (f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                f"Content-Type: {kind}\r\n\r\n").encode()
+        out += data + b"\r\n"
+    out += f"--{boundary}--\r\n".encode()
+    return bytes(out)
+
+
 def send(cfg: Notify, title: str, text: str) -> None:
     """Итоги запуска — во все включённые каналы."""
     if cfg.desktop and desktop(title, text):

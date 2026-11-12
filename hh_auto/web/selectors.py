@@ -77,3 +77,10 @@ RESUME_PAGE_TITLE = (
 
 # --- Капча ---
 CAPTCHA = 'img[src*="captcha"], [data-qa*="captcha"]'
+# Форма капчи (страница hh.ru/account/captcha «Подтвердите, что вы не робот»): картинка, «Другой текст», поле,
+# «Отправить» и надпись «Неверный текст» (до ошибки — скрыта). По ним ответ из Telegram вводится в браузер
+CAPTCHA_PICTURE = '[data-qa="account-captcha-picture"], img[src*="captcha"]'
+CAPTCHA_INPUT = '[data-qa="account-captcha-input"]'
+CAPTCHA_SUBMIT = '[data-qa="account-captcha-submit"]'
+CAPTCHA_ERROR = '[data-qa="account-captcha-error"]'
+CAPTCHA_RENEW = '[data-qa="captcha-renew-text"]'

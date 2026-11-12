@@ -270,6 +270,9 @@ class Schedule:
     times: list[str] = field(default_factory=lambda: ["10:00"])  # во сколько запускать: "10:00", "15:30"
     days: list[str] = field(default_factory=lambda: ["1", "2", "3", "4", "5"])  # 1 — понедельник … 7 — воскресенье
     chats_after: bool = False  # после откликов прочитать отказы в чатах (и ответить ботам, если включён ИИ)
+    # пока приложение открыто и включено расписание, поднятие резюме или фоновая проверка — компьютер не засыпает
+    # (экран гаснет как обычно). Во время самой работы он не засыпает всегда
+    keep_awake: bool = False
 
     def slots(self) -> list[tuple[int, int]]:
         """Время запусков (часы, минуты) по порядку. Неверную запись не пропускает validate_config."""
@@ -326,6 +329,9 @@ class Notify:
     telegram_token: str = ""  # токен бота от @BotFather (или переменная окружения HH_TELEGRAM_TOKEN)
     telegram_chat_id: str = ""  # ваш chat id (узнать: написать боту и открыть api.telegram.org/bot<токен>/getUpdates)
     invitations: bool = True  # сразу сообщать о приглашении (в те же каналы: компьютер, Telegram)
+    # капча: картинка — в Telegram, ответ символами с неё вводится в браузер (решить в окне браузера тоже можно).
+    # Нужен telegram = true с токеном и chat id
+    telegram_captcha: bool = True
 
 
 @dataclass

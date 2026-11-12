@@ -133,6 +133,36 @@ function dialog(inner, role) {
   return box;
 }
 const LETTER = '<textarea data-qa="vacancy-response-popup-form-letter-input"></textarea>';
+// Капча с формой — та же вёрстка, что на hh.ru/account/captcha: картинка, «Другой текст», поле, «Отправить»,
+// надпись «Неверный текст» (до ошибки скрыта). Неверный ответ — надпись и новая картинка, верный — done()
+let captchaN = 0;
+function captchaPicture() {
+  captchaN++;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60"><rect width="200" height="60" fill="#eee"/>`
+    + `<text x="16" y="40" font-size="26" font-family="monospace">${CAPTCHA_ANSWER} #${captchaN}</text></svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+function captchaForm(done) {
+  const box = dialog(`<form><img data-qa="account-captcha-picture" alt="captcha" width="200" height="60" src="${captchaPicture()}">
+    <button type="button" data-qa="captcha-renew-text" aria-label="Другой текст">↻</button>
+    <input name="captchaText" type="text" data-qa="account-captcha-input">
+    <div data-qa="account-captcha-error" style="visibility:hidden">Неверный текст. Пожалуйста, повторите попытку.</div>
+    <button type="submit" data-qa="account-captcha-submit">Отправить</button></form>`);
+  qa(box, 'captcha-renew-text').onclick = () => { qa(box, 'account-captcha-picture').src = captchaPicture(); };
+  box.querySelector('form').onsubmit = async (event) => {
+    event.preventDefault();
+    const input = qa(box, 'account-captcha-input');
+    await fetch('/mock/captcha', {method: 'POST', body: input.value});
+    if (input.value === CAPTCHA_ANSWER) {
+      box.remove();
+      done();
+      return;
+    }
+    qa(box, 'account-captcha-error').style.visibility = 'visible';
+    qa(box, 'account-captcha-picture').src = captchaPicture();
+    input.value = '';
+  };
+}
 function modal(card, id, flow, letter) {
   const box = dialog(`<span data-qa="resume-title">${RESUME_TITLE}</span>${letter}
     <button type="button" data-qa="generate-cover-letter">Сгенерировать</button>
@@ -149,6 +179,14 @@ function modal(card, id, flow, letter) {
     const area = box.querySelector('textarea');
     const text = area ? area.value : (box.dataset.letter || '');
     if ((flow === 'modal' || flow === 'captcha') && !text) return;  // письмо обязательное: hh не отправит
+    if (flow === 'captcha' && CAPTCHA_ANSWER) {  // капча с формой, как на hh: ответ вводит программа
+      captchaForm(async () => {
+        await post({id, flow, letter: text});
+        box.remove();
+        responded(card);
+      });
+      return;
+    }
     if (flow === 'captcha') {  // hh просит капчу; когда человек её решил, отклик уходит сам
       const captcha = dialog('<div data-qa="account-captcha-input">Введите символы с картинки</div>');
       setTimeout(async () => {
@@ -311,6 +349,8 @@ class MockHh:
         self.no_generate = False  # кнопка «Сгенерировать» не даёт письма (нет подписки)
         self.hide_responded = False  # выдача прячет вакансии с откликом (как «подходящие к резюме» после капчи)
         self.captcha_ms = 3000  # сколько «человек» решает капчу (вакансии с flow="captcha")
+        self.captcha_answer = ""  # задан — капча с формой: решается только этим ответом (его вводит программа)
+        self.captcha_tries: list[str] = []  # что вводили в форму капчи
         self.visited: list[str] = []
         self.outside: list[str] = []  # запросы мимо hh: их быть не должно
 
@@ -339,6 +379,9 @@ class MockHh:
         if path == "/mock/sent":
             record = json.loads(data or "{}")
             self.sent.append(record)
+            return 200, "ok", text
+        if path == "/mock/captcha":
+            self.captcha_tries.append(data or "")
             return 200, "ok", text
         if path == "/mock/hidden":
             self.hidden.append(json.loads(data or "{}").get("id", ""))
@@ -408,7 +451,8 @@ class MockHh:
         pager = "".join(f'<a data-qa="pager-page" href="?page={i}">{i + 1}</a>' for i in range(len(self.pages)))
         script = (f"const RESUME_TITLE = {json.dumps(RESUME_TITLE, ensure_ascii=False)};\n"
                   f"const NO_GENERATE = {json.dumps(self.no_generate)};\n"
-                  f"const CAPTCHA_MS = {self.captcha_ms};\n{_SEARCH_JS}")
+                  f"const CAPTCHA_MS = {self.captcha_ms};\n"
+                  f"const CAPTCHA_ANSWER = {json.dumps(self.captcha_answer)};\n{_SEARCH_JS}")
         expired_tail = ""
         if self.expire_after_sent:
             # сессия истекает прямо после отправки: следующая проверка программы увидит гостя

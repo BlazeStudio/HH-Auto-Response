@@ -440,9 +440,90 @@ def part_captcha() -> None:
               "перерыв" in log and "после капчи" in log and "после серии из 2 откл." in log)
 
 
+class FakeBot:
+    """Telegram для проверки: запоминает, что прислал бот, и «отвечает» по сценарию — по ответу на каждую
+    картинку. Сообщение из чужого чата программа принимать не должна."""
+
+    def __init__(self, chat: str, replies: list[str]):
+        import threading
+
+        self.chat, self.replies = chat, list(replies)
+        self.photos: list[tuple[bytes, str]] = []
+        self.texts: list[str] = []
+        self.answered = 0
+        self.update = 100
+        self.lock = threading.Lock()
+
+    def __call__(self, token, method, params=None, files=None, timeout=20):
+        params = params or {}
+        with self.lock:
+            if method == "sendPhoto":
+                self.photos.append((files["photo"][1], params.get("caption", "")))
+                return {}
+            if method == "sendMessage":
+                self.texts.append(params.get("text", ""))
+                return {}
+            if method == "getUpdates" and str(params.get("offset")) == "-1":  # «пропустить старое»
+                return [self._message(self.chat, "старое сообщение")]
+            if method == "getUpdates" and self.answered < len(self.photos) and self.answered < len(self.replies):
+                reply = self.replies[self.answered]
+                self.answered += 1
+                return [self._message("999", reply), self._message(self.chat, reply)]
+        time.sleep(0.2)  # «long polling»: новых сообщений нет
+        return []
+
+    def _message(self, chat: str, text: str) -> dict:
+        self.update += 1
+        return {"update_id": self.update, "message": {"chat": {"id": int(chat)}, "text": text}}
+
+
+def part_captcha_telegram() -> None:
+    """Капча в Telegram без окна браузера (headless): бот прислал картинку, первый ответ неверный — пришла новая
+    картинка, второй верный — программа ввела его, hh принял отклик. Ответ из чужого чата не принят."""
+    import hh_auto.core.notify as notify
+    import hh_auto.web.captcha as phone
+    from hh_auto.web import browser
+
+    mock = MockHh(pages=[[vacancy(311, "Python с капчей из Telegram", "captcha"), vacancy(312, "Ещё Python", "modal")]])
+    mock.captcha_answer = "x7k2p"
+    bot = FakeBot("4242", ["неверно", "x7k2p"])
+    real_call, real_telegram = phone.telegram_call, notify.telegram
+    phone.telegram_call, notify.telegram = bot, lambda *_args: True  # и итоги запуска — не в настоящий Telegram
+    breather, browser.BREATHER = browser.BREATHER, (0, 0)
+    with session(mock, limits__captcha_rest=0, notify__telegram=True, notify__telegram_token="123:fake",
+                 notify__telegram_chat_id="4242") as root:
+        try:
+            stats = Stats()
+            log_path = log_of(root)
+            code = run_responses(cfg_of(root), RunOptions(), root, stats, log_path)
+            deadline = time.monotonic() + 10  # «✓ Капча пройдена» уходит из потока бота
+            while time.monotonic() < deadline and not any("пройдена" in t for t in bot.texts):
+                time.sleep(0.2)
+        finally:
+            phone.telegram_call, notify.telegram, browser.BREATHER = real_call, real_telegram, breather
+            browser._captchas.clear()  # «после капчи паузы длиннее» — не для следующих частей
+            if phone._relay is not None:
+                phone._relay.retire()
+                phone._relay = None
+        log = text_of(log_path)
+        check("капча в Telegram: запуск без ошибки", code == EXIT_OK, f"код {code}")
+        check("капча в Telegram: картинка пришла, после неверного ответа — ещё раз", len(bot.photos) == 2,
+              [caption for _png, caption in bot.photos])
+        check("капча в Telegram: картинка — PNG", all(png.startswith(b"\x89PNG") for png, _caption in bot.photos))
+        check("капча в Telegram: в подписи — что делать", "Ответьте символами" in bot.photos[0][1] if bot.photos
+              else False)
+        check("капча в Telegram: ответы введены в форму, чужой чат и старое — нет",
+              mock.captcha_tries == ["неверно", "x7k2p"], mock.captcha_tries)
+        check("капча в Telegram: «не подошло» в логе", "ответ из Telegram не подошёл" in log)
+        check("капча в Telegram: бот сообщил, что капча пройдена", any("Капча пройдена" in t for t in bot.texts),
+              bot.texts)
+        check("капча в Telegram: отклик ушёл один раз", len(by_id(mock.sent, "311")) == 1, mock.sent)
+        check("капча в Telegram: оба отклика засчитаны", stats.applied == 2, f"отправлено {stats.applied}")
+
+
 PARTS = {"responses": part_responses, "documents": part_documents, "letters": part_letters, "dry_run": part_dry_run,
          "hide": part_hide, "failures": part_failures, "chats": part_chats, "resume": part_resume, "background": part_background,
-         "market": part_market, "captcha": part_captcha}
+         "market": part_market, "captcha_telegram": part_captcha_telegram, "captcha": part_captcha}
 
 
 def main() -> int:

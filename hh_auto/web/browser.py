@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import os
 import random
+import sys
 import threading
 import time
 from pathlib import Path
@@ -64,6 +66,7 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
         log.info(f"Запускаю браузер: {name}, профиль: {profile}")
         if hides_window(cfg):
             _forget_window_placement(profile)
+        sandbox = SANDBOX
         for attempt in range(1, PROFILE_BUSY_ATTEMPTS + 1):
             control.check()  # остановили, пока запускался прошлый — другой браузер не пробуем
             try:
@@ -79,7 +82,8 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
                     # окно, выехавшее на экран с другим размером и масштабом монитора, показывало белую пустоту
                     viewport=None if hides_window(cfg) else {"width": 1440, "height": 900},
                     no_viewport=hides_window(cfg),
-                    args=window_args(cfg),
+                    chromium_sandbox=sandbox,
+                    args=window_args(cfg) + AUTOMATION_ARGS,
                 )
             except PlaywrightError as e:
                 first = (str(e).splitlines() or [""])[0]
@@ -87,6 +91,10 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
                     # окно прошлого запуска с этим профилем ещё закрывается — Chrome отдаёт ему работу и выходит
                     log.warning(f"  ! профиль {name} ещё занят прошлым окном браузера — жду и пробую снова")
                     control.sleep(3)
+                    continue
+                if sandbox and not _not_installed(str(e)) and attempt < PROFILE_BUSY_ATTEMPTS:
+                    sandbox = False  # песочнице что-то мешает (права, антивирус) — запускаем, как раньше, без неё
+                    log.warning(f"  ! {name} не запустился с песочницей ({first}) — пробую без неё")
                     continue
                 errors.append(f"{name}: " + ("профиль занят другим окном этого браузера — закройте окно, "
                                              "которое открывала программа" if _profile_busy(str(e)) else first))
@@ -103,6 +111,29 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
 
 
 PROFILE_BUSY_ATTEMPTS = 4
+# Признак автоматизации: Playwright включает navigator.webdriver = true — первое, что смотрят проверки «не робот ли».
+# Этот флаг его выключает (проверено: страница видит то же, что у Chrome, подключённого по CDP без Playwright).
+# Капчу он не отменяет — её hh показывает в основном за частые отклики (hh/pacing.py)
+AUTOMATION_ARGS = ["--disable-blink-features=AutomationControlled"]
+# Песочница Chrome — как у обычного браузера. Playwright по умолчанию запускает Chrome с --no-sandbox (так проще
+# в CI), а с ним вкладки hh и открытых ссылок работают без защиты. Linux — тоже с ней, кроме запуска от root и
+# контейнеров (Docker): там Chrome с песочницей не запускается. Не запустился с ней — launch() пробует без неё
+
+
+def _sandbox_possible() -> bool:
+    if sys.platform in ("win32", "darwin"):
+        return True
+    in_container = Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+    return hasattr(os, "geteuid") and os.geteuid() != 0 and not in_container
+
+
+SANDBOX = _sandbox_possible()
+
+
+def _not_installed(error: str) -> bool:
+    """Браузера нет на компьютере — песочница тут ни при чём, без неё пробовать незачем."""
+    text = error.lower()
+    return "is not found at" in text or "doesn't exist" in text or "executable" in text and "not found" in text
 
 
 def _forget_window_placement(profile: Path) -> None:
@@ -371,21 +402,39 @@ def slowdown() -> float:
 
 def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
     """Капчу не обходим и не решаем: зовём человека и ждём, пока он её решит. True — капча была.
-    После неё — передышка и более длинные паузы (slowdown): чаще всего капча — от слишком частых действий."""
+    Решить можно в окне браузера или, если включено ([notify] telegram_captcha), ответом боту в Telegram —
+    кто первый (web/captcha.py). После капчи — передышка и более длинные паузы (slowdown): чаще всего капча —
+    от слишком частых действий."""
     if not captcha_shown(page):
         return False
-    if _cfg is not None and _cfg.browser.headless:
+    from . import captcha as phone
+
+    relay = phone.relay_for(_cfg)
+    headless = _cfg is not None and _cfg.browser.headless
+    if headless and relay is None:
         raise FatalError("hh.ru показал капчу, а браузер работает без окна ([browser] headless = true) — решить её "
-                         "некому. Запустите с окном и решите капчу сами")
-    log.warning(f"  ! hh.ru показал капчу — решите её в окне браузера. Программа подождёт до {timeout / 60:.0f} мин "
-                "и продолжит сама")
+                         "некому. Запустите с окном и решите капчу сами или включите капчу в Telegram "
+                         "([notify] telegram, telegram_captcha)")
+    where = ("ответьте боту в Telegram символами с картинки" if headless else
+             "решите её в окне браузера или ответьте боту в Telegram" if relay else "решите её в окне браузера")
+    log.warning(f"  ! hh.ru показал капчу — {where}. Программа подождёт до {timeout / 60:.0f} мин и продолжит сама")
     was_hidden = show_for_user(page)
-    _alert_captcha()
+    _alert_captcha(telegram=relay is None)
     deadline = time.monotonic() + timeout
-    while captcha_shown(page):
-        if time.monotonic() > deadline:
-            raise FatalError(f"капча не пройдена за {timeout / 60:.0f} мин")
-        control.sleep(2)
+    solver = phone.PhoneSolver(page, relay, timeout) if relay else None
+    outcome = "stopped"
+    try:
+        while captcha_shown(page):
+            if time.monotonic() > deadline:
+                outcome = "timeout"
+                raise FatalError(f"капча не пройдена за {timeout / 60:.0f} мин")
+            if solver is not None:
+                solver.step()
+            control.sleep(1 if solver is not None else 2)
+        outcome = "passed"
+    finally:
+        if solver is not None:
+            solver.finish(outcome)
     log.success("  ✓ капча пройдена, продолжаю")
     hide_after_user(was_hidden)
     _captchas.append(time.monotonic())
@@ -396,13 +445,18 @@ def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
     return True
 
 
-def _alert_captcha() -> None:
-    """Вдруг вы отошли: уведомление на компьютер или в Telegram — если вы их разрешили ([notify])."""
+def _alert_captcha(telegram: bool = True) -> None:
+    """Вдруг вы отошли: уведомление на компьютер или в Telegram — если вы их разрешили ([notify]).
+    telegram=False — в Telegram уже идёт картинка капчи (web/captcha.py), текстом не дублируем."""
     cfg = _cfg
-    if cfg is None or not (cfg.notify.desktop or cfg.notify.telegram):
+    if cfg is None or not (cfg.notify.desktop or cfg.notify.telegram and telegram):
         return
+    from dataclasses import replace
+
     from ..core import notify
 
-    text = "hh.ru просит пройти капчу. Решите её в окне браузера — программа ждёт и потом продолжит сама."
-    threading.Thread(target=notify.send, args=(cfg.notify, "HH-Auto-Response — нужна капча", text),
+    where = "в окне браузера или ответьте боту в Telegram" if not telegram and cfg.notify.telegram else         "в окне браузера"
+    text = f"hh.ru просит пройти капчу. Решите её {where} — программа ждёт и потом продолжит сама."
+    settings = replace(cfg.notify, telegram=cfg.notify.telegram and telegram)
+    threading.Thread(target=notify.send, args=(settings, "HH-Auto-Response — нужна капча", text),
                      daemon=True).start()
