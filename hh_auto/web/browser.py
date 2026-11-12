@@ -64,7 +64,7 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
             continue
         profile = Path(cfg.browser.profile_dir) / (channel or "chromium")
         log.info(f"Запускаю браузер: {name}, профиль: {profile}")
-        if hides_window(cfg):
+        if hides_window(cfg) and browser_window.MODE == "win32":
             _forget_window_placement(profile)
         sandbox = SANDBOX
         for attempt in range(1, PROFILE_BUSY_ATTEMPTS + 1):
@@ -103,8 +103,8 @@ def launch(pw: Playwright, cfg: Config) -> BrowserContext:
             context.set_default_timeout(20_000)
             log.success(f"  ✓ браузер запущен ({name})")
             _watch_close(context)
-            if hides_window(cfg) and browser_window.find(refresh=True) and not browser_window.is_hidden():
-                browser_window.hide()  # Chrome всё же открыл окно на экране — убираем за край
+            if hides_window(cfg):
+                _hide_window(context)
             return context
     raise FatalError("не удалось запустить браузер. " + ("; ".join(errors) if errors else
                      "Установите Google Chrome или Microsoft Edge"))
@@ -167,13 +167,35 @@ def _bundled_chromium(pw: Playwright) -> bool:
         return False
 
 
+def _hide_window(context: BrowserContext) -> None:
+    """Сразу после запуска — окно с глаз долой. Windows: Chrome всё же открыл окно на экране — за край.
+    macOS, Linux: окно открывается на экране и тут же сворачивается (с ним связывается рабочий поток)."""
+    if browser_window.MODE == "cdp":
+        page = context.pages[0] if context.pages else context.new_page()  # она и станет вкладкой работы
+        if not browser_window.bind(page):
+            log.info("  окно браузера остаётся на экране: связаться с ним не вышло")
+            return
+        if browser_window.kept_shown():  # выяснилось в прошлый запуск
+            log.info(f"  окно браузера остаётся на экране: {browser_window.kept_shown()}")
+            return
+    if browser_window.find(refresh=True) and not browser_window.is_hidden():
+        browser_window.hide()  # macOS, Linux: не свернулось — почему, напишет web/window.py
+
+
 def window_args(cfg: Config) -> list[str]:
-    """Аргументы запуска: спрятанное окно — сразу за краем экрана (без мелькания при старте)."""
-    if hides_window(cfg):
-        width, height = browser_window.WORK_SIZE
+    """Аргументы запуска спрятанного окна. Windows: сразу за краем экрана (без мелькания при старте).
+    macOS, Linux: размер, как на Windows (страница ~1440 шириной); Linux с Wayland — окно через X11 (XWayland):
+    свёрнутое окно Wayland браузер сам обратно не развернёт, и для капчи оно не выехало бы (проверено)."""
+    if not hides_window(cfg):
+        return []
+    width, height = browser_window.WORK_SIZE
+    if browser_window.MODE == "win32":
         return [f"--window-position={browser_window.HIDDEN_AT},{browser_window.HIDDEN_AT}",
                 f"--window-size={width},{height}"]
-    return []
+    args = [f"--window-size={width},{height}"]
+    if sys.platform.startswith("linux") and os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
+        args.append("--ozone-platform=x11")
+    return args
 
 
 def hides_window(cfg: Config | None) -> bool:
@@ -238,14 +260,17 @@ def detach() -> None:
         except Exception:
             pass
         _Watch.cdp = None
+    browser_window.unbind()
     control.set_idle(None)
 
 
 def _idle() -> None:
-    """Во время пауз (рабочий поток): жив ли браузер и, если приложение смотрит, кадр для превью."""
+    """Во время пауз (рабочий поток): жив ли браузер и, если приложение смотрит, кадр для превью. macOS, Linux:
+    и «Показать» / «Спрятать» из окна приложения — окно браузера двигает только этот поток."""
     page = _Watch.page
     if page is None:
         return
+    browser_window.pump()
     now = time.monotonic()
     # Кадр — только пока окно спрятано. Окно на экране (капча, вход, «Показать») человек видит сам, а снимок
     # видимого окна заставлял его моргать раз в полторы секунды и сбивал ввод капчи
@@ -295,6 +320,7 @@ def _note_closed(error: Exception) -> None:
 
 def show_for_user(page: Page) -> bool:
     """Нужен человек (вход, капча): окно — на экран и вперёд. True — окно было спрятано программой."""
+    browser_window.pump(fresh=True)  # macOS, Linux: что с окном сейчас (Windows узнаёт это сразу)
     hidden = hides_window(_cfg) and browser_window.is_hidden()
     if hidden:
         browser_window.show()

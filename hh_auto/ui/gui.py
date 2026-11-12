@@ -1296,9 +1296,10 @@ SETTINGS = [
     ]),
     ("Браузер и сеть", [
         ("browser", "channel", "Браузер", "choice", ""),
-        ("browser", "hide_window", "Прятать окно браузера (Windows)", "bool",
-         "Браузер работает за краем экрана и не мешает, а что он делает — видно в превью в меню слева. "
-         "Для входа в hh и капчи окно покажется само; «Показать» — в любой момент. Действует со следующего запуска"),
+        ("browser", "hide_window", "Прятать окно браузера", "bool",
+         "Браузер работает за краем экрана (Windows) или свёрнутым (macOS, Linux) и не мешает, а что он делает — "
+         "видно в превью в меню слева. Для входа в hh и капчи окно покажется само; «Показать» — в любой момент. "
+         "Действует со следующего запуска"),
         ("geo", "proxy", "Российский прокси (если вы не в РФ или с VPN)", "str",
          "Формат: http://user:pass@host:port. Пусто — прямое подключение"),
         ("geo", "check_ip", "Показывать страну IP перед стартом", "bool", ""),
@@ -3291,7 +3292,7 @@ class App(ctk.CTk):
         foot = ctk.CTkFrame(bar, fg_color="transparent")
         foot.pack(side="bottom", fill="x")
         self.sidebar_foot = foot
-        # что сейчас в окне браузера (сам браузер спрятан за краем экрана) — с первым кадром, над низом меню
+        # что сейчас в окне браузера (сам браузер спрятан за краем экрана или свёрнут) — с первым кадром, над низом меню
         self.preview = BrowserPreview(bar, self)
         # «Автозапуск сегодня в 15:00» — видно с любой страницы; щелчок — к настройкам расписания
         self.schedule_label = ctk.CTkLabel(foot, text="", image=icon("clock", 14, MUTED), compound="left",
@@ -4108,7 +4109,9 @@ class App(ctk.CTk):
             self.mini.set_frame(jpeg)
 
     def _watch_browser(self) -> None:
-        """Во время работы: спрятанное окно браузера открыли значком на панели задач — вывести на экран."""
+        """Во время работы: спрятанное окно браузера открыли значком на панели задач — вывести на экран.
+        macOS, Linux: «Показать» и «Спрятать» выполняет рабочий поток в ближайшей паузе (с Playwright — только
+        из его потока), а до тех пор превью уже показывает, что попросили."""
         if browser_window.opened_by_user():
             browser_window.show(near=self._hwnd())
         hwnd = browser_window.find()
@@ -4128,8 +4131,8 @@ class App(ctk.CTk):
             return
         if browser_window.is_hidden(hwnd):
             browser_window.show(near=self._hwnd())
-        else:
-            browser_window.hide()
+        elif not browser_window.hide():
+            self.toast("Спрятать окно браузера не получилось")
         self.preview.set_state(browser_window.is_hidden(hwnd))
 
     FULL_ALPHA = 0.999  # непрозрачность окна после плавного появления (1.0 Tk перерисовал бы окно ещё раз)
