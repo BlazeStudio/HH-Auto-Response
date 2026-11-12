@@ -168,6 +168,15 @@ def title_levels(title: str) -> set[str]:
     return {level for level, pattern in _LEVEL_RE.items() if pattern.search(title)}
 
 
+SKIP_ALL_QUESTIONS = "вопросы работодателя при отклике ([questions] skip_all)"
+
+
+def unwanted(summary: str) -> bool:
+    """Пропуск из skip_reason говорит о самой вакансии (уровень, отбор), а не о том, как на неё откликаться:
+    такую можно скрыть на hh ([filters] hide_unwanted). Вопросы при отклике — не повод скрывать вакансию."""
+    return summary != SKIP_ALL_QUESTIONS
+
+
 def skip_reason(title: str, snippet: str, meta: VacancyMeta | None, cfg: Config,
                 now: datetime | None = None) -> tuple[str, str] | None:
     """Пропустить ли вакансию по уровню, данным hh и вопросам при отклике. (итог, подробно) или None.
@@ -183,8 +192,7 @@ def skip_reason(title: str, snippet: str, meta: VacancyMeta | None, cfg: Config,
     if meta is None:
         return None
     if cfg.questions.skip_all and meta.has_test:
-        return ("вопросы работодателя при отклике ([questions] skip_all)",
-                "при отклике вопросы работодателя ([questions] skip_all)")
+        return SKIP_ALL_QUESTIONS, "при отклике вопросы работодателя ([questions] skip_all)"
     if q.skip_suspicious:
         if "misleadingVacancyAlert" in meta.flags:
             return "отбор: hh предупреждает о вакансии", "hh предупреждает: вакансия может вводить в заблуждение"

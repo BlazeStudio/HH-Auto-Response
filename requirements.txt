@@ -3,3 +3,4 @@ openpyxl>=3.1
 customtkinter>=5.2
 pillow>=10.1
 pypdf>=4.2
+pystray>=0.19

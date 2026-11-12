@@ -142,8 +142,11 @@ class Responder:
                 self._snapshot(vac.id, "error")
                 self._close_dialogs()
                 return Result(Status.FAILED, f"{type(e).__name__}: {first_line}")
-            if after_captcha and result.status is Status.SKIPPED and result.reason == NO_BUTTON:
-                # кнопки больше нет — hh сам дослал отклик, когда капчу решили
+            # Кнопки больше нет или карточка пропала из выдачи — обычно hh сам дослал отклик, когда капчу решили,
+            # а отклики выдача «подходящих к резюме» прячет. Пропавшую карточку проверяем на странице вакансии:
+            # без этого такие отклики не попадали ни в счёт, ни в память и hh упирался в суточный лимит раньше
+            if after_captcha and result.status is Status.SKIPPED and (
+                    result.reason == NO_BUTTON or (result.reason == MOVED and self._responded_on_page(vac))):
                 log.success("  ✓ ОТКЛИК ОТПРАВЛЕН — hh принял его после капчи")
                 return Result(Status.APPLIED, reason="отклик ушёл после капчи — письмо и ответы проверьте на hh")
             return result
@@ -154,16 +157,59 @@ class Responder:
         self.captchas += 1
         if not wait_captcha(self.page):
             log.info("  окно капчи закрылось само")
-        if self.captchas == 1:
-            log.info("  hh просит капчу, когда откликов много подряд. Если она будет появляться часто, "
-                     "увеличьте паузы между вакансиями («Лимиты и паузы»)")
+        if self.captchas == 1 and not self.cfg.limits.captcha_rest:
+            log.info("  hh просит капчу, когда откликов много подряд. Если она будет появляться часто, включите "
+                     "«Перерыв после капчи» («Лимиты и паузы») — отклики пойдут сериями с перерывами")
         self._close_dialogs()
         if self._search_url:
             open_url(self.page, self._search_url)  # свежие карточки: ушёл ли отклик
         log.info("  ↻ повторяю отклик на эту вакансию")
 
+    def _responded_on_page(self, vac: Vacancy) -> bool:
+        """На странице вакансии написано «Вы откликнулись». Назад к выдаче вернёт runner (back_to_results)."""
+        log.info("  карточки в выдаче нет — смотрю на странице вакансии, ушёл ли отклик после капчи")
+        try:
+            open_url(self.page, vac.url, attempts=2)
+            if captcha_shown(self.page):
+                return False
+            self.page.get_by_text(RESPONDED_TEXT).first.wait_for(state="visible", timeout=8_000)
+            return True
+        except PlaywrightError:
+            log.info("  на странице вакансии отклика нет — вернусь к ней в следующий раз")
+            return False
+
     def on_search_page(self) -> bool:
         return urlparse(self.page.url).path.startswith("/search/vacancy")
+
+    def hide(self, vac: Vacancy) -> bool:
+        """Скрыть вакансию на hh: «глаз» в карточке → «Скрыть эту вакансию». В выдаче она больше не появится
+        (вернуть можно на hh, в списке скрытых). Не вышло — не беда: вакансия просто пропущена, как и раньше."""
+        if not self.on_search_page() or captcha_shown(self.page):
+            return False
+        card = self._card(vac.id)
+        try:
+            button = card.locator(S.HIDE_BUTTON).first
+            if card.count() == 0 or button.count() == 0:
+                log.debug("  скрыть не получилось: в выдаче нет карточки или кнопки «Скрыть»")
+                return False
+            card.scroll_into_view_if_needed()
+            self._pause()
+            self.clicked = True
+            button.click()
+            item = self.page.locator(S.HIDE_VACANCY).filter(visible=True).first
+            item.wait_for(state="visible", timeout=5_000)
+            control.sleep(random.uniform(0.3, 0.8))
+            item.click()
+            item.wait_for(state="hidden", timeout=5_000)  # меню закрылось — hh принял
+            return True
+        except PlaywrightError as e:
+            log.debug(f"  скрыть не получилось: {str(e).splitlines()[0]}")
+            try:
+                if self.page.locator(S.HIDE_VACANCY).filter(visible=True).count():
+                    self.page.keyboard.press("Escape")  # меню осталось открытым — не мешать следующей вакансии
+            except PlaywrightError:
+                pass
+            return False
 
     def back_to_results(self, url: str) -> None:
         """После вакансии убеждаемся, что мы всё ещё в выдаче и авторизованы."""

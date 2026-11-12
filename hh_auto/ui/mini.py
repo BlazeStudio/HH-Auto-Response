@@ -1,8 +1,8 @@
 """Превью браузера в меню слева и мини-окно в углу экрана.
 
 Превью — кадр окна браузера раз в полторы секунды, пока идёт работа (браузер при этом спрятан за краем
-экрана и не мешает). Мини-окно — маленькое окно поверх остальных: состояние, счётчики, текущая вакансия,
-«Начать / Остановить», «Браузер», «Развернуть». Его можно перетащить, место запоминается.
+экрана или свёрнут и не мешает). Мини-окно — маленькое окно поверх остальных: состояние, счётчики, текущая
+вакансия, «Начать / Остановить», «Браузер», «Развернуть». Его можно перетащить, место запоминается.
 """
 
 from __future__ import annotations
@@ -224,7 +224,11 @@ class MiniWindow(QuietToplevel, ctk.CTkToplevel):
             ctypes.windll.user32.ShowWindow(hwnd, command)
 
     def minimize(self) -> None:
-        """«—»: на панель задач; щелчок по кнопке «HH-Auto-Response» там — снова мини-окно."""
+        """«—»: на панель задач; щелчок по кнопке «HH-Auto-Response» там — снова мини-окно. Включён трей —
+        в трей, как и окно программы: щелчок по значку вернёт окно программы."""
+        if self.app.tray is not None:
+            self.app.mini_to_tray()
+            return
         if sys.platform == "win32":
             self._show_window(6)  # SW_MINIMIZE (Tk не сворачивает окна без рамки)
         else:
@@ -253,7 +257,7 @@ class MiniWindow(QuietToplevel, ctk.CTkToplevel):
             right, bottom = int(saved[0]), int(saved[1])
             if 0 < right <= self.winfo_screenwidth() + width and 0 < bottom <= self.winfo_screenheight() + height:
                 return right - width, bottom - height
-        if browser_window.supported():  # правый нижний угол рабочей области монитора, где окно программы
+        if sys.platform == "win32":  # правый нижний угол рабочей области монитора, где окно программы
             near = int(self.app.wm_frame(), 16)
             _left, _top, right, bottom = browser_window._work_area(near)
         else:

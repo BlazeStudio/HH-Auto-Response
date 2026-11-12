@@ -33,6 +33,9 @@ class Limits:
     # компания с десятком похожих вакансий не получит десяток одинаковых откликов
     per_company: int = 0
     per_company_days: int = 30
+    # Перерыв после капчи, мин. Дальше отклики идут сериями чуть короче той, на которой hh попросил капчу,
+    # с перерывами между ними (hh/pacing.py). 0 — без перерывов: только паузы между вакансиями длиннее
+    captcha_rest: float = 5
 
 
 SEARCH_MODES = ("resume", "query")
@@ -77,6 +80,9 @@ class Filters:
     # уровни, на которые откликаться: intern, junior, middle, senior, lead (пусто — на любые). Пропускается
     # вакансия, в названии которой явно указан другой уровень; без уровня в названии — откликаемся
     levels: list[str] = field(default_factory=list)
+    # true — нежелательные вакансии (фильтры по словам, уровень, отбор, ИИ-фильтр) не только пропускать,
+    # но и скрывать на hh («Скрыть эту вакансию»): в выдаче они больше не появятся
+    hide_unwanted: bool = False
 
 
 LEVELS = {"intern": "Стажёр", "junior": "Junior", "middle": "Middle", "senior": "Senior", "lead": "Lead / руководитель"}
@@ -130,8 +136,11 @@ class Chats:
 AI_PROVIDERS = {
     "deepseek": ("https://api.deepseek.com", "deepseek-chat",
                  "platform.deepseek.com → API keys. Платно, но очень дёшево (копейки за анкету)"),
-    "openrouter": ("https://openrouter.ai/api/v1", "deepseek/deepseek-chat-v3-0324:free",
-                   "openrouter.ai → Keys. Бесплатные модели — с пометкой :free (актуальные — на openrouter.ai/models)"),
+    # openrouter/free — OpenRouter сам выбирает бесплатную модель из работающих. Конкретная бесплатная модель
+    # (раньше по умолчанию была deepseek-chat-v3-0324:free) рано или поздно становится платной
+    "openrouter": ("https://openrouter.ai/api/v1", "openrouter/free",
+                   "openrouter.ai → Keys. openrouter/free — OpenRouter сам выбирает бесплатную модель; конкретные "
+                   "бесплатные — с пометкой :free на openrouter.ai/models"),
     "ollama": ("http://localhost:11434/v1", "qwen3:8b",
                "ollama.com — нейросеть на вашем компьютере, бесплатно, ключ не нужен"),
     "custom": ("", "", "любой OpenAI-совместимый сервис: укажите base_url и model"),
@@ -148,6 +157,8 @@ class Ai:
     base_url: str = ""  # пусто — адрес провайдера
     # Что ещё нейросети знать о вас, кроме резюме: зарплата, формат работы, город, когда готовы выйти…
     context: str = ""
+    # Свой промпт для ответов в чатах и анкетах: стиль, тон, длина. Важнее встроенных правил о стиле
+    answer_prompt: str = ""
     # true — на вопрос «Готовы ли вы предоставить документы?» (выписка из ЭТК, договоры) отвечать «да»
     documents_ready: bool = False
     # true — отвечать только ботам hh (Робот-рекрутер, ИИ-помощник…), живым людям отвечаете вы.
@@ -207,8 +218,9 @@ class Browser:
     profile_dir: str = "browser-profile"
     slow_mo: int = 0
     login_timeout: int = 600  # сколько ждать ручного входа, сек
-    # Windows: окно браузера работает за краем экрана — не мешает, а что он делает, видно в приложении
-    # (превью слева). Для входа в hh и капчи окно показывается само; «Показать браузер» — в любой момент
+    # Окно браузера не мешает: на Windows работает за краем экрана, на macOS и Linux — свёрнутым (web/window.py),
+    # а что он делает, видно в приложении (превью слева). Для входа в hh и капчи окно показывается само;
+    # «Показать браузер» — в любой момент
     hide_window: bool = True
 
 
@@ -259,6 +271,9 @@ class Schedule:
     times: list[str] = field(default_factory=lambda: ["10:00"])  # во сколько запускать: "10:00", "15:30"
     days: list[str] = field(default_factory=lambda: ["1", "2", "3", "4", "5"])  # 1 — понедельник … 7 — воскресенье
     chats_after: bool = False  # после откликов прочитать отказы в чатах (и ответить ботам, если включён ИИ)
+    # пока приложение открыто и включено расписание, поднятие резюме или фоновая проверка — компьютер не засыпает
+    # (экран гаснет как обычно). Во время самой работы он не засыпает всегда
+    keep_awake: bool = False
 
     def slots(self) -> list[tuple[int, int]]:
         """Время запусков (часы, минуты) по порядку. Неверную запись не пропускает validate_config."""
@@ -315,6 +330,9 @@ class Notify:
     telegram_token: str = ""  # токен бота от @BotFather (или переменная окружения HH_TELEGRAM_TOKEN)
     telegram_chat_id: str = ""  # ваш chat id (узнать: написать боту и открыть api.telegram.org/bot<токен>/getUpdates)
     invitations: bool = True  # сразу сообщать о приглашении (в те же каналы: компьютер, Telegram)
+    # капча: картинка — в Telegram, ответ символами с неё вводится в браузер (решить в окне браузера тоже можно).
+    # Нужен telegram = true с токеном и chat id
+    telegram_captcha: bool = True
 
 
 @dataclass
@@ -536,6 +554,8 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError("[letter] mode = template, но template_text пустой")
     if cfg.limits.delay_min > cfg.limits.delay_max:
         raise ConfigError("[limits] delay_min больше delay_max")
+    if cfg.limits.captcha_rest < 0:
+        raise ConfigError("[limits] captcha_rest не может быть отрицательным (0 — без перерывов после капчи)")
     if cfg.ai_filter.enabled and not cfg.ai_filter.criteria.strip():
         raise ConfigError("[ai_filter] включён (enabled = true), но не заполнено поле criteria — "
                           "опишите, что вы ищете и чего не хотите")

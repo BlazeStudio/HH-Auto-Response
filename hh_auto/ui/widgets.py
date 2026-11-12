@@ -1037,15 +1037,25 @@ def set_titlebar_dark(window: tkinter.Misc, dark: bool) -> None:
         return
     import ctypes
 
+    user32 = ctypes.windll.user32
     try:
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        hwnd = user32.GetParent(window.winfo_id())
+        if not hwnd:  # рамки Windows ещё нет: окно ни разу не показывали
+            return
         value = ctypes.c_int(1 if dark else 0)
         for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (и до Windows 10 20H1)
             if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value),
                                                           ctypes.sizeof(value)) == 0:
                 break
         # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED — только рамка
-        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+        if user32.IsWindowVisible(hwnd):
+            # Windows 11 перекрашивает заголовок видимого окна, только когда рисует его заново как активный или
+            # неактивный — одной SWP_FRAMECHANGED мало: окно-сообщение в тёмной теме оставалось с белым заголовком.
+            # WM_NCACTIVATE туда и обратно перерисовывает только рамку, на сам фокус не влияет
+            active = user32.GetForegroundWindow() == hwnd
+            user32.SendMessageW(hwnd, 0x0086, int(not active), 0)
+            user32.SendMessageW(hwnd, 0x0086, int(active), 0)
     except (OSError, AttributeError, tkinter.TclError):
         pass
 
@@ -1054,7 +1064,32 @@ class QuietToplevel:
     """Для окон на ctk.CTkToplevel (сообщения, мини-окно, выбор из списка). customtkinter красит заголовок,
     пряча окно и показывая снова: при смене темы и через 10 мс после resizable() — то есть сразу после
     появления окна-сообщения. На экране окно появлялось, пропадало и появлялось опять, а мини-окно мигало
-    при каждой смене темы. Видимому окну хватает перерисовать рамку; спрятанное — как в customtkinter."""
+    при каждой смене темы. Видимому окну хватает перерисовать рамку; спрятанное — как в customtkinter.
+
+    Первый раз customtkinter красит заголовок ещё в конструкторе, когда рамки Windows у окна нет, — впустую,
+    и окно в тёмной теме открывалось с белым заголовком. Поэтому красим и перед показом (рамка к этому времени
+    обычно уже есть — тогда окно сразу тёмное), и когда окно появилось на экране."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if sys.platform == "win32":
+            self.bind("<Map>", self._titlebar_on_map, add="+")
+
+    def _titlebar_dark(self) -> bool:
+        return str(self._get_appearance_mode()).lower() == "dark"
+
+    def _titlebar_on_map(self, event) -> None:
+        if event.widget is self:  # <Map> окна приходит и от каждого виджета внутри
+            set_titlebar_dark(self, self._titlebar_dark())
+
+    def deiconify(self):
+        if sys.platform == "win32":
+            try:
+                if not self.winfo_ismapped():
+                    set_titlebar_dark(self, self._titlebar_dark())
+            except tkinter.TclError:
+                pass
+        return super().deiconify()
 
     def _windows_set_titlebar_color(self, color_mode: str) -> None:
         try:

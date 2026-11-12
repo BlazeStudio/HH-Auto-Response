@@ -111,7 +111,7 @@ def default_chats() -> list[MockChat]:
 
 
 _PAGE_STYLE = """<style>body{font:14px sans-serif;margin:0} .dlg{position:fixed;left:20px;top:20px;right:20px;background:#fff;
-border:1px solid #888;padding:12px;z-index:5} textarea{width:90%;height:60px;display:block} #app{display:flex}
+border:1px solid #888;padding:12px;z-index:5} .drop{position:fixed;right:20px;top:60px;background:#fff;border:1px solid #888;z-index:6} textarea{width:90%;height:60px;display:block} #app{display:flex}
 #list{width:300px;height:400px;overflow:auto} #panel{flex:1;padding:8px} .msg{margin:4px 0} #messages{min-height:120px}
 #answers{display:flex;flex-direction:column;align-items:flex-start}</style>"""
 
@@ -133,6 +133,36 @@ function dialog(inner, role) {
   return box;
 }
 const LETTER = '<textarea data-qa="vacancy-response-popup-form-letter-input"></textarea>';
+// Капча с формой — та же вёрстка, что на hh.ru/account/captcha: картинка, «Другой текст», поле, «Отправить»,
+// надпись «Неверный текст» (до ошибки скрыта). Неверный ответ — надпись и новая картинка, верный — done()
+let captchaN = 0;
+function captchaPicture() {
+  captchaN++;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60"><rect width="200" height="60" fill="#eee"/>`
+    + `<text x="16" y="40" font-size="26" font-family="monospace">${CAPTCHA_ANSWER} #${captchaN}</text></svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+function captchaForm(done) {
+  const box = dialog(`<form><img data-qa="account-captcha-picture" alt="captcha" width="200" height="60" src="${captchaPicture()}">
+    <button type="button" data-qa="captcha-renew-text" aria-label="Другой текст">↻</button>
+    <input name="captchaText" type="text" data-qa="account-captcha-input">
+    <div data-qa="account-captcha-error" style="visibility:hidden">Неверный текст. Пожалуйста, повторите попытку.</div>
+    <button type="submit" data-qa="account-captcha-submit">Отправить</button></form>`);
+  qa(box, 'captcha-renew-text').onclick = () => { qa(box, 'account-captcha-picture').src = captchaPicture(); };
+  box.querySelector('form').onsubmit = async (event) => {
+    event.preventDefault();
+    const input = qa(box, 'account-captcha-input');
+    await fetch('/mock/captcha', {method: 'POST', body: input.value});
+    if (input.value === CAPTCHA_ANSWER) {
+      box.remove();
+      done();
+      return;
+    }
+    qa(box, 'account-captcha-error').style.visibility = 'visible';
+    qa(box, 'account-captcha-picture').src = captchaPicture();
+    input.value = '';
+  };
+}
 function modal(card, id, flow, letter) {
   const box = dialog(`<span data-qa="resume-title">${RESUME_TITLE}</span>${letter}
     <button type="button" data-qa="generate-cover-letter">Сгенерировать</button>
@@ -148,20 +178,55 @@ function modal(card, id, flow, letter) {
   qa(box, 'vacancy-response-submit-popup').onclick = async () => {
     const area = box.querySelector('textarea');
     const text = area ? area.value : (box.dataset.letter || '');
-    if (flow === 'modal' && !text) return;  // письмо обязательное: hh не отправит
+    if ((flow === 'modal' || flow === 'captcha') && !text) return;  // письмо обязательное: hh не отправит
+    if (flow === 'captcha' && CAPTCHA_ANSWER) {  // капча с формой, как на hh: ответ вводит программа
+      captchaForm(async () => {
+        await post({id, flow, letter: text});
+        box.remove();
+        responded(card);
+      });
+      return;
+    }
+    if (flow === 'captcha') {  // hh просит капчу; когда человек её решил, отклик уходит сам
+      const captcha = dialog('<div data-qa="account-captcha-input">Введите символы с картинки</div>');
+      setTimeout(async () => {
+        await post({id, flow, letter: text});
+        captcha.remove();
+        box.remove();
+        responded(card);
+      }, CAPTCHA_MS);
+      return;
+    }
     await post({id, flow, letter: text});
     box.remove();
     responded(card);
   };
   return box;
 }
+// «Глаз» в карточке: меню «Скрыть эту вакансию» / «Скрыть вакансии компании» — отдельным слоем поверх страницы
+document.addEventListener('click', (event) => {
+  const eye = event.target.closest('[data-qa="vacancy__blacklist-show-add"]');
+  if (!eye) return;
+  const card = eye.closest('[data-qa="vacancy-serp__vacancy"]');
+  const menu = document.createElement('div');
+  menu.className = 'drop';
+  menu.innerHTML = '<button type="button" data-qa="vacancy__blacklist-menu-add-vacancy">Скрыть эту вакансию</button>'
+    + '<button type="button" data-qa="vacancy__blacklist-menu-add-employer">Скрыть вакансии компании</button>';
+  document.body.appendChild(menu);
+  qa(menu, 'vacancy__blacklist-menu-add-vacancy').onclick = async () => {
+    await fetch('/mock/hidden', {method: 'POST', body: JSON.stringify({id: card.dataset.id})});
+    menu.remove();
+    card.innerHTML = 'Вакансия скрыта';
+  };
+  qa(menu, 'vacancy__blacklist-menu-add-employer').onclick = () => { menu.remove(); };
+});
 document.addEventListener('click', (event) => {
   const button = event.target.closest('[data-qa="vacancy-serp__vacancy_response"]');
   if (!button) return;
   event.preventDefault();
   const card = button.closest('[data-qa="vacancy-serp__vacancy"]');
   const id = card.dataset.id, flow = button.dataset.flow;
-  if (flow === 'modal') modal(card, id, flow, LETTER);
+  if (flow === 'modal' || flow === 'captcha') modal(card, id, flow, LETTER);
   else if (flow === 'optional') {
     const box = modal(card, id, flow,
       '<button type="button" data-qa="vacancy-response-letter-toggle">Добавить сопроводительное</button><div class="slot"></div>');
@@ -276,11 +341,16 @@ class MockHh:
         self.chats = chats if chats is not None else default_chats()
         self.sent: list[dict] = []  # что ушло работодателям с откликами
         self.chat_sent: list[dict] = []  # что ушло в чаты
+        self.hidden: list[str] = []  # вакансии, скрытые «глазом» в карточке («Скрыть эту вакансию»)
         self.touches: list[str] = []  # поднятые резюме
         self.touch_status = 200
         self.role = "applicant"
         self.expire_after_sent = 0  # после стольких откликов сессия «истекает»
         self.no_generate = False  # кнопка «Сгенерировать» не даёт письма (нет подписки)
+        self.hide_responded = False  # выдача прячет вакансии с откликом (как «подходящие к резюме» после капчи)
+        self.captcha_ms = 3000  # сколько «человек» решает капчу (вакансии с flow="captcha")
+        self.captcha_answer = ""  # задан — капча с формой: решается только этим ответом (его вводит программа)
+        self.captcha_tries: list[str] = []  # что вводили в форму капчи
         self.visited: list[str] = []
         self.outside: list[str] = []  # запросы мимо hh: их быть не должно
 
@@ -310,6 +380,12 @@ class MockHh:
             record = json.loads(data or "{}")
             self.sent.append(record)
             return 200, "ok", text
+        if path == "/mock/captcha":
+            self.captcha_tries.append(data or "")
+            return 200, "ok", text
+        if path == "/mock/hidden":
+            self.hidden.append(json.loads(data or "{}").get("id", ""))
+            return 200, "ok", text
         if path == "/mock/chat":
             self.chat_sent.append(json.loads(data or "{}"))
             return 200, "ok", text
@@ -324,6 +400,8 @@ class MockHh:
             return 200, self._search(query), page
         if path == "/applicant/vacancy_response":
             return 200, self._questions(query), page
+        if path.startswith("/vacancy/"):
+            return 200, self._vacancy(path.rstrip("/").rsplit("/", 1)[-1]), page
         if path == "/chat" or path.startswith("/chat/"):
             return 200, self._chat(), page
         return 200, f"<!doctype html><title>hh</title>{_PAGE_STYLE}<body><main>Главная</main></body>", page
@@ -356,6 +434,10 @@ class MockHh:
         done = {r["id"] for r in self.sent}
         items = []
         for v in cards:
+            if self.hide_responded and v["id"] in done:
+                continue
+            if v["id"] in self.hidden:  # как hh: скрытую вакансию выдача больше не показывает
+                continue
             label = "Откликнуться" if v["flow"] != "none" and v["id"] not in done else "Вы откликнулись"
             remote = '<span data-qa="vacancy-label-work-schedule-remote">Можно удалённо</span>' if v["remote"] else ""
             items.append(
@@ -364,10 +446,13 @@ class MockHh:
                 f'<span data-qa="serp-item__title-text">{html.escape(v["title"])}</span></a> '
                 f'<span data-qa="vacancy-serp__vacancy-employer-text">{html.escape(v["company"])}</span> {remote}'
                 f'<div data-qa="vacancy-serp__vacancy_snippet_responsibility">{html.escape(v["snippet"])}</div>'
-                f'<a href="#" data-qa="vacancy-serp__vacancy_response" data-flow="{v["flow"]}">{label}</a></div>')
+                f'<a href="#" data-qa="vacancy-serp__vacancy_response" data-flow="{v["flow"]}">{label}</a>'
+                '<button type="button" aria-label="Скрыть" data-qa="vacancy__blacklist-show-add">◉</button></div>')
         pager = "".join(f'<a data-qa="pager-page" href="?page={i}">{i + 1}</a>' for i in range(len(self.pages)))
         script = (f"const RESUME_TITLE = {json.dumps(RESUME_TITLE, ensure_ascii=False)};\n"
-                  f"const NO_GENERATE = {json.dumps(self.no_generate)};\n{_SEARCH_JS}")
+                  f"const NO_GENERATE = {json.dumps(self.no_generate)};\n"
+                  f"const CAPTCHA_MS = {self.captcha_ms};\n"
+                  f"const CAPTCHA_ANSWER = {json.dumps(self.captcha_answer)};\n{_SEARCH_JS}")
         expired_tail = ""
         if self.expire_after_sent:
             # сессия истекает прямо после отправки: следующая проверка программы увидит гостя
@@ -379,6 +464,16 @@ class MockHh:
                 f'<h1 data-qa="vacancies-search-header">Найдено {total} вакансий</h1>'
                 f'<template id="HH-Lux-InitialState">{html.escape(self._state(cards, total), quote=False)}</template>'
                 f'<div id="cards">{"".join(items)}</div><div>{pager}</div><script>{expired_tail}{script}</script></body>')
+
+    def _vacancy(self, vacancy_id: str) -> str:
+        """Страница вакансии: «Вы откликнулись», если отклик уже ушёл."""
+        vac = next((v for page in self.pages for v in page if v["id"] == vacancy_id), None)
+        title = html.escape(vac["title"]) if vac else "Вакансия"
+        state = ('<div data-qa="vacancy-response-link-view-topic">Вы откликнулись</div>'
+                 if vacancy_id in {r["id"] for r in self.sent} else
+                 '<a href="#" data-qa="vacancy-response-link-top">Откликнуться</a>')
+        return (f"<!doctype html><meta charset=utf-8><title>{title}</title>{_PAGE_STYLE}<body>"
+                f'<h1 data-qa="vacancy-title">{title}</h1>{state}</body>')
 
     def _questions(self, query: dict) -> str:
         wanted = query.get("vacancyId", [""])[0]

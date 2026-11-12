@@ -222,6 +222,38 @@ def part_themes_and_mini() -> None:
     check("мини-окно: вернулись в окно программы", not app.mini_mode)
 
 
+def part_tray() -> None:
+    """Значок в трее (у часов, в строке меню, в области уведомлений): свернули окно — оно в трее; щелчок по
+    значку — снова на экране. Linux без области уведомлений (xvfb в проверках) — трея нет, всё как раньше."""
+    from hh_auto.ui import tray as tray_icon
+
+    if not tray_icon.available():
+        check("трей: здесь его нет (нет области уведомлений) — окно сворачивается как раньше", True)
+        return
+    check("трей: значок появился", wait(lambda: app.tray is not None and app.tray.icon is not None, 5))
+    app.iconify()
+    check("трей: свёрнутое окно ушло в трей", wait(lambda: app.state() == "withdrawn", 3), app.state())
+    check("трей: подсказка о трее запомнена", app.prefs.get("tray_hint_shown") is True)
+    app.events.put(("tray", "open"))  # так приходит щелчок по значку
+    check("трей: щелчок по значку вернул окно", wait(lambda: app.state() == "normal", 3), app.state())
+    pump(0.4)
+    tip = app._tray_tip()
+    check("трей: подсказка на значке", tip.startswith(gui.APP_NAME) and len(tip) > len(gui.APP_NAME), tip)
+    app.tray.refresh()  # «Начать» ↔ «Остановить»
+    settings = app.pages["settings"]
+    settings.tray_switch.deselect()
+    settings._tray_switched()
+    check("трей: выключили — значка нет", app.tray is None and app.prefs.get("tray") is False)
+    app.iconify()
+    pump(0.6)
+    check("трей: без него окно сворачивается на панель задач", app.state() == "iconic", app.state())
+    app.deiconify()
+    pump(0.4)
+    settings.tray_switch.select()
+    settings._tray_switched()
+    check("трей: включили снова", wait(lambda: app.tray is not None, 3))
+
+
 def part_dialogs() -> None:
     choose_later(True)
     dialogs.showinfo(gui.APP_NAME, "Проверка\n\nТекст сообщения можно выделить", parent=app)
@@ -312,8 +344,8 @@ def control_paused_holding() -> bool:
 
 
 def main() -> int:
-    for part in (part_pages, part_settings_save, part_shortcuts, part_ai_page, part_themes_and_mini, part_dialogs,
-                 part_runs, part_stop):
+    for part in (part_pages, part_settings_save, part_shortcuts, part_ai_page, part_themes_and_mini, part_tray,
+                 part_dialogs, part_runs, part_stop):
         print(f"--- {part.__name__}", flush=True)
         try:
             part()
