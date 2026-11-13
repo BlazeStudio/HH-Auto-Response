@@ -148,6 +148,105 @@ def part_settings_save() -> None:
     check("настройки: снова в форме после загрузки", entry.get() == url)
 
 
+def part_chat_id() -> None:
+    """«Узнать chat id»: человек пишет боту — chat id вписывается сам, бот шлёт проверочное сообщение.
+    Telegram подменён, наружу ничего не уходит."""
+    from hh_auto.core import notify
+
+    settings = app.pages["settings"]
+    app.show_page("settings")
+    pump(0.2)
+    chat = settings.widgets[("notify", "telegram_chat_id")][1]
+    settings._set_value("notify", "telegram_token", "1:fake")
+    settings._set_value("notify", "telegram_chat_id", "")
+    sent, opened = [], []
+
+    codes = []
+
+    def find(token, code, wait, waiting):
+        codes.append(code)
+        waiting("my_hh_bot")  # окно открывает чат с ботом по ссылке с кодом
+        return {"id": "587129", "title": "Антон", "bot": "my_hh_bot"}
+
+    real = notify.find_chat, notify.telegram_send, gui.webbrowser.open
+    notify.find_chat, notify.telegram_send = find, lambda *args, **_kw: sent.append(args)
+    gui.webbrowser.open = opened.append
+    try:
+        choose_later()  # «chat id … вписан» — нажать «ОК»
+        settings.find_chat_id()
+        done = wait(lambda: chat.get() == "587129" and settings.chat_btn.cget("state") == "normal", 5)
+        pump(0.6)
+    finally:
+        notify.find_chat, notify.telegram_send, gui.webbrowser.open = real
+        settings._set_value("notify", "telegram_token", "")
+        settings._set_value("notify", "telegram_chat_id", "")
+    check("«Узнать chat id»: вписан в поле", done, chat.get())
+    check("«Узнать chat id»: открыт чат с ботом по ссылке с кодом",
+          bool(codes) and opened == [f"https://t.me/my_hh_bot?start={codes[0]}"], opened)
+    check("«Узнать chat id»: бот прислал проверочное сообщение",
+          len(sent) == 1 and sent[0][2]["chat_id"] == "587129", sent)
+
+
+def part_settings_search() -> None:
+    """Поиск по настройкам: «капчу» находит обе настройки капчи; выбор — нужная вкладка, прокрутка до строки
+    и недолгая подсветка карточки, которая потом гаснет; Esc очищает; Ctrl+F (и Ctrl+А) — в поле поиска."""
+    settings = app.pages["settings"]
+    app.show_page("settings")
+    settings.show_tab("Поиск")
+    pump(0.3)
+    titles = [entry["title"] for entry in settings.find("капчу")]
+    check("поиск: «капчу» — капча в Telegram и окно браузера",
+          any("Telegram" in t for t in titles) and any("окно браузера" in t for t in titles), titles)
+    check("поиск: «трей» — без лишнего", [e["title"] for e in settings.find("трей")] == ["Сворачивать в трей"],
+          [e["title"] for e in settings.find("трей")])
+    check("поиск: chat id", "Узнать chat id" in [e["title"] for e in settings.find("chat id")])
+    settings.search.focus_set()
+    settings.search.insert(0, "показывать окно браузера")
+    settings._search_typed()
+    pump(0.3)
+    check("поиск: список под полем", settings.results.winfo_ismapped() and settings._found, len(settings._found))
+    entry = settings._found[0]
+    settings._search_go(0)
+    pump(0.6)
+    card = entry["card"]
+    check("поиск: открыта вкладка «Прочее»", settings.current_tab == "Прочее", settings.current_tab)
+    check("поиск: список закрылся", not settings.results.winfo_ismapped())
+    row = entry["row"]
+    tab = settings.tabs["Прочее"]
+    top, view = tab._top(), tab._parent_canvas.winfo_height()
+    y = row.winfo_rooty() - tab.winfo_rooty()
+    check("поиск: строка на экране", top <= y <= top + view, (top, y, view))
+    check("поиск: карточка подсвечена", int(card.cget("border_width")) == 2, card.cget("border_width"))
+    pump(gui.FLASH_HOLD + gui.FLASH_FADE + 0.4)
+    check("поиск: подсветка погасла", int(card.cget("border_width")) == 1 and card._flash_marker is None)
+    settings.search.focus_set()
+    settings._search_typed()
+    pump(0.2)
+    settings._search_clear()
+    pump(0.1)
+    check("поиск: Esc очищает", settings.search.get() == "" and not settings.results.winfo_ismapped())
+    app.focus_set()
+    app._ctrl_key(SimpleNamespace(keycode=0, keysym="Cyrillic_a"))  # Ctrl+А в русской раскладке
+    pump(0.2)
+    # focus_lastfor: куда уйдёт фокус окна — и когда на переднем плане другое приложение (focus_get тогда None)
+    check("поиск: Ctrl+F — в поле поиска", app.focus_lastfor() is settings.search._entry, app.focus_lastfor())
+    app.focus_set()
+
+
+def part_log_colors() -> None:
+    """Журнал перекрашивается при любой смене темы — и когда её меняет система («Авто»), а не только кнопкой."""
+    import customtkinter as ctk
+
+    view = app.console.view
+    for mode, index in (("dark", 1), ("light", 0)):
+        ctk.set_appearance_mode(mode)  # так меняет тему система, минуя кнопки «Оформление»
+        pump(0.5)
+        theme_switch_done = view._textbox.tag_cget("info", "foreground") == gui.LOG_COLORS["info"][index]
+        check(f"журнал: цвета строк в теме «{mode}»", theme_switch_done, view._textbox.tag_cget("info", "foreground"))
+    app._set_appearance("Авто")
+    pump(0.3)
+
+
 def part_shortcuts() -> None:
     """Сочетания в русской раскладке — тем путём, каким их получает программа на этой системе."""
     page = app.pages["ai"]
@@ -344,8 +443,8 @@ def control_paused_holding() -> bool:
 
 
 def main() -> int:
-    for part in (part_pages, part_settings_save, part_shortcuts, part_ai_page, part_themes_and_mini, part_tray,
-                 part_dialogs, part_runs, part_stop):
+    for part in (part_pages, part_settings_save, part_chat_id, part_settings_search, part_log_colors, part_shortcuts,
+                 part_ai_page, part_themes_and_mini, part_tray, part_dialogs, part_runs, part_stop):
         print(f"--- {part.__name__}", flush=True)
         try:
             part()

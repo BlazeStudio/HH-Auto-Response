@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -85,27 +88,57 @@ def desktop(title: str, text: str) -> bool:
 
 
 def telegram(token: str, chat_id: str, text: str) -> bool:
-    token = token or os.environ.get("HH_TELEGRAM_TOKEN", "")
+    token = bot_token(token)
     if not token or not chat_id:
         log.warning("  ! уведомление в Telegram: не заданы [notify] telegram_token и telegram_chat_id")
         return False
-    body = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
     try:
-        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=body, timeout=15):
-            return True
-    except (urllib.error.URLError, OSError) as e:
-        log.warning(f"  ! уведомление в Telegram не отправлено: {getattr(e, 'code', '') or e}")
+        telegram_send(token, "sendMessage", {"chat_id": chat_id, "text": text}, attempts=2)
+        return True
+    except TelegramError as e:
+        log.warning(f"  ! уведомление в Telegram не отправлено: {e}")
         return False
 
 
 class TelegramError(Exception):
-    def __init__(self, text: str, code: int = 0):
+    def __init__(self, text: str, code: int = 0, retry_after: float = 0):
         super().__init__(text)
         self.code = code  # 409 — сообщения бота забирает кто-то другой (вебхук или другая программа)
+        self.retry_after = retry_after  # 429: Telegram просит подождать столько секунд
+
+    @property
+    def transient(self) -> bool:
+        """Сбой связи или Telegram занят — стоит повторить. 400/401/403 (неверный chat id, токен, бот
+        заблокирован) — нет: повтор даст то же самое."""
+        return self.code == 0 or self.code == 429 or self.code >= 500
 
 
 def bot_token(token: str) -> str:
     return token or os.environ.get("HH_TELEGRAM_TOKEN", "")
+
+
+# Повторы отправки: из России связь с Telegram то и дело рвётся на секунды (WinError 10060, сброс соединения),
+# а новое соединение обычно проходит сразу. Короткое ожидание и повтор быстрее одного длинного ожидания.
+SEND_TIMEOUT = 15  # с на одну попытку
+SEND_PAUSES = (1, 3, 6, 10)  # с между попытками
+
+
+def telegram_send(token: str, method: str, params: dict | None = None, files: dict | None = None,
+                  attempts: int = len(SEND_PAUSES) + 1, timeout: float = SEND_TIMEOUT,
+                  pause=time.sleep, call=None) -> object:
+    """telegram_call с повтором при сбое связи. pause — чем ждать между попытками (поток бота ждёт
+    своим событием, чтобы его можно было остановить); call — вместо telegram_call (проверки)."""
+    call = call or telegram_call
+    for attempt in range(attempts):
+        try:
+            return call(token, method, params, files, timeout=timeout)
+        except TelegramError as e:
+            if not e.transient or attempt + 1 >= attempts:
+                raise
+            wait = e.retry_after or SEND_PAUSES[min(attempt, len(SEND_PAUSES) - 1)]
+            log.debug(f"  Telegram: {method} не прошёл ({e}) — повтор через {wait:g} с")
+            pause(wait)
+    raise TelegramError("Telegram не ответил")  # attempts < 1
 
 
 def telegram_call(token: str, method: str, params: dict | None = None, files: dict | None = None,
@@ -128,15 +161,63 @@ def telegram_call(token: str, method: str, params: dict | None = None, files: di
     except urllib.error.HTTPError as e:
         try:
             data = json.loads(e.read().decode("utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
             raise TelegramError(f"HTTP {e.code}", e.code) from None
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        raise TelegramError(str(getattr(e, "reason", "") or e)) from None
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
+        # HTTPException — оборванный посреди ответ (IncompleteRead и т.п.): тоже сбой связи
+        raise TelegramError(str(getattr(e, "reason", "") or e) or type(e).__name__) from None
     if not isinstance(data, dict) or not data.get("ok"):
         description = data.get("description", "") if isinstance(data, dict) else ""
-        raise TelegramError(description or "Telegram не принял запрос",
-                            data.get("error_code", 0) if isinstance(data, dict) else 0)
+        code = data.get("error_code", 0) if isinstance(data, dict) else 0
+        retry = (data.get("parameters") or {}).get("retry_after", 0) if isinstance(data, dict) else 0
+        raise TelegramError(description or "Telegram не принял запрос", code, float(retry or 0))
     return data.get("result")
+
+
+def chat_code() -> str:
+    """Одноразовый код для «Узнать chat id»: 6 цифр — легко отправить и вручную, угадать за минуту нельзя."""
+    return f"{secrets.randbelow(900_000) + 100_000}"
+
+
+def chat_link(bot: str, code: str) -> str:
+    """Ссылка на бота с кодом: Telegram откроет чат и кнопку «Запустить», она пришлёт боту «/start код»."""
+    return f"https://t.me/{bot}?start={code}"
+
+
+def has_code(text: str, code: str) -> bool:
+    """В сообщении — наш код: «/start 482913» по ссылке или просто «482913», отправленное вручную."""
+    return code in text.replace("/start", " ").split()
+
+
+def find_chat(token: str, code: str, wait: float = 120, stopped=lambda: False, waiting=lambda bot: None) -> dict:
+    """Узнать chat id без ручного getUpdates. Боту могут писать и другие люди, поэтому берётся не последнее
+    сообщение, а только то, в котором одноразовый код (chat_code): его знает лишь тот, кто нажал кнопку.
+    waiting(имя бота) — начинаем ждать: окно открывает ссылку chat_link и показывает код. Ждёт до wait секунд.
+    Возвращает {"id", "title", "bot"}; не дождались — {"bot"} без "id". Ошибка Telegram — TelegramError."""
+    me = telegram_send(token, "getMe", attempts=3)
+    bot = str((me or {}).get("username", "")) if isinstance(me, dict) else ""
+    if (telegram_send(token, "getWebhookInfo", attempts=3) or {}).get("url"):
+        raise TelegramError("у бота включён вебхук — его сообщения забирает другая программа. Отключите вебхук "
+                            "(или заведите для HH-Auto-Response отдельного бота у @BotFather)", 409)
+    waiting(bot)
+    deadline = time.monotonic() + wait
+    offset = 0
+    while True:
+        timeout = max(0, min(10, int(deadline - time.monotonic())))
+        updates = telegram_send(token, "getUpdates", {"offset": offset, "timeout": timeout,
+                                                      "allowed_updates": ["message"]},
+                                attempts=3, timeout=timeout + SEND_TIMEOUT)
+        for update in updates or []:
+            offset = max(offset, int(update.get("update_id", 0)) + 1)
+            message = update.get("message") or {}
+            chat = message.get("chat")
+            if isinstance(chat, dict) and "id" in chat and has_code(str(message.get("text") or ""), code):
+                title = chat.get("title") or " ".join(filter(None, (chat.get("first_name"), chat.get("last_name"))))
+                if chat.get("username"):
+                    title = f"{title} (@{chat['username']})" if title else f"@{chat['username']}"
+                return {"id": str(chat["id"]), "title": title, "bot": bot}
+        if stopped() or time.monotonic() >= deadline:
+            return {"bot": bot}
 
 
 def _multipart(fields: dict[str, str], files: dict, boundary: str) -> bytes:

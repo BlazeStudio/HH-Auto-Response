@@ -149,9 +149,14 @@ function captchaForm(done) {
     <div data-qa="account-captcha-error" style="visibility:hidden">Неверный текст. Пожалуйста, повторите попытку.</div>
     <button type="submit" data-qa="account-captcha-submit">Отправить</button></form>`);
   qa(box, 'captcha-renew-text').onclick = () => { qa(box, 'account-captcha-picture').src = captchaPicture(); };
+  // какие символы пришли нажатиями клавиш (keydown), а не вставкой — так вводит человек
+  let keys = '';
+  qa(box, 'account-captcha-input').addEventListener('keydown', (e) => { if (e.key.length === 1) keys += e.key; });
   box.querySelector('form').onsubmit = async (event) => {
     event.preventDefault();
     const input = qa(box, 'account-captcha-input');
+    await fetch('/mock/captcha-keys', {method: 'POST', body: keys});
+    keys = '';
     await fetch('/mock/captcha', {method: 'POST', body: input.value});
     if (input.value === CAPTCHA_ANSWER) {
       box.remove();
@@ -351,6 +356,7 @@ class MockHh:
         self.captcha_ms = 3000  # сколько «человек» решает капчу (вакансии с flow="captcha")
         self.captcha_answer = ""  # задан — капча с формой: решается только этим ответом (его вводит программа)
         self.captcha_tries: list[str] = []  # что вводили в форму капчи
+        self.captcha_keys: list[str] = []  # …из них — нажатиями клавиш (keydown), по попытке
         self.visited: list[str] = []
         self.outside: list[str] = []  # запросы мимо hh: их быть не должно
 
@@ -382,6 +388,9 @@ class MockHh:
             return 200, "ok", text
         if path == "/mock/captcha":
             self.captcha_tries.append(data or "")
+            return 200, "ok", text
+        if path == "/mock/captcha-keys":
+            self.captcha_keys.append(data or "")
             return 200, "ok", text
         if path == "/mock/hidden":
             self.hidden.append(json.loads(data or "{}").get("id", ""))

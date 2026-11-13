@@ -429,8 +429,10 @@ def slowdown() -> float:
 def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
     """Капчу не обходим и не решаем: зовём человека и ждём, пока он её решит. True — капча была.
     Решить можно в окне браузера или, если включено ([notify] telegram_captcha), ответом боту в Telegram —
-    кто первый (web/captcha.py). После капчи — передышка и более длинные паузы (slowdown): чаще всего капча —
-    от слишком частых действий."""
+    кто первый (web/captcha.py). Окно браузера само выходит на экран, только если включено
+    [browser] show_on_captcha; иначе программа сообщает о капче, а браузер человек открывает сам («Показать»),
+    и после капчи окно прячется обратно. После капчи — передышка и более длинные паузы (slowdown): чаще всего
+    капча — от слишком частых действий."""
     if not captcha_shown(page):
         return False
     from . import captcha as phone
@@ -441,11 +443,16 @@ def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
         raise FatalError("hh.ru показал капчу, а браузер работает без окна ([browser] headless = true) — решить её "
                          "некому. Запустите с окном и решите капчу сами или включите капчу в Telegram "
                          "([notify] telegram, telegram_captcha)")
-    where = ("ответьте боту в Telegram символами с картинки" if headless else
-             "решите её в окне браузера или ответьте боту в Telegram" if relay else "решите её в окне браузера")
+    show = _cfg is None or _cfg.browser.show_on_captcha
+    closed = not headless and not show and _window_hidden()  # окно спрятано, и само оно не выйдет
+    if headless:
+        where = "ответьте боту в Telegram символами с картинки"
+    else:
+        where = OPEN_BROWSER + " и решите её" if closed else "решите её в окне браузера"
+        where += " или ответьте боту в Telegram" if relay else ""
     log.warning(f"  ! hh.ru показал капчу — {where}. Программа подождёт до {timeout / 60:.0f} мин и продолжит сама")
-    was_hidden = show_for_user(page)
-    _alert_captcha(telegram=relay is None)
+    was_hidden = show_for_user(page) if show else False  # выключено — окно не трогаем, даже не выводим вперёд
+    _alert_captcha(telegram=relay is None, closed=closed)
     deadline = time.monotonic() + timeout
     solver = phone.PhoneSolver(page, relay, timeout) if relay else None
     outcome = "stopped"
@@ -462,7 +469,7 @@ def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
         if solver is not None:
             solver.finish(outcome)
     log.success("  ✓ капча пройдена, продолжаю")
-    hide_after_user(was_hidden)
+    hide_after_user(was_hidden or (closed and not _window_hidden()))  # открыли ради капчи — спрятать обратно
     _captchas.append(time.monotonic())
     rest = random.uniform(*BREATHER) * slowdown() / 2
     log.info(f"  hh просит помедленнее: передышка {rest:.0f} с, следующие {SLOW_FOR // 60} мин паузы "
@@ -471,9 +478,22 @@ def wait_captcha(page: Page, timeout: float = CAPTCHA_WAIT) -> bool:
     return True
 
 
-def _alert_captcha(telegram: bool = True) -> None:
+def _window_hidden() -> bool:
+    """Окно браузера сейчас спрятано программой (за краем экрана или свёрнуто)."""
+    if not hides_window(_cfg):
+        return False
+    browser_window.pump(fresh=True)  # macOS, Linux: что с окном сейчас (Windows узнаёт это сразу)
+    return browser_window.is_hidden()
+
+
+# как открыть спрятанный браузер — в журнале и в уведомлении о капче
+OPEN_BROWSER = "откройте браузер («Показать» у превью слева или «Показать браузер» в трее)"
+
+
+def _alert_captcha(telegram: bool = True, closed: bool = False) -> None:
     """Вдруг вы отошли: уведомление на компьютер или в Telegram — если вы их разрешили ([notify]).
-    telegram=False — в Telegram уже идёт картинка капчи (web/captcha.py), текстом не дублируем."""
+    telegram=False — в Telegram уже идёт картинка капчи (web/captcha.py), текстом не дублируем.
+    closed — окно браузера спрятано и само не выйдет: подсказать, как его открыть."""
     cfg = _cfg
     if cfg is None or not (cfg.notify.desktop or cfg.notify.telegram and telegram):
         return
@@ -481,8 +501,10 @@ def _alert_captcha(telegram: bool = True) -> None:
 
     from ..core import notify
 
-    where = "в окне браузера или ответьте боту в Telegram" if not telegram and cfg.notify.telegram else         "в окне браузера"
-    text = f"hh.ru просит пройти капчу. Решите её {where} — программа ждёт и потом продолжит сама."
+    where = OPEN_BROWSER[0].upper() + OPEN_BROWSER[1:] + " и решите её" if closed else "Решите её в окне браузера"
+    if not telegram and cfg.notify.telegram:
+        where += " или ответьте боту в Telegram"
+    text = f"hh.ru просит пройти капчу. {where} — программа ждёт и потом продолжит сама."
     settings = replace(cfg.notify, telegram=cfg.notify.telegram and telegram)
     threading.Thread(target=notify.send, args=(settings, "HH-Auto-Response — нужна капча", text),
                      daemon=True).start()

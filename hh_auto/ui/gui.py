@@ -61,8 +61,8 @@ from .theme import (ACCENT, ACCENT_FILL, ACCENT_HOVER, ACCENT_SOFT, AMBER, APP_N
 APP_VERSION = __version__
 GITHUB_URL = "https://github.com/BlazeStudio/hh-auto-response"
 
-LOG_COLORS = {  # тег → (светлая, тёмная)
-    "debug": ("#9CA3AF", "#6B7280"),
+LOG_COLORS = {  # тег → (светлая, тёмная); «подробные» строки приглушены, но читаются (контраст ≥ 4:1)
+    "debug": ("#76767C", "#8E8E93"),
     "info": ("#1F2937", "#D1D5DB"),
     "ok": ("#15803D", "#4ADE80"),
     "warn": ("#B45309", "#FBBF24"),
@@ -161,6 +161,17 @@ class ScrollFrame(ctk.CTkScrollableFrame):
     def _scroll_by(self, pixels: float) -> None:
         base = self._target if self._target is not None else self._top()
         self._target = min(max(base + pixels, 0.0), self._max_top())
+        self._start()
+
+    def scroll_to(self, widget: tkinter.Misc, margin: float = 0.18) -> None:
+        """Плавно доехать до widget (он внутри этой области): он встанет в верхней части видимого, на margin
+        высоты от верха. Уже целиком на экране — не двигаемся."""
+        self.update_idletasks()
+        y = widget.winfo_rooty() - self.winfo_rooty()  # от верха содержимого, при любой прокрутке
+        view, top = self._parent_canvas.winfo_height(), self._top()
+        if top <= y and y + widget.winfo_height() <= top + view:
+            return
+        self._target = min(max(y - view * margin, 0.0), self._max_top())
         self._start()
 
     def _start(self) -> None:
@@ -375,6 +386,12 @@ class LogView(ctk.CTkTextbox):
         dark = ctk.get_appearance_mode() == "Dark"
         for tag, (light_color, dark_color) in LOG_COLORS.items():
             self.tag_config(tag, foreground=dark_color if dark else light_color)
+
+    def _set_appearance_mode(self, mode_string: str) -> None:
+        """Смена темы — любая: кнопкой «Оформление» или самой Windows/macOS при «Авто». Раньше цвета строк
+        менялись только по кнопке, и после смены темы системой тёмно-серый текст оставался на тёмном фоне."""
+        super()._set_appearance_mode(mode_string)
+        self.apply_colors()
 
     def append(self, text: str, tag: str) -> None:
         at_bottom = self.yview()[1] > 0.98
@@ -1269,10 +1286,12 @@ SETTINGS = [
          "В те же каналы, что выше (компьютер, Telegram). Приглашение видно, когда программа смотрит чаты: при "
          "«Чатах» и фоновой проверке. Сообщает один раз и только о непрочитанном приглашении"),
         ("notify", "telegram_chat_id", "Ваш chat id", "str",
-         "Напишите боту что-нибудь и откройте api.telegram.org/bot<токен>/getUpdates — там будет chat.id"),
+         "Впишите токен и нажмите «Узнать chat id» ниже: откроется Telegram — нажмите «Запустить» (или отправьте "
+         "боту код с кнопки), и программа впишет chat id сама"),
         ("notify", "telegram_captcha", "Капча — в Telegram: ответить можно с телефона", "bool",
          "Нужен Telegram выше. Бот пришлёт картинку капчи — ответьте ему символами с неё, программа введёт их "
-         "сама. Решить капчу в окне браузера тоже можно, кто первый. Не подошло — придёт новая картинка; "
+         "сама. Окно браузера при этом не всплывает (если не включено «Показывать окно браузера, когда hh "
+         "просит капчу»); решить в браузере тоже можно, кто первый. Не подошло — придёт новая картинка; "
          "ответ «другая» — другая картинка"),
     ]),
     ("Статистика", [
@@ -1298,8 +1317,12 @@ SETTINGS = [
         ("browser", "channel", "Браузер", "choice", ""),
         ("browser", "hide_window", "Прятать окно браузера", "bool",
          "Браузер работает за краем экрана (Windows) или свёрнутым (macOS, Linux) и не мешает, а что он делает — "
-         "видно в превью в меню слева. Для входа в hh и капчи окно покажется само; «Показать» — в любой момент. "
+         "видно в превью в меню слева. Для входа в hh окно покажется само; «Показать» — в любой момент. "
          "Действует со следующего запуска"),
+        ("browser", "show_on_captcha", "Показывать окно браузера, когда hh просит капчу", "bool",
+         "Выключено — окно не всплывает поверх ваших окон: программа сообщит о капче уведомлением, в Telegram и "
+         "в строке слева, а браузер откроете вы — «Показать» у превью или в трее. С капчей в Telegram придёт "
+         "картинка, ответить можно с телефона"),
         ("geo", "proxy", "Российский прокси (если вы не в РФ или с VPN)", "str",
          "Формат: http://user:pass@host:port. Пусто — прямое подключение"),
         ("geo", "check_ip", "Показывать страну IP перед стартом", "bool", ""),
@@ -1308,6 +1331,69 @@ SETTINGS = [
 ]
 # Вкладки настроек: на экране одна вкладка, а не все 13 разделов разом (на ленте было 915 окон Windows,
 # и при прокрутке и переключении страниц они перерисовывались кусками)
+FIND_CHAT_WAIT = 120  # с: столько «Узнать chat id» ждёт вашего кода боту
+SEARCH_RESULTS = 8  # строк в списке найденного
+SEARCH_WIDTH = 620  # px, при масштабе 100%
+FLASH_HOLD, FLASH_FADE = 0.7, 1.1  # с: найденное подсвечено, потом подсветка плавно гаснет
+_ENDINGS = "аеиоуыэюяь"
+
+
+def _norm(text: str) -> str:
+    return text.lower().replace("ё", "е")
+
+
+def _stem(word: str) -> str:
+    """Слово без окончания (до двух гласных с конца), чтобы «капчу», «капчи» и «капча» находили одно и то же.
+    «й» — окончание только у длинных слов после гласной («новый»): «трей» так и ищется «трей», а не «тре»."""
+    if len(word) > 5 and word[-1] == "й" and word[-2] in _ENDINGS:
+        word = word[:-1]
+    for _ in range(2):
+        if len(word) > 3 and word[-1] in _ENDINGS:
+            word = word[:-1]
+    return word
+
+
+def _mix(start: str, end: str, t: float) -> str:
+    a, b = (tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in (start, end))
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
+
+
+def _flash(card, row=None) -> None:
+    """Недолгая подсветка найденного: рамка карточки — акцентом, у строки слева — полоска; потом плавно гаснут."""
+    pick = (lambda pair: pair[1]) if ctk.get_appearance_mode() == "Dark" else (lambda pair: pair[0])
+    accent, line, bg = pick(ACCENT), pick(CARD_LINE), pick(CARD_BG)
+    scale = card._get_widget_scaling()
+    old_job, old_marker = getattr(card, "_flash_job", None), getattr(card, "_flash_marker", None)
+    if old_job is not None:  # прошлая подсветка этой карточки ещё не погасла — заменить новой
+        card.after_cancel(old_job)
+    if old_marker is not None:
+        old_marker.destroy()
+    marker = None
+    if row is not None:
+        marker = tkinter.Frame(card, bg=accent, bd=0, highlightthickness=0)
+        marker.place(in_=row, x=-round(10 * scale), y=0, relheight=1.0, width=max(2, round(3 * scale)))
+    card._flash_marker = marker
+    started = time.monotonic()
+
+    def frame() -> None:
+        card._flash_job = None
+        try:
+            t = (time.monotonic() - started - FLASH_HOLD) / FLASH_FADE
+            if t >= 1:
+                card.configure(border_color=CARD_LINE, border_width=1)
+                if marker is not None:
+                    marker.destroy()
+                card._flash_marker = None
+                return
+            t = max(0.0, t)
+            card.configure(border_color=_mix(accent, line, t), border_width=2)
+            if marker is not None:
+                marker.configure(bg=_mix(accent, bg, t))
+            card._flash_job = card.after(30, frame)
+        except tkinter.TclError:  # окно закрыли посреди подсветки
+            pass
+
+    frame()
 PAGE_FADE = 0.14  # сек: плавный переход между страницами
 TAB_FADE = 0.12  # и между вкладками настроек
 SETTINGS_TABS = [
@@ -1465,6 +1551,36 @@ class PickerDialog(QuietToplevel, ctk.CTkToplevel):
         self.destroy()
 
 
+class _Dropdown(PlainFrame):
+    """Список поверх страницы: обычная рамка (ей можно задать ширину в place) с тонкой каймой в цвет темы."""
+
+    def __init__(self, master):
+        super().__init__(master, bg=CARD_BG)
+        tkinter.Frame.configure(self, highlightthickness=1)
+
+    def _restyle(self) -> None:
+        super()._restyle()
+        line = self._apply_appearance_mode(BORDER)
+        tkinter.Frame.configure(self, highlightbackground=line, highlightcolor=line)
+
+
+class SearchResults(ItemList):
+    """Найденное в настройках: название и, приглушённо, где оно лежит («Вкладка › Раздел»)."""
+
+    def _restyle(self) -> None:
+        super()._restyle()
+        self.tag_configure("path", foreground=self._apply_appearance_mode(MUTED))  # и при смене темы
+
+    def set_results(self, rows: list[tuple[object, str, str]]) -> None:
+        """rows — (ключ, название, где лежит)."""
+        self.set_items([(key, f"{title}     {path}" if path else title) for key, title, path in rows])
+        self.configure(state="normal")
+        for line, (_key, title, path) in enumerate(rows, 1):
+            if path:
+                self.tag_add("path", f"{line}.{len(title)}", f"{line}.end")
+        self.configure(state="disabled")
+
+
 class SettingsPage(Page):
     def __init__(self, master, app: "App"):
         super().__init__(master, "Настройки", f"Сохраняются в {app.config_path}")
@@ -1484,6 +1600,23 @@ class SettingsPage(Page):
                                    command=lambda n=name: self.show_tab(n))
             button.pack(side="left", padx=(3 if i == 0 else 0, 3), pady=3)
             self.tab_buttons[name] = button
+        # поиск по настройкам: справа от вкладок, совпадения — списком под полем
+        self.search = ctk.CTkEntry(row, placeholder_text="Найти настройку…  Ctrl+F", width=270, height=34,
+                                   corner_radius=10)
+        self.search.pack(side="right")
+        self.search_index: list[dict] = []  # что можно найти: название, где лежит, вкладка, карточка, строка
+        self._found: list[dict] = []  # совпадения, которые сейчас в списке
+        self._found_at = 0  # выбранное стрелками
+        self.results = _Dropdown(self)
+        self.results_list = SearchResults(self.results, self._search_go, width=1, height=1)
+        self.results_list.pack(fill="both", expand=True, padx=4, pady=4)
+        self.search.bind("<KeyRelease>", self._search_typed)
+        self.search.bind("<FocusIn>", lambda _e: self._search_typed())
+        self.search.bind("<FocusOut>", lambda _e: self.after(200, self._search_close_unless_focused))
+        self.search.bind("<Return>", lambda _e: self._search_go(self._found_at))
+        self.search.bind("<Escape>", lambda _e: self._search_clear())
+        self.search.bind("<Down>", lambda _e: self._search_move(1))
+        self.search.bind("<Up>", lambda _e: self._search_move(-1))
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True)
         self.tabs = {name: ScrollFrame(body, fg_color="transparent") for name, _ in SETTINGS_TABS}
@@ -1492,9 +1625,11 @@ class SettingsPage(Page):
         self.watch_info: dict[str, SelectableText] = {}  # подписи у «Проверить сейчас»
 
         for section_title, items in SETTINGS:
-            card = Card(self.tabs[tab_of[section_title]])
+            tab = tab_of[section_title]
+            card = Card(self.tabs[tab])
             card.pack(fill="x", pady=(0, 12), padx=(0, 6))
             TextLabel(card, section_title, size=15, weight="bold").pack(anchor="w", padx=16, pady=(12, 4))
+            self._index(section_title, tab, card)  # сам раздел: переход к карточке целиком
             if section_title == "Фильтры hh":
                 SelectableText(card, "Пусто — фильтр не задан, на hh это «выбрано всё». Проще всего настроить "
                                      "фильтры на hh.ru, скопировать адрес страницы и нажать «Заполнить из ссылки».",
@@ -1505,9 +1640,11 @@ class SettingsPage(Page):
                                   height=32).pack(side="left")
                 _secondary_button(row, "Сбросить фильтры hh", self.reset_hh_filters, width=190,
                                   height=32).pack(side="left", padx=8)
+                self._index("Заполнить фильтры из ссылки hh", tab, card, row, section_title, "сбросить фильтры")
             for section, key, label, kind, hint in items:
-                self._add_field(card, section, key, label, kind, hint)
-                self.field_tab[(section, key)] = tab_of[section_title]
+                field_row = self._add_field(card, section, key, label, kind, hint)
+                self.field_tab[(section, key)] = tab
+                self._index(label, tab, card, field_row, section_title, f"{hint} {section}.{key} {key}")
             if section_title == "ИИ-ответы в чатах":
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
@@ -1516,6 +1653,8 @@ class SettingsPage(Page):
                 SelectableText(row, "Где взять ключ: OpenRouter — openrouter.ai → Keys; DeepSeek — "
                                     "platform.deepseek.com → API keys; Ollama — ключ не нужен", color=MUTED, size=12,
                                width_px=480).pack(side="left", fill="x", expand=True, padx=12)
+                self._index("Проверить подключение к ИИ", tab, card, row, section_title,
+                            "ключ api openrouter deepseek ollama нейросеть")
             if section_title == "ИИ-фильтр вакансий":
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
@@ -1524,6 +1663,7 @@ class SettingsPage(Page):
                 self.filter_test_btn.pack(side="left")
                 SelectableText(row, "Отправит нейросети тестовую вакансию и покажет, что она решила",
                                color=MUTED, size=12, width_px=420).pack(side="left", fill="x", expand=True, padx=12)
+                self._index("Проверить ИИ-фильтр на примере вакансии", tab, card, row, section_title)
             if section_title == "Поднятие резюме":
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
@@ -1531,6 +1671,7 @@ class SettingsPage(Page):
                                   height=32).pack(side="left")
                 self.raise_info = SelectableText(row, "", color=MUTED, size=12, width_px=520)
                 self.raise_info.pack(side="left", fill="x", expand=True, padx=12)
+                self._index("Поднять резюме сейчас", tab, card, row, section_title)
             if section_title in ("Фоновая проверка", "Компании мечты"):
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
@@ -1540,17 +1681,23 @@ class SettingsPage(Page):
                 info = SelectableText(row, "", color=MUTED, size=12, width_px=520)
                 info.pack(side="left", fill="x", expand=True, padx=12)
                 self.watch_info[task] = info
+                self._index(f"{section_title}: проверить сейчас", tab, card, row, section_title)
             if section_title == "Уведомления по итогам":
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
                 self.notify_btn = _secondary_button(row, "Отправить тестовое уведомление", self.test_notify,
                                                     width=260, height=32)
                 self.notify_btn.pack(side="left")
+                self.chat_btn = _secondary_button(row, "Узнать chat id", self.find_chat_id, width=200, height=32)
+                self.chat_btn.pack(side="left", padx=(10, 0))
+                self._index("Отправить тестовое уведомление", tab, card, row, section_title, "проверка telegram")
+                self._index("Узнать chat id", tab, card, row, section_title, "telegram бот чат телеграм")
             PlainFrame(card, height=8).pack()
 
         danger = Card(self.tabs["Прочее"])
         danger.pack(fill="x", pady=(0, 12), padx=(0, 6))
         TextLabel(danger, "Данные приложения", size=15, weight="bold").pack(anchor="w", padx=16, pady=(12, 4))
+        self._index("Данные приложения", "Прочее", danger, extra="папка данных")
         SelectableText(danger, f"Папка: {app.root_dir}", color=MUTED, width_px=760).pack(fill="x", padx=16)
         row = PlainFrame(danger)
         row.pack(fill="x", padx=16, pady=(8, 14))
@@ -1558,6 +1705,10 @@ class SettingsPage(Page):
         ctk.CTkButton(row, text="Выйти из аккаунта hh (сбросить вход)", height=32, fg_color="transparent",
                       border_width=1, border_color=RED, text_color=RED, hover_color=ACCENT_SOFT,
                       command=app.reset_login).pack(side="left", padx=10)
+        self._index("Открыть папку программы", "Прочее", danger, row, "Данные приложения",
+                    "данные конфиг config.toml логи профиль браузера")
+        self._index("Выйти из аккаунта hh (сбросить вход)", "Прочее", danger, row, "Данные приложения",
+                    "логин войти заново другой аккаунт")
         row = PlainFrame(danger)
         row.pack(fill="x", padx=16, pady=(0, 14))
         self.check_updates_switch = ctk.CTkSwitch(row, text="Проверять обновления на GitHub",
@@ -1570,6 +1721,8 @@ class SettingsPage(Page):
                           height=32).pack(side="left", padx=12)
         SelectableText(row, "Новая версия скачивается и ставится по кнопке в меню слева, настройки остаются",
                        color=MUTED, size=12, width_px=420).pack(side="left", fill="x", expand=True)
+        self._index("Проверять обновления на GitHub", "Прочее", danger, row, "Данные приложения",
+                    "новая версия обновить")
         row = PlainFrame(danger)
         row.pack(fill="x", padx=16, pady=(0, 14))
         self.mini_switch = ctk.CTkSwitch(row, text="Сворачивать в мини-окно в углу экрана, если идёт работа",
@@ -1577,6 +1730,8 @@ class SettingsPage(Page):
         if app.prefs.get("mini_on_minimize", True):
             self.mini_switch.select()
         self.mini_switch.pack(side="left")
+        self._index("Сворачивать в мини-окно в углу экрана", "Прочее", danger, row, "Данные приложения",
+                    "мини окно уголок свернуть ctrl+m")
         if tray_icon.available():
             row = PlainFrame(danger)
             row.pack(fill="x", padx=16, pady=(0, 14))
@@ -1589,6 +1744,8 @@ class SettingsPage(Page):
                                 "и отклики идут как обычно. Пока идёт работа, сначала — мини-окно, если оно "
                                 "включено выше",
                            color=MUTED, size=12, width_px=420).pack(side="left", fill="x", expand=True, padx=12)
+            self._index("Сворачивать в трей", "Прочее", danger, row, "Данные приложения",
+                        "значок часы панель задач область уведомлений строка меню")
         self.current_tab = ""
         saved = app.prefs.get("settings_tab")
         self.show_tab(saved if saved in self.tabs else SETTINGS_TABS[0][0])
@@ -1620,6 +1777,92 @@ class SettingsPage(Page):
                                  hover_color=SEG_THUMB if tab == name else FILL_HOVER)
         self.current_tab = name
         self.app.save_prefs(settings_tab=name)
+
+    # ---------- поиск по настройкам ----------
+
+    def _index(self, title: str, tab: str, card, row=None, section: str = "", extra: str = "") -> None:
+        """Запомнить, что можно найти: title — что показать в списке, row — строка, к которой ехать
+        (None — к карточке раздела), section — раздел, в котором она лежит."""
+        self.search_index.append({
+            "title": title, "tab": tab, "card": card, "row": row, "section": section,
+            "title_norm": _norm(title), "hay": _norm(" ".join((title, section, tab, extra))),
+        })
+
+    def find(self, query: str) -> list[dict]:
+        """Совпадения с запросом, лучшие сверху: все слова запроса (без окончаний) — в названии, разделе или
+        подсказке; совпало в названии — выше, название начинается с запроса — ещё выше."""
+        stems = [_stem(word) for word in _norm(query).split()]
+        if not stems:
+            return []
+        found = []
+        for order, entry in enumerate(self.search_index):
+            if not all(stem in entry["hay"] for stem in stems):
+                continue
+            score = sum(3 if stem in entry["title_norm"] else 1 for stem in stems)
+            score += 4 if entry["title_norm"].startswith(_norm(query).strip()) else 0
+            score += 1 if entry["row"] is None else 0  # раздел целиком — чуть выше своих строк
+            found.append((-score, order, entry))
+        return [entry for _score, _order, entry in sorted(found, key=lambda item: item[:2])][:SEARCH_RESULTS]
+
+    def focus_search(self) -> None:
+        self.search.focus_set()
+        self.search.select_range(0, "end")
+
+    def _search_typed(self, event=None) -> None:
+        if event is not None and event.keysym in ("Up", "Down", "Return", "Escape"):
+            return
+        query = self.search.get().strip()
+        if not query:
+            self._search_close()
+            return
+        self._found = self.find(query)
+        self._found_at = 0
+        if self._found:
+            self.results_list.set_results(
+                [(i, entry["title"], f"{entry['tab']} › {entry['section']}" if entry["section"] else entry["tab"])
+                 for i, entry in enumerate(self._found)])
+            self.results_list.select(0)
+        else:
+            self.results_list.set_results([(None, "Ничего не нашлось — попробуйте другое слово", "")])
+        self.results_list.configure(height=max(1, len(self._found)))
+        scale = self._get_widget_scaling()
+        # tkinter.Frame.place: ширину customtkinter задавать в place не даёт, обычной рамке — можно
+        tkinter.Frame.place(self.results, in_=self.search, relx=1.0, rely=1.0, y=round(6 * scale), anchor="ne",
+                            width=round(SEARCH_WIDTH * scale))
+        self.results.lift()
+
+    def _search_move(self, step: int) -> str:
+        if self._found:
+            self._found_at = (self._found_at + step) % len(self._found)
+            self.results_list.select(self._found_at)
+        return "break"
+
+    def _search_close(self) -> None:
+        self.results.place_forget()
+        self._found = []
+
+    def _search_close_unless_focused(self) -> None:
+        try:
+            if self.focus_get() is not self.search._entry:
+                self._search_close()
+        except (KeyError, tkinter.TclError):  # фокус ушёл в другое окно (диалог, браузер)
+            self._search_close()
+
+    def _search_clear(self) -> None:
+        self.search.delete(0, "end")
+        self._search_close()
+
+    def _search_go(self, index) -> None:
+        """Перейти к найденному: вкладка (с плавной сменой), прокрутка до строки, недолгая подсветка."""
+        if index is None or not 0 <= index < len(self._found):
+            return
+        entry = self._found[index]
+        self._search_close()
+        self.focus_set()  # курсор — из поля поиска, иначе подсветку перебьёт ввод
+        self.show_tab(entry["tab"])
+        target = entry["row"] if entry["row"] is not None else entry["card"]
+        self.tabs[entry["tab"]].scroll_to(target)
+        _flash(entry["card"], entry["row"])
 
     def show_field(self, section: str, key: str) -> None:
         """Ошибка в поле — открыть вкладку, где оно лежит."""
@@ -1661,6 +1904,7 @@ class SettingsPage(Page):
         if hint:  # подсказку можно выделить и скопировать
             SelectableText(row, hint, color=MUTED, size=12, width_px=760).pack(fill="x", pady=(3, 0))
         self.widgets[(section, key)] = (kind, widget)
+        return row
 
     def load(self, force: bool = False) -> None:
         """Значения из настроек — в форму. Если настройки с прошлого раза не менялись, форма не трогается
@@ -1809,6 +2053,62 @@ class SettingsPage(Page):
         threading.Thread(target=lambda: notify.send(cfg.notify, f"{APP_NAME} — проверка",
                                                     "Так будут выглядеть итоги запуска."), daemon=True).start()
         self.app.toast("Тестовое уведомление отправлено")
+
+    def find_chat_id(self) -> None:
+        """chat id без ручного getUpdates: кнопка открывает чат с ботом по ссылке с одноразовым кодом, вы жмёте
+        «Запустить» (или отправляете код сами) — программа берёт чат только из сообщения с этим кодом. Последнее
+        сообщение боту брать нельзя: боту может написать кто угодно, и chat id оказался бы чужим."""
+        cfg = self.collect()
+        if cfg is None:
+            return
+        from ..core import notify
+
+        token = notify.bot_token(cfg.notify.telegram_token)
+        if not token:
+            messagebox.showinfo(APP_NAME, "Сначала впишите токен бота — его даёт @BotFather в Telegram (/newbot).")
+            return
+        code = notify.chat_code()
+        self.chat_btn.configure(state="disabled", text=f"Жду код {code}…")
+
+        def work():
+            try:
+                found = notify.find_chat(token, code, wait=FIND_CHAT_WAIT,
+                                         waiting=lambda bot: self.app.events.put(("chat_wait", bot, code)))
+                if found.get("id"):  # заодно проверить, что бот может писать в этот чат
+                    notify.telegram_send(token, "sendMessage", {
+                        "chat_id": found["id"],
+                        "text": f"✓ {APP_NAME}: chat id {found['id']} найден. Сюда будут приходить уведомления "
+                                "и капча — нажмите «Сохранить» в настройках."}, attempts=3)
+                result = (True, found)
+            except notify.TelegramError as e:
+                result = (False, str(e))
+            self.app.events.put(("chat_found", *result))  # окно трогаем только из главного потока (_poll)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _chat_waiting(self, bot: str, code: str) -> None:
+        if bot:
+            from ..core import notify
+
+            webbrowser.open(notify.chat_link(bot, code))
+        who = f"боту @{bot}" if bot else "своему боту"
+        self.app.toast(f"В Telegram нажмите «Запустить» — или отправьте {who} код {code}")
+
+    def _chat_found(self, ok: bool, found) -> None:
+        self.chat_btn.configure(state="normal", text="Узнать chat id")
+        if not ok:
+            messagebox.showerror(APP_NAME, f"Не получилось узнать chat id\n\n{found}")
+            return
+        if not found.get("id"):
+            bot = f" @{found['bot']}" if found.get("bot") else ""
+            messagebox.showinfo(APP_NAME, f"Код от вас боту{bot} не пришёл. Нажмите «Узнать chat id» ещё раз: "
+                                          "откроется Telegram — нажмите там «Запустить» или отправьте боту код, "
+                                          "который покажет кнопка.")
+            return
+        self._set_value("notify", "telegram_chat_id", found["id"])
+        who = f" ({found['title']})" if found.get("title") else ""
+        messagebox.showinfo(APP_NAME, f"chat id {found['id']}{who} вписан. Бот прислал вам проверочное "
+                                      "сообщение. Нажмите «Сохранить».", kind="success")
 
     def _ai_tested(self, ok: bool, text: str) -> None:
         self.ai_test_btn.configure(state="normal", text="Проверить подключение к ИИ")
@@ -3458,13 +3758,8 @@ class App(ctk.CTk):
 
     def _set_appearance(self, label: str) -> None:
         mode = APPEARANCE[label]
-        ctk.set_appearance_mode(mode)
+        ctk.set_appearance_mode(mode)  # журналы перекрашиваются сами (LogView._set_appearance_mode)
         self.save_prefs(appearance=mode)
-        self.after(50, self._recolor_logs)
-
-    def _recolor_logs(self) -> None:
-        self.console.view.apply_colors()
-        self.pages["journals"].view.apply_colors()
 
     def _first_run_hint(self) -> None:
         messagebox.showinfo(APP_NAME, "Добро пожаловать!\n\nСначала укажите в «Настройках», где искать вакансии: "
@@ -4024,8 +4319,9 @@ class App(ctk.CTk):
                         self.pages["responses"].current.configure(text=text.split("▶", 1)[1].strip())
                     if "показал капчу" in text and self.running_kind:  # ждём человека — видно и в меню слева
                         self.waiting_captcha = True
-                        self.captcha_where = ("в браузере или ответом боту в Telegram" if "Telegram" in text
-                                              else "в окне браузера")
+                        # окно спрятано и само не выйдет ([browser] show_on_captcha) — подсказать, где открыть
+                        where = "в браузере («Показать» у превью)" if "откройте браузер" in text else "в окне браузера"
+                        self.captcha_where = f"{where} или ответом боту в Telegram" if "Telegram" in text else where
                         self._set_status("●  Нужна капча", AMBER, f"решите её {self.captcha_where}")
                         self.bell()
                     if "★ Приглашение:" in text:
@@ -4044,6 +4340,10 @@ class App(ctk.CTk):
                     self.pages["settings"]._ai_tested(event[1], event[2])
                 elif event[0] == "ai_filter_test":
                     self.pages["settings"]._vacancy_filter_tested(event[1], event[2])
+                elif event[0] == "chat_wait":
+                    self.pages["settings"]._chat_waiting(*event[1:])
+                elif event[0] == "chat_found":
+                    self.pages["settings"]._chat_found(event[1], event[2])
                 elif event[0] == "done":
                     self._finish(event[1], event[2])
                 elif event[0] == "frame":
@@ -4294,8 +4594,12 @@ class App(ctk.CTk):
         return f"{APP_NAME}\n{status}" + (f" • {detail}" if detail else "")
 
     def _ctrl_key(self, event) -> None:
-        if event.keycode == 77 or (event.keysym or "").lower() in ("m", "cyrillic_softsign"):  # Ctrl+M (Ctrl+Ь)
+        key = (event.keysym or "").lower()
+        if event.keycode == 77 or key in ("m", "cyrillic_softsign"):  # Ctrl+M (Ctrl+Ь)
             self.from_mini() if self.mini_mode else self.to_mini()
+        elif ((sys.platform == "win32" and event.keycode == 70) or key in ("f", "cyrillic_a")) \
+                and self.pages["settings"].winfo_ismapped():
+            self.pages["settings"].focus_search()  # Ctrl+F (Ctrl+А) — поиск по настройкам
 
     def report_callback_exception(self, exc, value, tb) -> None:
         """Ошибка в окне программы: в logs/crash.log, человеку — одно сообщение за сеанс; работа продолжается."""

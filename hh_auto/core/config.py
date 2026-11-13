@@ -222,6 +222,9 @@ class Browser:
     # а что он делает, видно в приложении (превью слева). Для входа в hh и капчи окно показывается само;
     # «Показать браузер» — в любой момент
     hide_window: bool = True
+    # Капча: окно браузера само выходит на экран. Выключено — не всплывает поверх ваших окон: программа
+    # сообщает о капче (уведомление, Telegram, строка состояния), а браузер вы открываете сами («Показать»)
+    show_on_captcha: bool = False
 
 
 @dataclass
@@ -328,11 +331,11 @@ class Notify:
     desktop: bool = False  # системное уведомление Windows / macOS / Linux
     telegram: bool = False  # сообщение в Telegram от вашего бота (удобно при запуске на сервере)
     telegram_token: str = ""  # токен бота от @BotFather (или переменная окружения HH_TELEGRAM_TOKEN)
-    telegram_chat_id: str = ""  # ваш chat id (узнать: написать боту и открыть api.telegram.org/bot<токен>/getUpdates)
+    telegram_chat_id: str = ""  # ваш chat id («Узнать chat id» в настройках или api.telegram.org/bot<токен>/getUpdates)
     invitations: bool = True  # сразу сообщать о приглашении (в те же каналы: компьютер, Telegram)
     # капча: картинка — в Telegram, ответ символами с неё вводится в браузер (решить в окне браузера тоже можно).
-    # Нужен telegram = true с токеном и chat id
-    telegram_captcha: bool = True
+    # Нужен telegram = true с токеном и chat id. Включается здесь — по умолчанию выключено
+    telegram_captcha: bool = False
 
 
 @dataclass
