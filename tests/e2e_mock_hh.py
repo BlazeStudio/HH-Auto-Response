@@ -493,7 +493,7 @@ def part_captcha_telegram() -> None:
     phone.telegram_call, notify.telegram = bot, lambda *_args: True  # и итоги запуска — не в настоящий Telegram
     breather, browser.BREATHER = browser.BREATHER, (0, 0)
     with session(mock, limits__captcha_rest=0, notify__telegram=True, notify__telegram_token="123:fake",
-                 notify__telegram_chat_id="4242") as root:
+                 notify__telegram_chat_id="4242", notify__telegram_captcha=True) as root:
         try:
             stats = Stats()
             log_path = log_of(root)

@@ -84,9 +84,12 @@ class RelayForTest(unittest.TestCase):
         return cfg
 
     def test_needs_telegram_token_chat_and_switch(self):
-        full = {"telegram": True, "telegram_token": "1:a", "telegram_chat_id": "42"}
+        full = {"telegram": True, "telegram_token": "1:a", "telegram_chat_id": "42", "telegram_captcha": True}
         self.assertIsNone(captcha.relay_for(None))
         self.assertIsNone(captcha.relay_for(self.cfg()))  # по умолчанию Telegram выключен
+        # и капча в Telegram — тоже: включается отдельной настройкой
+        self.assertIsNone(captcha.relay_for(self.cfg(**{**full, "telegram_captcha": False})))
+        self.assertFalse(Config(search_url="").notify.telegram_captcha)
         self.assertIsNone(captcha.relay_for(self.cfg(**{**full, "telegram": False})))
         self.assertIsNone(captcha.relay_for(self.cfg(**{**full, "telegram_chat_id": ""})))
         self.assertIsNone(captcha.relay_for(self.cfg(**{**full, "telegram_captcha": False})))
@@ -98,7 +101,8 @@ class RelayForTest(unittest.TestCase):
         self.assertTrue(relay._retired)
 
     def test_only_own_chat(self):
-        relay = captcha.relay_for(self.cfg(telegram=True, telegram_token="1:a", telegram_chat_id="42"))
+        relay = captcha.relay_for(self.cfg(telegram=True, telegram_token="1:a", telegram_chat_id="42",
+                                           telegram_captcha=True))
         self.assertTrue(relay._ours({"chat": {"id": 42}}))
         self.assertFalse(relay._ours({"chat": {"id": 43}}))
         self.assertFalse(relay._ours({}))
