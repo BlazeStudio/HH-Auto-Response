@@ -479,14 +479,16 @@ class FakeBot:
 
 def part_captcha_telegram() -> None:
     """Капча в Telegram без окна браузера (headless): бот прислал картинку, первый ответ неверный — пришла новая
-    картинка, второй верный — программа ввела его, hh принял отклик. Ответ из чужого чата не принят."""
+    картинка, второй верный — программа ввела его, hh принял отклик. Ответ из чужого чата не принят.
+    Ответ как у hh: два русских слова, заглавная, с телефона — в кавычках, с двойным пробелом и точкой;
+    вводится нажатиями клавиш (keydown на каждую букву, и русскую тоже), а не вставкой."""
     import hh_auto.core.notify as notify
     import hh_auto.web.captcha as phone
     from hh_auto.web import browser
 
     mock = MockHh(pages=[[vacancy(311, "Python с капчей из Telegram", "captcha"), vacancy(312, "Ещё Python", "modal")]])
-    mock.captcha_answer = "x7k2p"
-    bot = FakeBot("4242", ["неверно", "x7k2p"])
+    mock.captcha_answer = "Вынесет путь 7k"
+    bot = FakeBot("4242", ["неверно", "«Вынесет  путь 7k»."])
     real_call, real_telegram = phone.telegram_call, notify.telegram
     phone.telegram_call, notify.telegram = bot, lambda *_args: True  # и итоги запуска — не в настоящий Telegram
     breather, browser.BREATHER = browser.BREATHER, (0, 0)
@@ -513,7 +515,9 @@ def part_captcha_telegram() -> None:
         check("капча в Telegram: в подписи — что делать", "Ответьте символами" in bot.photos[0][1] if bot.photos
               else False)
         check("капча в Telegram: ответы введены в форму, чужой чат и старое — нет",
-              mock.captcha_tries == ["неверно", "x7k2p"], mock.captcha_tries)
+              mock.captcha_tries == ["неверно", "Вынесет путь 7k"], mock.captcha_tries)
+        check("капча в Telegram: введено нажатиями клавиш, по букве", mock.captcha_keys == mock.captcha_tries,
+              mock.captcha_keys)
         check("капча в Telegram: «не подошло» в логе", "ответ из Telegram не подошёл" in log)
         check("капча в Telegram: бот сообщил, что капча пройдена", any("Капча пройдена" in t for t in bot.texts),
               bot.texts)

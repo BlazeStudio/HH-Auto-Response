@@ -148,6 +148,41 @@ def part_settings_save() -> None:
     check("настройки: снова в форме после загрузки", entry.get() == url)
 
 
+def part_chat_id() -> None:
+    """«Узнать chat id»: человек пишет боту — chat id вписывается сам, бот шлёт проверочное сообщение.
+    Telegram подменён, наружу ничего не уходит."""
+    from hh_auto.core import notify
+
+    settings = app.pages["settings"]
+    app.show_page("settings")
+    pump(0.2)
+    chat = settings.widgets[("notify", "telegram_chat_id")][1]
+    settings._set_value("notify", "telegram_token", "1:fake")
+    settings._set_value("notify", "telegram_chat_id", "")
+    sent, opened = [], []
+
+    def find(token, wait, waiting):
+        waiting("my_hh_bot")  # сообщений боту пока нет — окно открывает чат с ботом
+        return {"id": "587129", "title": "Антон", "bot": "my_hh_bot"}
+
+    real = notify.find_chat, notify.telegram_send, gui.webbrowser.open
+    notify.find_chat, notify.telegram_send = find, lambda *args, **_kw: sent.append(args)
+    gui.webbrowser.open = opened.append
+    try:
+        choose_later()  # «chat id … вписан» — нажать «ОК»
+        settings.find_chat_id()
+        done = wait(lambda: chat.get() == "587129" and settings.chat_btn.cget("state") == "normal", 5)
+        pump(0.6)
+    finally:
+        notify.find_chat, notify.telegram_send, gui.webbrowser.open = real
+        settings._set_value("notify", "telegram_token", "")
+        settings._set_value("notify", "telegram_chat_id", "")
+    check("«Узнать chat id»: вписан в поле", done, chat.get())
+    check("«Узнать chat id»: открыт чат с ботом", opened == ["https://t.me/my_hh_bot"], opened)
+    check("«Узнать chat id»: бот прислал проверочное сообщение",
+          len(sent) == 1 and sent[0][2]["chat_id"] == "587129", sent)
+
+
 def part_shortcuts() -> None:
     """Сочетания в русской раскладке — тем путём, каким их получает программа на этой системе."""
     page = app.pages["ai"]
@@ -344,7 +379,7 @@ def control_paused_holding() -> bool:
 
 
 def main() -> int:
-    for part in (part_pages, part_settings_save, part_shortcuts, part_ai_page, part_themes_and_mini, part_tray,
+    for part in (part_pages, part_settings_save, part_chat_id, part_shortcuts, part_ai_page, part_themes_and_mini, part_tray,
                  part_dialogs, part_runs, part_stop):
         print(f"--- {part.__name__}", flush=True)
         try:
