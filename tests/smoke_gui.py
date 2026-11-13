@@ -161,8 +161,11 @@ def part_chat_id() -> None:
     settings._set_value("notify", "telegram_chat_id", "")
     sent, opened = [], []
 
-    def find(token, wait, waiting):
-        waiting("my_hh_bot")  # сообщений боту пока нет — окно открывает чат с ботом
+    codes = []
+
+    def find(token, code, wait, waiting):
+        codes.append(code)
+        waiting("my_hh_bot")  # окно открывает чат с ботом по ссылке с кодом
         return {"id": "587129", "title": "Антон", "bot": "my_hh_bot"}
 
     real = notify.find_chat, notify.telegram_send, gui.webbrowser.open
@@ -178,7 +181,8 @@ def part_chat_id() -> None:
         settings._set_value("notify", "telegram_token", "")
         settings._set_value("notify", "telegram_chat_id", "")
     check("«Узнать chat id»: вписан в поле", done, chat.get())
-    check("«Узнать chat id»: открыт чат с ботом", opened == ["https://t.me/my_hh_bot"], opened)
+    check("«Узнать chat id»: открыт чат с ботом по ссылке с кодом",
+          bool(codes) and opened == [f"https://t.me/my_hh_bot?start={codes[0]}"], opened)
     check("«Узнать chat id»: бот прислал проверочное сообщение",
           len(sent) == 1 and sent[0][2]["chat_id"] == "587129", sent)
 
@@ -224,7 +228,8 @@ def part_settings_search() -> None:
     app.focus_set()
     app._ctrl_key(SimpleNamespace(keycode=0, keysym="Cyrillic_a"))  # Ctrl+А в русской раскладке
     pump(0.2)
-    check("поиск: Ctrl+F — в поле поиска", app.focus_get() is settings.search._entry, app.focus_get())
+    # focus_lastfor: куда уйдёт фокус окна — и когда на переднем плане другое приложение (focus_get тогда None)
+    check("поиск: Ctrl+F — в поле поиска", app.focus_lastfor() is settings.search._entry, app.focus_lastfor())
     app.focus_set()
 
 

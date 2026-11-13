@@ -178,31 +178,51 @@ class FindChatTest(unittest.TestCase):
 
         return call, seen
 
-    def test_takes_latest_chat_including_earlier_message(self):
-        call, seen = self.bot([[
-            {"update_id": 5, "message": {"chat": {"id": 111, "first_name": "Чужой"}, "text": "hi"}},
-            {"update_id": 6, "message": {"chat": {"id": 587, "first_name": "Антон", "username": "anton"},
-                                         "text": "/start"}},
-        ]])
+    def test_only_message_with_code_counts(self):
+        """Боту пишут и другие: чужое свежее сообщение и старое «/start» без кода — не наш чат (так chat id
+        оказывался чужим, а проверочное сообщение уходило постороннему)."""
+        call, _seen = self.bot([
+            [{"update_id": 5, "message": {"chat": {"id": 587}, "text": "/start"}}],  # написано раньше, без кода
+            [{"update_id": 6, "message": {"chat": {"id": 893, "first_name": "Аня"}, "text": "привет"}},
+             {"update_id": 7, "message": {"chat": {"id": 894}, "text": "/start 111111"}},  # чужой код
+             {"update_id": 8, "message": {"chat": {"id": 587, "first_name": "Антон", "username": "anton"},
+                                          "text": "/start 482913"}},
+             {"update_id": 9, "message": {"chat": {"id": 893, "first_name": "Аня"}, "text": "ещё"}}],
+        ])
+        waited = []
         with mock.patch.object(notify, "telegram_call", call):
-            found = notify.find_chat("1:a", wait=5)
+            found = notify.find_chat("1:a", "482913", wait=5, waiting=waited.append)
         self.assertEqual(found, {"id": "587", "title": "Антон (@anton)", "bot": "my_hh_bot"})
-        first_poll = next(params for method, params in seen if method == "getUpdates")
-        self.assertNotIn("offset", first_poll)  # написанное до нажатия кнопки тоже считается
+        self.assertEqual(waited, ["my_hh_bot"])  # окно открыло ссылку на этого бота
 
-    def test_waits_for_message_then_gives_up(self):
-        call, seen = self.bot([[], [], []])
+    def test_code_sent_by_hand(self):
+        call, _seen = self.bot([[{"update_id": 1, "message": {"chat": {"id": 42}, "text": " 482913 "}}]])
+        with mock.patch.object(notify, "telegram_call", call):
+            self.assertEqual(notify.find_chat("1:a", "482913", wait=5)["id"], "42")
+
+    def test_code_and_link(self):
+        code = notify.chat_code()
+        self.assertTrue(code.isdigit() and len(code) == 6)
+        self.assertEqual(notify.chat_link("my_hh_bot", code), f"https://t.me/my_hh_bot?start={code}")
+        self.assertTrue(notify.has_code(f"/start {code}", code))
+        self.assertFalse(notify.has_code(f"/start {code}1", code))
+        self.assertFalse(notify.has_code("/start", code))
+
+    def test_waits_for_code_then_gives_up(self):
+        call, seen = self.bot([[{"update_id": 3, "message": {"chat": {"id": 893}, "text": "чужое"}}], [], []])
         with mock.patch.object(notify, "telegram_call", call), mock.patch.object(notify.time, "monotonic",
                                                                                 side_effect=[0, 0, 1, 1, 99, 99]):
-            found = notify.find_chat("1:a", wait=5)
+            found = notify.find_chat("1:a", "482913", wait=5)
         self.assertEqual(found, {"bot": "my_hh_bot"})
-        self.assertGreaterEqual(sum(method == "getUpdates" for method, _ in seen), 2)
+        polls = [params for method, params in seen if method == "getUpdates"]
+        self.assertGreaterEqual(len(polls), 2)
+        self.assertEqual(polls[1]["offset"], 4)  # прочитанное не перечитываем
 
     def test_webhook_is_explained(self):
         call, _seen = self.bot([], webhook="https://example.org/hook")
         with mock.patch.object(notify, "telegram_call", call):
             with self.assertRaises(notify.TelegramError) as caught:
-                notify.find_chat("1:a", wait=5)
+                notify.find_chat("1:a", "482913", wait=5)
         self.assertIn("вебхук", str(caught.exception))
 
 

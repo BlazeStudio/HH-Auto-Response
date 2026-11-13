@@ -9,6 +9,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -173,38 +174,48 @@ def telegram_call(token: str, method: str, params: dict | None = None, files: di
     return data.get("result")
 
 
-def find_chat(token: str, wait: float = 120, stopped=lambda: False, waiting=lambda bot: None) -> dict:
-    """Узнать chat id без ручного getUpdates: человек пишет своему боту, программа берёт чат из последнего
-    сообщения. Ждёт до wait секунд. Возвращает {"id", "title", "bot"}; не дождались — {"bot"} без "id".
-    Сообщение, написанное боту раньше (до 24 ч), тоже годится. waiting(имя бота) — сообщений пока нет,
-    начинаем ждать (окно подскажет, кому написать). Ошибка Telegram — TelegramError."""
+def chat_code() -> str:
+    """Одноразовый код для «Узнать chat id»: 6 цифр — легко отправить и вручную, угадать за минуту нельзя."""
+    return f"{secrets.randbelow(900_000) + 100_000}"
+
+
+def chat_link(bot: str, code: str) -> str:
+    """Ссылка на бота с кодом: Telegram откроет чат и кнопку «Запустить», она пришлёт боту «/start код»."""
+    return f"https://t.me/{bot}?start={code}"
+
+
+def has_code(text: str, code: str) -> bool:
+    """В сообщении — наш код: «/start 482913» по ссылке или просто «482913», отправленное вручную."""
+    return code in text.replace("/start", " ").split()
+
+
+def find_chat(token: str, code: str, wait: float = 120, stopped=lambda: False, waiting=lambda bot: None) -> dict:
+    """Узнать chat id без ручного getUpdates. Боту могут писать и другие люди, поэтому берётся не последнее
+    сообщение, а только то, в котором одноразовый код (chat_code): его знает лишь тот, кто нажал кнопку.
+    waiting(имя бота) — начинаем ждать: окно открывает ссылку chat_link и показывает код. Ждёт до wait секунд.
+    Возвращает {"id", "title", "bot"}; не дождались — {"bot"} без "id". Ошибка Telegram — TelegramError."""
     me = telegram_send(token, "getMe", attempts=3)
     bot = str((me or {}).get("username", "")) if isinstance(me, dict) else ""
     if (telegram_send(token, "getWebhookInfo", attempts=3) or {}).get("url"):
         raise TelegramError("у бота включён вебхук — его сообщения забирает другая программа. Отключите вебхук "
                             "(или заведите для HH-Auto-Response отдельного бота у @BotFather)", 409)
+    waiting(bot)
     deadline = time.monotonic() + wait
-    offset = None  # первый запрос — без offset: вернутся и сообщения, написанные до нажатия кнопки
+    offset = 0
     while True:
-        params: dict = {"timeout": 0 if offset is None else max(0, min(10, int(deadline - time.monotonic()))),
-                        "allowed_updates": ["message"]}
-        if offset is not None:
-            params["offset"] = offset
-        updates = telegram_send(token, "getUpdates", params, attempts=3, timeout=params["timeout"] + SEND_TIMEOUT)
-        chat = None
+        timeout = max(0, min(10, int(deadline - time.monotonic())))
+        updates = telegram_send(token, "getUpdates", {"offset": offset, "timeout": timeout,
+                                                      "allowed_updates": ["message"]},
+                                attempts=3, timeout=timeout + SEND_TIMEOUT)
         for update in updates or []:
-            offset = max(offset or 0, int(update.get("update_id", 0)) + 1)
-            found = (update.get("message") or {}).get("chat")
-            if isinstance(found, dict) and "id" in found:
-                chat = found  # последнее — самое свежее
-        if chat is not None:
-            title = chat.get("title") or " ".join(filter(None, (chat.get("first_name"), chat.get("last_name"))))
-            if chat.get("username"):
-                title = f"{title} (@{chat['username']})" if title else f"@{chat['username']}"
-            return {"id": str(chat["id"]), "title": title, "bot": bot}
-        if offset is None:
-            offset = 0
-            waiting(bot)
+            offset = max(offset, int(update.get("update_id", 0)) + 1)
+            message = update.get("message") or {}
+            chat = message.get("chat")
+            if isinstance(chat, dict) and "id" in chat and has_code(str(message.get("text") or ""), code):
+                title = chat.get("title") or " ".join(filter(None, (chat.get("first_name"), chat.get("last_name"))))
+                if chat.get("username"):
+                    title = f"{title} (@{chat['username']})" if title else f"@{chat['username']}"
+                return {"id": str(chat["id"]), "title": title, "bot": bot}
         if stopped() or time.monotonic() >= deadline:
             return {"bot": bot}
 

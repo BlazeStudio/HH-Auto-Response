@@ -1286,8 +1286,8 @@ SETTINGS = [
          "В те же каналы, что выше (компьютер, Telegram). Приглашение видно, когда программа смотрит чаты: при "
          "«Чатах» и фоновой проверке. Сообщает один раз и только о непрочитанном приглашении"),
         ("notify", "telegram_chat_id", "Ваш chat id", "str",
-         "Впишите токен, нажмите «Узнать chat id» ниже и напишите своему боту что угодно — программа впишет "
-         "chat id сама"),
+         "Впишите токен и нажмите «Узнать chat id» ниже: откроется Telegram — нажмите «Запустить» (или отправьте "
+         "боту код с кнопки), и программа впишет chat id сама"),
         ("notify", "telegram_captcha", "Капча — в Telegram: ответить можно с телефона", "bool",
          "Нужен Telegram выше. Бот пришлёт картинку капчи — ответьте ему символами с неё, программа введёт их "
          "сама. Окно браузера при этом не всплывает (если не включено «Показывать окно браузера, когда hh "
@@ -1331,7 +1331,7 @@ SETTINGS = [
 ]
 # Вкладки настроек: на экране одна вкладка, а не все 13 разделов разом (на ленте было 915 окон Windows,
 # и при прокрутке и переключении страниц они перерисовывались кусками)
-FIND_CHAT_WAIT = 120  # с: столько «Узнать chat id» ждёт вашего сообщения боту
+FIND_CHAT_WAIT = 120  # с: столько «Узнать chat id» ждёт вашего кода боту
 SEARCH_RESULTS = 8  # строк в списке найденного
 SEARCH_WIDTH = 620  # px, при масштабе 100%
 FLASH_HOLD, FLASH_FADE = 0.7, 1.1  # с: найденное подсвечено, потом подсветка плавно гаснет
@@ -2055,7 +2055,9 @@ class SettingsPage(Page):
         self.app.toast("Тестовое уведомление отправлено")
 
     def find_chat_id(self) -> None:
-        """chat id без ручного getUpdates: вы пишете своему боту, программа берёт чат из вашего сообщения."""
+        """chat id без ручного getUpdates: кнопка открывает чат с ботом по ссылке с одноразовым кодом, вы жмёте
+        «Запустить» (или отправляете код сами) — программа берёт чат только из сообщения с этим кодом. Последнее
+        сообщение боту брать нельзя: боту может написать кто угодно, и chat id оказался бы чужим."""
         cfg = self.collect()
         if cfg is None:
             return
@@ -2065,12 +2067,13 @@ class SettingsPage(Page):
         if not token:
             messagebox.showinfo(APP_NAME, "Сначала впишите токен бота — его даёт @BotFather в Telegram (/newbot).")
             return
-        self.chat_btn.configure(state="disabled", text="Жду сообщение боту…")
+        code = notify.chat_code()
+        self.chat_btn.configure(state="disabled", text=f"Жду код {code}…")
 
         def work():
             try:
-                found = notify.find_chat(token, wait=FIND_CHAT_WAIT,
-                                         waiting=lambda bot: self.app.events.put(("chat_wait", bot)))
+                found = notify.find_chat(token, code, wait=FIND_CHAT_WAIT,
+                                         waiting=lambda bot: self.app.events.put(("chat_wait", bot, code)))
                 if found.get("id"):  # заодно проверить, что бот может писать в этот чат
                     notify.telegram_send(token, "sendMessage", {
                         "chat_id": found["id"],
@@ -2083,10 +2086,13 @@ class SettingsPage(Page):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _chat_waiting(self, bot: str) -> None:
+    def _chat_waiting(self, bot: str, code: str) -> None:
         if bot:
-            webbrowser.open(f"https://t.me/{bot}")
-        self.app.toast(f"Напишите боту {'@' + bot if bot else ''} в Telegram что угодно — chat id впишется сам")
+            from ..core import notify
+
+            webbrowser.open(notify.chat_link(bot, code))
+        who = f"боту @{bot}" if bot else "своему боту"
+        self.app.toast(f"В Telegram нажмите «Запустить» — или отправьте {who} код {code}")
 
     def _chat_found(self, ok: bool, found) -> None:
         self.chat_btn.configure(state="normal", text="Узнать chat id")
@@ -2095,8 +2101,9 @@ class SettingsPage(Page):
             return
         if not found.get("id"):
             bot = f" @{found['bot']}" if found.get("bot") else ""
-            messagebox.showinfo(APP_NAME, f"Сообщение боту{bot} не пришло. Напишите ему в Telegram что угодно "
-                                          "и нажмите «Узнать chat id» ещё раз.")
+            messagebox.showinfo(APP_NAME, f"Код от вас боту{bot} не пришёл. Нажмите «Узнать chat id» ещё раз: "
+                                          "откроется Telegram — нажмите там «Запустить» или отправьте боту код, "
+                                          "который покажет кнопка.")
             return
         self._set_value("notify", "telegram_chat_id", found["id"])
         who = f" ({found['title']})" if found.get("title") else ""
@@ -4334,7 +4341,7 @@ class App(ctk.CTk):
                 elif event[0] == "ai_filter_test":
                     self.pages["settings"]._vacancy_filter_tested(event[1], event[2])
                 elif event[0] == "chat_wait":
-                    self.pages["settings"]._chat_waiting(event[1])
+                    self.pages["settings"]._chat_waiting(*event[1:])
                 elif event[0] == "chat_found":
                     self.pages["settings"]._chat_found(event[1], event[2])
                 elif event[0] == "done":
