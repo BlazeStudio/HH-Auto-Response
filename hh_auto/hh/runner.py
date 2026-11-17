@@ -95,7 +95,8 @@ def run(
     # Нейросеть для писем и анкет — только если вы их включали. Включённый [ai_filter] тоже создаёт
     # нейросеть, но письма от этого писать ей нельзя: резюме для фильтра даже не загружается.
     responder_ai = ai if (cfg.ai.enabled or cfg.letter.mode == "ai") else None
-    responder = Responder(page, cfg, snapshots_dir, resume_title, responder_ai, resume_text, picker)
+    responder = Responder(page, cfg, snapshots_dir, resume_title, responder_ai, resume_text, picker,
+                          root=state.path.parent.parent)
     # после капчи — серии откликов с перерывами; пробный прогон ничего не отправляет, ему они не нужны
     pacer = Pacer(limits if not opts.dry_run else replace(limits, captcha_rest=0), state.path.parent / PACING_FILE)
     errors_in_row = 0

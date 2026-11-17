@@ -268,6 +268,10 @@ def list_mine(page, root: Path) -> list[MyResume]:
     except Exception as e:  # noqa: BLE001 — есть запасной список
         log.warning(f"  ! «Мои резюме» не открылись: {(str(e).splitlines() or [''])[0][:120]}")
         found = []
+    old = {r.id: r.title for r in saved_list(root)}
+    for resume in found:
+        if not resume.title:  # на «Мои резюме» названия не видно — с прошлого раза или со страницы резюме
+            resume.title = old.get(resume.id) or _title_from_page(page, resume.id)
     if found:
         save_list(root, found)
         return found
@@ -275,6 +279,22 @@ def list_mine(page, root: Path) -> list[MyResume]:
     if old:
         log.warning(f"  ! на странице «Мои резюме» резюме не нашлись — беру список с прошлого раза ({len(old)})")
     return old
+
+
+def _title_from_page(page, resume_id: str) -> str:
+    """Название резюме (должность) со страницы резюме — если на «Мои резюме» его не прочитать."""
+    from ..web import selectors as S
+    from ..web.browser import open_url
+
+    try:
+        open_url(page, f"https://hh.ru/resume/{resume_id}", attempts=1, timeout=15)
+        for selector in S.RESUME_PAGE_TITLE:
+            title = page.locator(selector)
+            if title.count():
+                return " ".join(title.first.inner_text().split())
+    except Exception as e:  # noqa: BLE001 — без названия резюме узнаётся по ссылке в правилах
+        log.debug(f"  название резюме {resume_id[:8]}… не прочиталось: {(str(e).splitlines() or [''])[0][:120]}")
+    return ""
 
 
 def resolve(cfg, mine: list[MyResume]) -> tuple[list[MyResume], MyResume | None, str, list[str]]:

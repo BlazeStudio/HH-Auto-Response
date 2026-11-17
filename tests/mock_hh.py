@@ -131,7 +131,7 @@ border:1px solid #888;padding:12px;z-index:5} .drop{position:fixed;right:20px;to
 # раскрывает предупреждение hidden-resume-warning и не выбирается.
 _RESUME_JS = r"""
 function resumeCell(owner, vacancyId) {
-  if (RESUMES.length < 2) return `<span data-qa="resume-title">${RESUMES[0].title}</span>`;
+  if (RESUMES.length < 2) return `<span data-qa="resume-title">${SHOWN_TITLE || RESUMES[0].title}</span>`;
   owner.dataset.resume = RESUMES[0].id;
   return `<div role="button" tabindex="0" class="resume-cell" data-qa="resume-cell" data-vacancy="${vacancyId}">Резюме для отклика
     <div data-qa="cell"><div data-qa="resume-title"><span data-qa="cell-text-content">${RESUMES[0].title}</span></div></div></div>`;
@@ -411,6 +411,7 @@ class MockHh:
         self.resumes = resumes or [MockResume(RESUME_ID, RESUME_TITLE, RESUME_TEXT)]
         self.hidden_resumes: set[str] = set()  # «вакансия:резюме» — резюме скрыто от этого работодателя
         self.sheet_stays: set[str] = set()  # после выбора этих резюме шторка не закрывается сама
+        self.shown_title = ""  # одно резюме: какое название hh показывает в окне отклика (выбрать не из чего)
         self.chats = chats if chats is not None else default_chats()
         self.sent: list[dict] = []  # что ушло работодателям с откликами
         self.chat_sent: list[dict] = []  # что ушло в чаты
@@ -499,7 +500,8 @@ class MockHh:
         """Резюме и их поведение в шторке — для скриптов страниц (_RESUME_JS)."""
         return (f"const RESUMES = {json.dumps([{'id': r.id, 'title': r.title} for r in self.resumes], ensure_ascii=False)};\n"
                 f"const HIDDEN = {json.dumps(sorted(self.hidden_resumes))};\n"
-                f"const SHEET_STAYS = {json.dumps(sorted(self.sheet_stays))};\n{_RESUME_JS}")
+                f"const SHEET_STAYS = {json.dumps(sorted(self.sheet_stays))};\n"
+                f"const SHOWN_TITLE = {json.dumps(self.shown_title, ensure_ascii=False)};\n{_RESUME_JS}")
 
     def _state(self, cards: list[dict], total: int) -> str:
         now = datetime.now().isoformat(timespec="seconds")

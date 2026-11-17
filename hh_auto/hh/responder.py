@@ -31,7 +31,7 @@ from ..web.browser import CaptchaShown, FatalError, captcha_shown, open_url, wai
 from ..ai.client import SENSITIVE, AiClient, AiError, FormAnswer, FormQuestion
 from ..core.config import Config
 from ..core.logger import log
-from .resumes import Choice, ResumePicker, short
+from .resumes import Choice, MyResume, ResumePicker, saved_list, save_list, short
 from .search import Vacancy, fetch_vacancy_text, wait_all_cards
 
 LIMIT_TEXT = re.compile(r"не более \d+ откликов|лимит откликов|исчерпали лимит", re.I)
@@ -55,6 +55,7 @@ NO_BUTTON = "в карточке нет кнопки «Откликнуться�
 MOVED = "hh пересортировал выдачу, вакансия ушла на другую страницу — вернусь к ней в следующий раз"
 CAPTCHA_ATTEMPTS = 3  # капча на одной вакансии — повторяем отклик после неё, но не бесконечно
 HIDDEN_RESUME = "hh требует сделать резюме видимым всем работодателям"
+NO_RESUME_LIST = "в окне нет выпадающего списка резюме"
 RESUME_LIST_WAIT = 6  # с: столько ждём список «Резюме для отклика» после щелчка по резюме
 
 # «Резюме для отклика»: переключатели резюме — ID, название рядом и выбрано ли (название ищем вверх от переключателя)
@@ -118,7 +119,8 @@ GENERATE_GIVE_UP = 2  # столько раз подряд «Сгенериро�
 
 class Responder:
     def __init__(self, page: Page, cfg: Config, snapshots_dir: Path, resume_title: str | None,
-                 ai: AiClient | None = None, resume_text: str = "", picker: ResumePicker | None = None):
+                 ai: AiClient | None = None, resume_text: str = "", picker: ResumePicker | None = None,
+                 root: Path | None = None):
         self.page = page
         self.cfg = cfg
         self.snapshots_dir = snapshots_dir
@@ -127,6 +129,13 @@ class Responder:
         self.form_ai = ai if cfg.ai.enabled else None
         self.resume_text = resume_text
         self.picker = picker  # несколько резюме ([resumes]): тексты и названия всех ваших резюме
+        self.root = root  # папка данных: список резюме из окна hh — в data/resumes.json
+        # без подбора — резюме из «Ссылки на резюме» или resume= в ссылке поиска: его и выбираем в окне отклика
+        self.expected = (MyResume(cfg.resume_id or "", resume_title or "")
+                         if picker is None and (cfg.resume_id or resume_title) else None)
+        self.hh_resumes: list[MyResume] = []  # резюме из выпадающего списка «Резюме для отклика»
+        self._list_seen: list | None = None  # тот же список в журнал подробно не пишем
+        self._no_list = False  # резюме в окне — простая надпись, и списка по щелчку не было: дальше не щёлкаем
         self.choice: Choice | None = None  # резюме, подобранное под текущую вакансию
         self.used = None  # MyResume, с которым откликнулись на самом деле (hh мог не дать выбрать)
         self.resume_unchecked = False  # hh откликнулся сразу, без окна: какое резюме ушло, не проверить
@@ -409,14 +418,11 @@ class Responder:
             return self._skip_questions("вопросы работодателя при отклике ([questions] skip_all)", questions=questions)
         if self.cfg.questions.skip_tests and self._is_test():
             return self._skip_questions("тест: вопросы с вариантами ответа ([questions] skip_tests)", questions=questions)
-        if self.choice is not None:  # несколько резюме: на странице вопросов — тот же выбор «Резюме для отклика»
-            problem = self._select_resume(self.page, vac)
-            if problem:
-                return self._skip_questions(problem[0], remember=problem[1])
+        problem = self._select_resume(self.page, vac)  # на странице вопросов — тот же выбор «Резюме для отклика»
+        if problem:
+            return self._skip_questions(problem[0], remember=problem[1])
         if self._visible(self.page.locator(S.HIDDEN_RESUME_WARNING)):
             return self._skip_questions(HIDDEN_RESUME)
-        if self.choice is None and not self._resume_matches(self.page):
-            return self._skip_questions("на странице вопросов выбрано другое резюме", remember=False)
 
         if self.form_ai is not None:
             filled = self._fill_form_with_ai(vac, questions)
@@ -606,17 +612,13 @@ class Responder:
         if not self.on_search_page() or self._questions_shown():
             return self._handle_questions(vac)
         dialog = self._response_dialog()
-        if self.choice is not None:  # несколько резюме: выбрать в окне подобранное под вакансию
-            problem = self._select_resume(dialog, vac)
-            if problem:
-                self._close_dialogs()
-                return Result(Status.SKIPPED, problem[0], remember=problem[1])
+        problem = self._select_resume(dialog, vac)  # hh подставил не то резюме — выбрать нужное из списка
+        if problem:
+            self._close_dialogs()
+            return Result(Status.SKIPPED, problem[0], remember=problem[1])
         if self._visible(dialog.locator(S.HIDDEN_RESUME_WARNING)):
             self._close_dialogs()
             return Result(Status.SKIPPED, HIDDEN_RESUME, remember=True)
-        if self.choice is None and not self._resume_matches(dialog):
-            self._close_dialogs()
-            return Result(Status.SKIPPED, "в окне отклика выбрано другое резюме")
 
         letter = False
         no_letters = self.cfg.letter.mode == "none"
@@ -1001,19 +1003,7 @@ class Responder:
             control.sleep(0.3)
         return False
 
-    def _resume_matches(self, dialog: Locator | Page) -> bool:
-        title_el = dialog.locator(S.MODAL_RESUME_TITLE)
-        if not title_el.count():
-            log.debug("  название резюме в окне отклика не найдено")
-            return True
-        title = " ".join(title_el.first.inner_text().split())
-        log.info(f"  резюме в отклике: «{title}»")
-        if not self.resume_title or _same_title(title, self.resume_title):
-            return True
-        log.warning(f"  ! в окне выбрано другое резюме (ожидалось «{self.resume_title}»)")
-        return not self.cfg.skip_on_resume_mismatch
-
-    # --- несколько резюме ([resumes]) ---
+    # --- резюме в окне отклика ---
 
     def _resume_text(self) -> str:
         """Текст резюме, по которому нейросеть пишет письмо и отвечает на анкету: того, с которым откликаемся."""
@@ -1030,72 +1020,108 @@ class Responder:
             return None
         return self.used.title if self.used is not None else "то, что подставил hh (выбрать не удалось)"
 
+    def _target(self) -> MyResume | None:
+        """Какое резюме должно быть в окне отклика: подобранное под вакансию ([resumes]), а без подбора — из «Ссылки
+        на резюме» или resume= в ссылке поиска. None — не знаем какое (тогда не проверяем)."""
+        if self.choice is not None:
+            return self.choice.resume
+        return self.expected
+
     def _select_resume(self, scope: Locator | Page, vac: Vacancy) -> tuple[str, bool] | None:
-        """Выбрать в окне отклика (или на странице вопросов) резюме, подобранное под вакансию: щелчок по резюме →
-        список «Резюме для отклика» → нужное. None — выбрано нужное (или выбора нет вовсе);
-        иначе (причина пропуска, запомнить ли пропуск)."""
-        target = self.choice.resume
+        """Резюме в окне отклика (или на странице вопросов). hh подставляет своё — часто не то, по которому открыт
+        поиск или которое подобрано под вакансию. Тогда открываем выпадающий список «Резюме для отклика», читаем,
+        какие резюме в нём есть, и отмечаем нужное. Списка нет (резюме одно) — откликаемся с тем, что есть.
+        None — дальше отклик; иначе (причина пропуска, запомнить ли пропуск)."""
+        target = self._target()
         listed = self._resume_list()
         shown = self._shown_resume(scope) or next((item["title"] for item in listed if item["checked"]), None)
         if shown is None and not listed:
             log.info("  выбора резюме в окне нет — hh откликается резюме, которое подставил сам")
             return None
         log.info(f"  резюме в отклике: «{shown or '?'}»")
-        if shown is not None and self._is_target(shown):
-            log.info("  ✓ это и есть подобранное резюме — оставляю")
+        if target is None:
             return None
-        log.info(f"  → меняю резюме на «{short(target.title)}»")
+        if shown is not None and self._is_target(shown, target):
+            if self.choice is not None:
+                log.info("  ✓ это и есть подобранное резюме — оставляю")
+            return None
+        what = "подобранное под вакансию" if self.choice is not None else "из ссылки на резюме / ссылки поиска"
+        log.info(f"  → в окне не то резюме — выбираю {what}: «{short(target.title or target.id)}»")
         error = self._pick_resume(scope, target)
+        if error == NO_RESUME_LIST:
+            log.info("  выпадающего списка резюме в окне нет (резюме одно?) — откликаюсь с тем, что есть")
+            if self.picker is not None:
+                self.used = self.picker.by_title(shown) if shown else None
+            return None
         if error == HIDDEN_RESUME:
             log.warning(f"  ! резюме «{short(target.title)}» скрыто: {HIDDEN_RESUME}")
             return f"{HIDDEN_RESUME} (резюме «{short(target.title)}»)", True
         now = self._shown_resume(scope)
-        if error is None and (now is None or self._is_target(now)):
+        if error is None and (now is None or self._is_target(now, target)):
             log.success(f"  ✓ резюме выбрано: «{short(target.title)}»")
             return None
         error = error or f"в окне осталось «{short(now or '?')}»"
-        log.warning(f"  ! не удалось выбрать резюме «{short(target.title)}»: {error}")
+        log.warning(f"  ! не удалось выбрать резюме «{short(target.title or target.id)}»: {error}")
         self._snapshot_once(vac.id, "resume-select")
         if self.cfg.skip_on_resume_mismatch:
-            return f"не удалось выбрать резюме «{short(target.title)}» ({error})", False
-        self.used = self.picker.by_title(now) if (now and self.picker is not None) else None
+            return f"не удалось выбрать резюме «{short(target.title or target.id)}» ({error})", False
+        if self.picker is not None:
+            self.used = self.picker.by_title(now) if now else None
         log.info("  откликаюсь с тем резюме, что выбрано в окне (skip_on_resume_mismatch = false)"
                  + (f": «{short(self.used.title)}» — письмо по нему" if self.used is not None else ""))
         return None
 
-    def _is_target(self, title: str) -> bool:
-        """В окне — подобранное резюме. Если названия вложены друг в друга («Python-разработчик» и «Senior
+    def _is_target(self, title: str, target: MyResume) -> bool:
+        """В окне — нужное резюме. Если названия вложены друг в друга («Python-разработчик» и «Senior
         Python-разработчик»), нужно точное совпадение, иначе хватает вхождения (hh мог обрезать название)."""
-        target = self.choice.resume
-        if not _same_title(title, target.title):
+        if not target.title or not _same_title(title, target.title):
             return False
-        mine = self.picker.mine if self.picker is not None else []
-        if not any(r.id != target.id and _same_title(title, r.title) for r in mine):
+        others = (self.picker.mine if self.picker is not None else []) + self.hh_resumes
+        if not any(r.id != target.id and _same_title(title, r.title) for r in others):
             return True
         return " ".join(title.lower().split()) == " ".join(target.title.lower().split())
 
-    def _pick_resume(self, scope: Locator | Page, target) -> str | None:
-        """Список «Резюме для отклика»: открыть, отметить target, закрыть. None — отмечено, HIDDEN_RESUME — hh
-        требует сделать это резюме видимым, иначе — что пошло не так."""
+    def _pick_resume(self, scope: Locator | Page, target: MyResume) -> str | None:
+        """Выпадающий список «Резюме для отклика»: открыть, прочитать, отметить target, закрыть. None — отмечено;
+        NO_RESUME_LIST — списка в окне нет; HIDDEN_RESUME — hh требует сделать это резюме видимым; иначе — что
+        пошло не так."""
         if not self._resume_list_shown():
-            cell = self._resume_cell(scope)
-            if cell is None:
-                return "в окне нет кнопки выбора резюме"
+            found = self._resume_cell(scope)
+            if found is None:
+                return NO_RESUME_LIST
+            cell, button = found
+            if not button and self._no_list:
+                return NO_RESUME_LIST
             self._pause()
-            cell.click()
-            deadline = time.monotonic() + RESUME_LIST_WAIT
+            try:
+                cell.click()
+            except PlaywrightError as e:
+                log.debug(f"  щелчок по резюме в окне: {(str(e).splitlines() or [''])[0][:120]}")
+            # у карточки-кнопки список есть — ждём его; у простой надписи (резюме одно) — недолго, на всякий случай
+            deadline = time.monotonic() + (RESUME_LIST_WAIT if button else 3)
             while not self._resume_list_shown():
                 if time.monotonic() > deadline:
-                    return "список «Резюме для отклика» не открылся"
+                    self._no_list = not button
+                    return "список «Резюме для отклика» не открылся" if button else NO_RESUME_LIST
                 control.sleep(0.3)
         listed = self._resume_list()
-        log.debug("  в списке «Резюме для отклика»: " + "; ".join(
-            f"«{short(item['title'], 50)}»{' (выбрано)' if item['checked'] else ''}" for item in listed))
-        index = next((i for i, item in enumerate(listed) if item["id"] == target.id), None)
-        if index is None:  # ID в списке нет — по названию (hh мог поменять value у переключателя)
-            index = next((i for i, item in enumerate(listed) if _same_title(item["title"], target.title)), None)
+        self._remember_list(listed)
+        index = next((i for i, item in enumerate(listed) if target.id and item["id"] == target.id), None)
+        if index is None:  # ID в списке нет — по названию, если оно однозначно
+            same = [i for i, item in enumerate(listed) if target.title and _same_title(item["title"], target.title)]
+            index = same[0] if len(same) == 1 else None
         if index is None:
-            return "его нет в списке «Резюме для отклика» (скрыто или удалено?)"
+            self._close_resume_list()
+            return "его нет в выпадающем списке hh (скрыто или удалено?)"
+        item = listed[index]
+        if item["title"] and item["title"] != target.title:
+            if target.title:
+                log.debug(f"  в списке hh резюме называется «{item['title']}»")
+            target.title = item["title"]  # название из списка hh — точное: по нему сверяем окно и пишем журнал
+        if item["checked"]:
+            log.info("  в списке оно уже отмечено")
+            self._close_resume_list()
+            return None
         radio = self.page.locator(S.RESUME_RADIO).nth(index)
         title = radio.locator("xpath=ancestor::*[descendant::*[@data-qa='resume-title']][1]"
                               "/descendant::*[@data-qa='resume-title'][1]")
@@ -1132,6 +1158,29 @@ class Responder:
         self._close_resume_list()
         return None
 
+    def _remember_list(self, listed: list[dict]) -> None:
+        """Что в выпадающем списке hh: в журнал (новый список — подробно, тот же — коротко), в data/resumes.json
+        (для «Подставить мои резюме с hh») и названия — подбору резюме: в списке hh они точные."""
+        found = [MyResume(item["id"], item["title"]) for item in listed if item["id"]]
+        line = "; ".join(f"«{short(item['title'], 50)}»{' (отмечено)' if item['checked'] else ''}" for item in listed)
+        key = [(r.id, r.title) for r in found]
+        if key == self._list_seen:
+            log.debug(f"  в выпадающем списке hh: {line}")
+            return
+        self._list_seen = key
+        log.info(f"  в выпадающем списке hh резюме: {len(listed)} — {line}")
+        if not found:
+            return
+        self.hh_resumes = found
+        if self.picker is not None:
+            for resume in found:
+                mine = self.picker.by_id(resume.id)
+                if mine is not None and resume.title and mine.title != resume.title:
+                    mine.title = resume.title
+        if self.root is not None:
+            ids = {r.id for r in found}
+            save_list(self.root, found + [r for r in saved_list(self.root) if r.id not in ids])
+
     def _resume_list(self) -> list[dict]:
         """Переключатели «Резюме для отклика» на странице: {id, title, checked}."""
         try:
@@ -1158,8 +1207,9 @@ class Responder:
             pass
         return None
 
-    def _resume_cell(self, scope: Locator | Page) -> Locator | None:
-        """Карточка выбранного резюме в окне — по щелчку hh открывает список резюме."""
+    def _resume_cell(self, scope: Locator | Page) -> tuple[Locator, bool] | None:
+        """Карточка выбранного резюме в окне — по щелчку hh открывает выпадающий список резюме. (что нажимать,
+        кнопка ли это: у карточки-кнопки список точно есть, у простой надписи — скорее всего, резюме одно)."""
         titles = scope.locator(S.MODAL_RESUME_TITLE)
         for i in range(min(titles.count(), 12)):
             title = titles.nth(i)
@@ -1168,7 +1218,7 @@ class Responder:
             if not self._visible(title):
                 continue
             button = title.locator("xpath=ancestor::*[@role='button'][1]")
-            return button.first if button.count() else title
+            return (button.first, True) if button.count() else (title, False)
         return None
 
     def _close_resume_list(self) -> None:

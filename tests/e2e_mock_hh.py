@@ -592,7 +592,8 @@ def part_resumes() -> None:
                      "резюме: «AI/LLM-инженер · ML-инженер (LLM/RAG) · Python Backend (AI)» — по словам подошли 2 "
                      "резюме, нейросеть выбрала: вакансия про ИИ",
                      "резюме: «Системный аналитик» — в названии «analyst»", "резюме: «Системный аналитик» — в названии «аналитик»",
-                     "✓ это и есть подобранное резюме", "→ меняю резюме на «Python-разработчик", "✓ резюме выбрано: «Системный аналитик»",
+                     "✓ это и есть подобранное резюме", "выбираю подобранное под вакансию: «Python-разработчик",
+                     "в выпадающем списке hh резюме: 3", "✓ резюме выбрано: «Системный аналитик»",
                      "нейросеть не выбрала резюме", "резюме: «Python-разработчик (Backend, LLM / AI-агенты, Data)» — по умолчанию",
                      "hh отправил отклик сразу, без окна", "ИИ пишет письмо по резюме «Системный аналитик»",
                      "hh требует сделать резюме видимым всем работодателям (резюме «Системный аналитик»)", "по резюме:"):
@@ -622,10 +623,46 @@ def part_resumes() -> None:
               "резюме для ответов: «Системный аналитик» — с ним откликались" in text_of(chat_log))
 
 
+def part_resume_switch() -> None:
+    """Подбор резюме выключен, поиск открыт по резюме Python, а hh подставляет в окно отклика резюме ИИ: программа
+    открывает выпадающий список и выбирает резюме из ссылки — в окне и на странице вопросов. Резюме одно, а в окне
+    другое название (выбрать не из чего) — откликается, а не пропускает."""
+    pages = [[vacancy(311, "Backend-разработчик", "modal"),
+              vacancy(312, "Разработчик с анкетой", "questions", questions=[{"kind": "text", "text": CITY}])]]
+    mock = MockHh(pages=pages, resumes=[AI_CV, PY_CV])
+    url = f"https://hh.ru/search/vacancy?resume={PY_CV.id}&from=resumelist"
+    with session(mock, search_url=url) as root:
+        log_path = log_of(root)
+        stats = Stats()
+        code = run_responses(cfg_of(root), RunOptions(), root, stats, log_path)
+        log = text_of(log_path)
+        sent = {r["id"]: r for r in mock.sent}
+        check("смена резюме: запуск без ошибки", code == EXIT_OK and stats.applied == 2,
+              f"код {code}, отправлено {stats.applied}, {dict(stats.skipped)}")
+        check("смена резюме: в окне отклика — резюме из ссылки", sent.get("311", {}).get("resume") == PY_CV.id,
+              sent.get("311"))
+        check("смена резюме: на странице вопросов — тоже", sent.get("312", {}).get("resume") == PY_CV.id, sent.get("312"))
+        for line in ("в окне не то резюме — выбираю из ссылки на резюме / ссылки поиска", "в выпадающем списке hh резюме: 2",
+                     f"✓ резюме выбрано: «{PY_CV.title}»"):
+            check(f"смена резюме: в журнале «{line[:60]}»", line in log)
+        saved = json.loads((root / "data" / "resumes.json").read_text(encoding="utf-8"))
+        check("смена резюме: список из окна hh сохранён", [r["id"] for r in saved] == [AI_CV.id, PY_CV.id], saved)
+
+    mock = MockHh(pages=[[vacancy(321, "Python-разработчик", "modal")]])
+    mock.shown_title = "Совсем другое резюме"
+    with session(mock) as root:
+        log_path = log_of(root)
+        stats = Stats()
+        run_responses(cfg_of(root), RunOptions(), root, stats, log_path)
+        check("одно резюме: без списка — отклик, а не пропуск", stats.applied == 1 and len(mock.sent) == 1,
+              f"отправлено {stats.applied}, {dict(stats.skipped)}")
+        check("одно резюме: в журнале — списка нет", "выпадающего списка резюме в окне нет" in text_of(log_path))
+
+
 PARTS = {"responses": part_responses, "documents": part_documents, "letters": part_letters, "dry_run": part_dry_run,
          "hide": part_hide, "failures": part_failures, "chats": part_chats, "resume": part_resume, "background": part_background,
          "market": part_market, "captcha_telegram": part_captcha_telegram, "captcha": part_captcha,
-         "resumes": part_resumes}
+         "resumes": part_resumes, "resume_switch": part_resume_switch}
 
 
 def main() -> int:
