@@ -205,6 +205,21 @@ FILTER_PROMPT = """Ты помогаешь соискателю отбирать
 
 Верни ТОЛЬКО JSON."""
 
+RESUME_PICK_PROMPT = """Ты помогаешь соискателю выбрать, с каким из его резюме откликнуться на вакансию hh.ru.
+У соискателя несколько резюме под разные профессии. Тебе дают карточку вакансии (название, компания, сниппет)
+и пронумерованный список резюме: название, слова, которыми соискатель сам описал, на какие вакансии это резюме,
+и иногда начало текста резюме.
+
+Верни строго JSON без пояснений:
+{"resume": номер резюме из списка, "reason": "очень коротко почему"}
+
+Правила:
+- выбирай по профессии из названия вакансии (аналитик, разработчик, ML-инженер…), потом по навыкам из карточки;
+- слова соискателя важнее названия резюме: они говорят, на какие вакансии он хочет откликаться этим резюме;
+- номер — только из списка; reason — не длиннее 12 слов, по-русски.""" + INJECTION_GUARD + """
+
+Верни ТОЛЬКО JSON."""
+
 
 @dataclass
 class FormQuestion:
@@ -514,6 +529,32 @@ def parse_verdict(raw: str) -> VacancyVerdict:
     if decided is not None:
         return VacancyVerdict(decided, _reason_from_text(text))
     raise AiError(f"нейросеть не объяснила, интересна ли вакансия (ответ: {text[:200]})")
+
+
+_PICK_RE = re.compile(r"(?:resume|резюме)\D{0,8}(\d+)", re.I)
+
+
+def parse_resume_pick(raw: str, count: int) -> tuple[int, str]:
+    """Ответ нейросети на «какое резюме»: (номер с 0, причина). Номера нет в списке — AiError.
+    Обрезанный на лимите токенов ответ — номер регуляркой (ключ «resume» идёт первым)."""
+    text = (raw or "").strip()
+    number, reason = None, ""
+    match = re.search(r"\{.*\}", text, flags=re.S)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            value = data.get("resume", data.get("резюме"))
+            if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+                number = int(value)
+            reason = str(data.get("reason", data.get("причина", "")) or "").strip()
+    if number is None and (m := _PICK_RE.search(text)):
+        number, reason = int(m.group(1)), _reason_from_text(text)
+    if number is None or not 1 <= number <= count:
+        raise AiError(f"нейросеть не выбрала резюме из списка (ответ: {text[:200]})")
+    return number - 1, reason[:200]
 
 
 # Сообщения о завершении анкеты: отвечать не нужно, переходим к следующему чату
@@ -891,6 +932,25 @@ class AiClient:
         messages = [{"role": "system", "content": FILTER_PROMPT}, {"role": "user", "content": user}]
         # Запас токенов: даже если модель «рассуждает», решение и короткая причина успевают целиком
         return parse_verdict(self.complete(messages, max_tokens=512, json_mode=True))
+
+    def pick_resume(self, title: str, company: str, snippet: str, options: list[tuple[str, list[str], str]],
+                    max_snippet_chars: int = 800) -> tuple[int, str]:
+        """Какое из резюме ближе к вакансии ([resumes] ai_pick). options — (название резюме, слова из правил,
+        начало текста резюме или ""). Возвращает (номер в options с 0, причина)."""
+        description = (snippet or "").strip()
+        if 0 < max_snippet_chars < len(description):
+            description = description[:max_snippet_chars].rstrip() + "…"
+        lines = []
+        for number, (name, words, start) in enumerate(options, 1):
+            lines.append(f"{number}. «{name}»" + (f" — слова соискателя: {', '.join(words)}" if words else ""))
+            if start:
+                lines.append("   Начало резюме: " + " ".join(start.split())[:400])
+        user = (f"КАРТОЧКА ВАКАНСИИ:\nНазвание: {title}\nКомпания: {company or '(не указана)'}\n"
+                f"Сниппет:\n{description or '(пусто)'}\n\nРЕЗЮМЕ СОИСКАТЕЛЯ:\n" + "\n".join(lines))
+        if "qwen3" in self.model.lower():
+            user += "\n\n/no_think"
+        messages = [{"role": "system", "content": RESUME_PICK_PROMPT}, {"role": "user", "content": user}]
+        return parse_resume_pick(self.complete(messages, max_tokens=512, json_mode=True), len(options))
 
     def build_messages(self, resume: str, context: str, transcript: str, sent: list[str] | None = None,
                        focus: str = "", buttons: list[str] | None = None) -> list[dict]:

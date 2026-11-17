@@ -132,6 +132,7 @@ class Negotiations:
 
 LETTER_NAMES = {"hh": "письмо hh («Сгенерировать»)", "ai": "письмо нейросети", "template": "шаблон письма",
                 "fallback": "запасной текст", "none": "без письма"}
+NO_RESUME = "без подбора резюме"  # отклики до [resumes] или с ним выключенным
 OLD = "до версии 1.0.11"  # записи откликов, сделанные до воронки, — без запроса и вида письма
 
 
@@ -162,7 +163,7 @@ def _match_bucket(match) -> str:
 
 def funnel(root: Path, period_days: int | None, today: date | None = None) -> dict[str, list[FunnelRow]]:
     """Отклики за период (None — всё время) и что с ними стало. {"total": [строка], "query": […],
-    "letter": […], "match": […]} — строки по убыванию числа откликов."""
+    "letter": […], "match": […], "resume": […]} — строки по убыванию числа откликов."""
     since = ((today or date.today()) - timedelta(days=period_days - 1)).isoformat() if period_days else ""
     statuses = Negotiations(root).statuses()
     groups: dict[str, dict[str, FunnelRow]] = defaultdict(dict)
@@ -183,12 +184,13 @@ def funnel(root: Path, period_days: int | None, today: date | None = None) -> di
         kind = record.get("letter_kind")
         letter = LETTER_NAMES.get(kind) if kind else ("с письмом" if record.get("letter") else "без письма")
         labels = {"query": record.get("query") or OLD, "letter": letter,
-                  "match": _match_bucket(record.get("match")) if "query" in record else OLD}
+                  "match": _match_bucket(record.get("match")) if "query" in record else OLD,
+                  "resume": record.get("resume") or NO_RESUME}
         for row in [total] + [groups[group].setdefault(label, FunnelRow(label)) for group, label in labels.items()]:
             row.sent += 1
             row.invited += status == INVITED
             row.rejected += status == REJECTED
     result = {"total": [total]}
-    for group in ("query", "letter", "match"):
+    for group in ("query", "letter", "match", "resume"):
         result[group] = sorted(groups[group].values(), key=lambda row: -row.sent)
     return result

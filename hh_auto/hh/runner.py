@@ -18,6 +18,7 @@ from ..core.config import Config
 from ..core.logger import log
 from .pacing import FILE as PACING_FILE, Pacer
 from .responder import MOVED, Responder, Result, Status
+from .resumes import ResumePicker, short
 from .search import (Vacancy, collect_vacancies, describe_hh_filters, next_page_info, open_results_page,
                      results_page_url, search_urls, wait_all_cards)
 from ..reports.results import ResultsBook
@@ -47,6 +48,7 @@ class Stats:
     dry_run: int = 0
     hidden: int = 0  # нежелательные, скрытые на hh ([filters] hide_unwanted)
     skipped: Counter = field(default_factory=Counter)
+    by_resume: Counter = field(default_factory=Counter)  # несколько резюме: откликов (в пробном — «бы») по резюме
     # последние обработанные вакансии — для окошка на странице «Отклики»: {id, at, title, company, url, status, note}
     recent: list = field(default_factory=list)
 
@@ -71,10 +73,12 @@ def run(
     searches: list[tuple[str, str]] | None = None,
     skills: SkillStats | None = None,
     market=None,
+    picker: ResumePicker | None = None,
 ) -> None:
     """searches — свои выдачи (подпись, ссылка) вместо выдач из настроек (так проверяются «компании мечты»);
     skills — куда считать ключевые навыки из выдачи (советы к резюме, [stats] skill_tips);
-    market — куда записывать вакансии выдачи для анализа резюме (analysis.market.MarketStore)."""
+    market — куда записывать вакансии выдачи для анализа резюме (analysis.market.MarketStore);
+    picker — несколько резюме ([resumes]): какое резюме под какую вакансию."""
     limits = cfg.limits
     max_responses = opts.limit or limits.max_responses
     log.info("")
@@ -91,7 +95,7 @@ def run(
     # Нейросеть для писем и анкет — только если вы их включали. Включённый [ai_filter] тоже создаёт
     # нейросеть, но письма от этого писать ей нельзя: резюме для фильтра даже не загружается.
     responder_ai = ai if (cfg.ai.enabled or cfg.letter.mode == "ai") else None
-    responder = Responder(page, cfg, snapshots_dir, resume_title, responder_ai, resume_text)
+    responder = Responder(page, cfg, snapshots_dir, resume_title, responder_ai, resume_text, picker)
     # после капчи — серии откликов с перерывами; пробный прогон ничего не отправляет, ему они не нужны
     pacer = Pacer(limits if not opts.dry_run else replace(limits, captcha_rest=0), state.path.parent / PACING_FILE)
     errors_in_row = 0
@@ -191,18 +195,28 @@ def run(
         log.info("")
         log.info(f"{tag} ▶ «{vac.title}» — {vac.company}")
         log.info(f"  {vac.url}")
+        choice = None
+        if picker is not None:  # несколько резюме: какое под эту вакансию и почему
+            choice = picker.pick(vac.title, vac.company, vac.snippet)
+            log.info(f"  резюме: «{choice.resume.title}» — {choice.why}")
         if opts.dry_run:
             stats.dry_run += 1
-            stats.seen(vac, "dry")
+            stats.seen(vac, "dry", f"резюме «{short(choice.resume.title, 40)}»" if choice else "")
             planned[company_key(vac.company)] += 1
-            log.info("  [dry-run] здесь был бы отклик")
+            if choice:
+                stats.by_resume[choice.resume.title] += 1
+            log.info("  [dry-run] здесь был бы отклик" + (f" с резюме «{short(choice.resume.title)}»" if choice else ""))
             return True
 
-        result = responder.apply(vac)
+        result = responder.apply(vac, choice)
         if result.reason != MOVED:  # вакансию ещё не трогали — в таблицу её не пишем
-            # для воронки на вкладке «Статистика»: из какого поиска, какое письмо, совпадение по навыкам
+            # для воронки на вкладке «Статистика»: из какого поиска, какое письмо, совпадение по навыкам, резюме
             results.add(vac, result, {"query": label, "letter_kind": responder.letter_kind if result.letter else "none",
-                                      "match": vac.meta.match if vac.meta else None})
+                                      "match": vac.meta.match if vac.meta else None,
+                                      "resume": responder.resume_used() if result.status is Status.APPLIED else
+                                      (choice.resume.title if choice else None),
+                                      # hh откликнулся сразу, без окна: какое резюме ушло на самом деле, не видно
+                                      "resume_checked": False if responder.resume_unchecked else None})
             stats.seen(vac, {Status.APPLIED: "applied", Status.SKIPPED: "questions" if result.questions else "skipped"}
                        .get(result.status, "failed"),
                        "с письмом" if result.status is Status.APPLIED and result.letter else
@@ -213,7 +227,9 @@ def run(
             pacer.sent()
             stats.applied += 1
             stats.with_letter += result.letter
-            state.mark_applied(vac, result.letter)
+            if choice is not None:
+                stats.by_resume[responder.used.title if responder.used else "подставил hh"] += 1
+            state.mark_applied(vac, result.letter, responder.used.id if choice and responder.used else None)
             if result.reason:
                 (log.info if result.letter else log.warning)(f"  {'' if result.letter else '! '}{result.reason}")
             log.info(f"  итого отправлено откликов: {stats.applied} из {max_responses}")
@@ -329,6 +345,10 @@ def log_summary(stats: Stats, elapsed: float) -> None:
     log.info(f"  пропущено в этом запуске:   {sum(stats.skipped.values())}" + (f" (из них скрыто на hh: {stats.hidden})" if stats.hidden else ""))
     for reason, count in stats.skipped.most_common():
         log.info(f"      {count} × {reason}")
+    if stats.by_resume:
+        log.info("  по резюме:")
+        for title, count in stats.by_resume.most_common():
+            log.info(f"      {count} × «{short(title)}»")
     log.info(f"  уже откликались / ранее:    {stats.already}")
     (log.error if stats.failed else log.info)(f"  ошибок:                     {stats.failed}")
     log.info(f"  время работы:               {minutes} мин {seconds} с")

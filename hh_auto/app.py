@@ -85,14 +85,19 @@ def _apply_work(page, cfg: Config, opts: RunOptions, root: Path, results: Result
     """Отклики в открытом браузере: проверка резюме, нейросеть, выдачи. searches — свои выдачи вместо
     выдач из настроек («компании мечты»)."""
     log.info("")
-    resume_title = verify_resume(page, cfg)
-    ai, resume_text = _form_ai(page, cfg, root)
+    picker = None
+    if cfg.resumes.enabled:  # несколько резюме: какое на какие вакансии, по умолчанию, тексты для нейросети
+        from .hh import resumes
+
+        picker = resumes.load(page, cfg, root, need_text=cfg.ai.enabled or cfg.letter.mode == "ai")
+    resume_title = picker.default.title if picker is not None else verify_resume(page, cfg)
+    ai, resume_text = _form_ai(page, cfg, root, picker)
     if cfg.stats.skill_tips and not resume_text:
         _refresh_resume(page, cfg, root)
     tips = cfg.stats.skill_tips  # советы к резюме: навыки на «Статистике» и вакансии для «Анализа резюме»
     run(page, cfg, opts, State(root / "data" / "state.json"), results, stats, resume_title, root / "logs" / "snapshots",
         ai, resume_text, searches=searches, skills=SkillStats(root) if tips else None,
-        market=MarketStore(root) if tips and not searches else None)
+        market=MarketStore(root) if tips and not searches else None, picker=picker)
 
 
 RESUME_FRESH = timedelta(days=3)  # текст резюме для советов на вкладке «Статистика» обновляем не чаще
@@ -140,14 +145,19 @@ def notify_summary(cfg: Config, title: str, text: str) -> None:
         notify.send(cfg.notify, f"HH-Auto-Response — {title}", text)
 
 
-def _form_ai(page, cfg: Config, root: Path):
-    """ИИ для откликов: анкеты ([ai] enabled), письма ([letter] mode = ai) и фильтр вакансий ([ai_filter]).
-    Резюме как контекст нужно только анкетам и письмам — для фильтра его не тянем."""
+def _form_ai(page, cfg: Config, root: Path, picker=None):
+    """ИИ для откликов: анкеты ([ai] enabled), письма ([letter] mode = ai), фильтр вакансий ([ai_filter]) и выбор
+    резюме, если по словам не понять ([resumes] ai_pick). Резюме как контекст нужно только анкетам и письмам — для
+    фильтра его не тянем. picker — несколько резюме: тексты уже загружены, нейросеть отдаём ему."""
     letters = cfg.letter.mode == "ai"
     needs_resume = cfg.ai.enabled or letters
+    pick = picker is not None and cfg.resumes.ai_pick and len(picker.candidates()) > 1
     if not cfg.ai.enabled:
         log.info("  анкеты работодателей: без ИИ (отвечаем только на один вопрос о зарплате)")
-    if not (needs_resume or cfg.ai_filter.enabled):
+    if not (needs_resume or cfg.ai_filter.enabled or pick):
+        if picker is not None:
+            log.info("  несколько подошедших резюме: больше совпавших слов, при равенстве — что выше в правилах"
+                     + (" (выбор нейросетью выключен: [resumes] ai_pick)" if not cfg.resumes.ai_pick else ""))
         return None, ""
     from .ai.client import AiClient, AiError
     from .hh.resume import fetch_resume_text
@@ -164,13 +174,23 @@ def _form_ai(page, cfg: Config, root: Path):
             log.warning(f"  ! ИИ-фильтр вакансий включён, но нейросеть недоступна ({e}) — "
                         + ("вакансии пропускаются ([ai_filter] skip_on_error = true)"
                            if cfg.ai_filter.skip_on_error else "вакансии обработаются без проверки"))
-        return None, ""
+        if pick:
+            log.info(f"  выбор резюме нейросетью недоступен ({e}) — если подошло несколько резюме, решит число "
+                     "совпавших слов, а если ни одного — резюме по умолчанию")
+        return None, picker.default.text if picker is not None else ""
     if cfg.ai.enabled:
         log.info(f"  анкеты работодателей заполняет ИИ: {ai.describe()}")
     if letters or cfg.letter.mode == "generate" and cfg.ai.enabled:
         log.info(f"  сопроводительные письма {'пишет' if letters else 'без подписки hh пишет'} ИИ: {ai.describe()}")
     if cfg.ai_filter.enabled:
         log.info(f"  интересность вакансий оценивает нейросеть: {ai.describe()}")
+    if picker is not None:
+        if pick:
+            picker.ai = ai
+            log.info(f"  какое резюме, если по словам подошло несколько или ни одного, решает нейросеть: {ai.describe()}")
+        else:
+            log.info("  несколько подошедших резюме: больше совпавших слов, при равенстве — что выше в правилах")
+        return ai, picker.default.text
     resume_text = fetch_resume_text(page, cfg, root / "data" / "resume.txt") if needs_resume else ""
     return ai, resume_text
 
@@ -408,6 +428,24 @@ def run_market(cfg: Config, root: Path, log_path: Path, query: str, result: dict
 
     log_config_notes(cfg)
     code = _with_browser(cfg, root, lambda page: scan(page, cfg, root, query, result), auto_raise=False)
+    log.info(f"подробный лог: {log_path}")
+    return code
+
+
+def list_my_resumes(cfg: Config, root: Path, log_path: Path) -> int:
+    """«Подставить мои резюме с hh» в настройках: прочитать «Мои резюме» в data/resumes.json."""
+    from .hh import resumes
+
+    def work(page) -> None:
+        log.info("Ваши резюме на hh («Мои резюме»)")
+        found = resumes.list_mine(page, root)
+        if not found:
+            raise FatalError("на странице «Мои резюме» не нашёл ни одного резюме")
+        for resume in found:
+            log.info(f"  • «{resume.title}» — hh.ru/resume/{resume.id}")
+        log.success(f"  ✓ резюме: {len(found)} — в настройках они вписаны в «Несколько резюме»")
+
+    code = _with_browser(cfg, root, work, auto_raise=False)
     log.info(f"подробный лог: {log_path}")
     return code
 

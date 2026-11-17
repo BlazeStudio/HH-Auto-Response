@@ -188,9 +188,19 @@ def read_rejections(
              else "чаты: отказы" + (" + ИИ-ответы на анкеты" if ai else ""))
     log.info(f"Шаг 3/3: {title}" + ("  [DRY-RUN: ничего не открываю и не отправляю]" if dry_run else ""))
     resume = ""
+    picker = None  # несколько резюме ([resumes]): в чате вакансии ИИ отвечает по резюме, с которым откликались
+    applied: dict = {}
     if ai:
         log.info(f"  ИИ: {ai.describe()}, отвечать {'только роботу-рекрутеру' if cfg.ai.only_robot else 'всем'}")
-        resume = fetch_resume_text(page, cfg, (root or Path(".")) / "data" / "resume.txt")
+        if cfg.resumes.enabled and root is not None:
+            from . import resumes as multi
+            from ..core.state import State
+
+            picker = multi.load(page, cfg, root, need_text=True,
+                                header="  несколько резюме ([resumes]): в чате — резюме, с которым откликались")
+            applied = State(root / "data" / "state.json").applied if picker is not None else {}
+        resume = (picker.default.text if picker is not None
+                  else fetch_resume_text(page, cfg, (root or Path(".")) / "data" / "resume.txt"))
     answers_log = (root or Path(".")) / "data" / "chat_answers.jsonl"
 
     log.info(f"  открываю чаты: {rules.url}")
@@ -294,7 +304,12 @@ def read_rejections(
             opened_at[target.id] = target.last
             sent = answered.setdefault(target.id, [])
             other = previous if previous_id != target.id else ""  # вернулись в тот же чат — его переписка не чужая
-            transcript = _handle_with_ai(page, target, cfg, ai, resume, stats, dry_run, answers_log, sent, other)
+            text = resume
+            if picker is not None:
+                chosen, why = picker.for_chat(target.title, target.company, applied)
+                log.info(f"  резюме для ответов: «{multi.short(chosen.title)}» — {why}")
+                text = picker.text_for(chosen)
+            transcript = _handle_with_ai(page, target, cfg, ai, text, stats, dry_run, answers_log, sent, other)
             if transcript:
                 previous, previous_id = transcript, target.id
     return stats

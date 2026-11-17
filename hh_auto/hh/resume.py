@@ -153,9 +153,12 @@ def _first_resume_id(page: Page) -> str | None:
     return resumes[0].id
 
 
-def fetch_resume_text(page: Page, cfg: Config, cache: Path, max_chars: int = 8000) -> str:
-    """Текст резюме со страницы hh — контекст для ИИ-ответов. Если не открылось — берём прошлый из кеша."""
-    resume_id = cfg.resume_id or _first_resume_id(page)
+def fetch_resume_text(page: Page, cfg: Config, cache: Path, max_chars: int = 8000, resume_id: str | None = None,
+                      title: str = "") -> str:
+    """Текст резюме со страницы hh — контекст для ИИ-ответов. Если не открылось — берём прошлый из кеша.
+    resume_id — какое резюме (по умолчанию — из настроек); title — его название для журнала (несколько резюме)."""
+    resume_id = resume_id or cfg.resume_id or _first_resume_id(page)
+    which = f"резюме «{title}»" if title else "резюме"
     if resume_id:
         try:
             url = f"https://hh.ru/resume/{resume_id}"
@@ -170,17 +173,17 @@ def fetch_resume_text(page: Page, cfg: Config, cache: Path, max_chars: int = 800
                 text = _with_personal(page, text)[:max_chars]
                 cache.parent.mkdir(parents=True, exist_ok=True)
                 cache.write_text(text, encoding="utf-8")
-                log.success(f"  ✓ резюме для ИИ загружено с hh ({len(text)} симв.)")
+                log.success(f"  ✓ {which} для ИИ загружено с hh ({len(text)} симв.)")
                 _warn_no_city(cfg, text)
                 return text
         except Exception as e:  # страница резюме не критична — есть кеш
-            log.warning(f"  ! не удалось прочитать резюме с hh: {(str(e).splitlines() or [''])[0]}")
+            log.warning(f"  ! не удалось прочитать {which} с hh: {(str(e).splitlines() or [''])[0]}")
     else:
         log.warning("  ! ID резюме неизвестен (resume_url или resume= в ссылке поиска) — беру резюме из кеша")
     if cache.exists():
         text = cache.read_text(encoding="utf-8")
-        log.info(f"  резюме для ИИ — из прошлой загрузки ({len(text)} симв.)")
+        log.info(f"  {which} для ИИ — из прошлой загрузки ({len(text)} симв.)")
         _warn_no_city(cfg, text)
         return text
-    log.warning("  ! резюме для ИИ нет — нейросеть будет отвечать только по контексту из настроек")
+    log.warning(f"  ! {which} для ИИ нет — нейросеть будет отвечать только по контексту из настроек")
     return ""

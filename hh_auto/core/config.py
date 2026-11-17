@@ -301,6 +301,22 @@ class Dream:
 
 
 @dataclass
+class Resumes:
+    # Несколько резюме на hh: под каждую вакансию — своё, по словам в её названии (hh/resumes.py). В окне отклика
+    # программа выбирает его сама, письмо нейросети и ответы на анкету пишутся по нему. Выключено — одно резюме
+    enabled: bool = False
+    # По строке на резюме: «название резюме (часть названия или ссылка на него): слова в названии вакансии».
+    # Слово ищется с начала слова («аналит» найдёт «Аналитик»), короткие (до 3 букв) и "в кавычках" — целиком
+    rules: str = ""
+    # Резюме, если в названии вакансии нет ни одного слова из правил: часть названия или ссылка. Пусто — резюме
+    # из resume_url или resume= в ссылке поиска, а без них — из первой строки правил
+    default: str = ""
+    # Подошло несколько резюме или ни одного — спросить нейросеть ([ai]), какое ближе к вакансии.
+    # false (или нейросеть недоступна) — больше совпавших слов, при равенстве — что выше в правилах
+    ai_pick: bool = True
+
+
+@dataclass
 class Raising:
     # Поднятие резюме в поиске hh — бесплатно, раз в 4 часа, как кнопка «Поднять в поиске» на «Мои резюме»
     enabled: bool = False
@@ -344,6 +360,7 @@ class Config:
     resume_url: str = ""
     skip_on_resume_mismatch: bool = True
     search: Search = field(default_factory=Search)
+    resumes: Resumes = field(default_factory=Resumes)
     limits: Limits = field(default_factory=Limits)
     filters: Filters = field(default_factory=Filters)
     letter: Letter = field(default_factory=Letter)
@@ -498,6 +515,7 @@ def load_config(path: Path, check_search_url: bool = True) -> Config:
         resume_url=raw.pop("resume_url", "").strip(),
         skip_on_resume_mismatch=raw.pop("skip_on_resume_mismatch", True),
         search=section(Search, "search"),
+        resumes=section(Resumes, "resumes"),
         limits=section(Limits, "limits"),
         filters=section(Filters, "filters", _legacy_filters(raw)),
         letter=section(Letter, "letter"),
@@ -551,6 +569,16 @@ def validate_config(cfg: Config) -> None:
     errors = hh_filters.validate(hh_filters.normalize(cfg.hh_filters))
     if errors:
         raise ConfigError("[hh_filters] " + errors[0])
+    if cfg.resumes.enabled:
+        from ..hh.resumes import parse_rules  # здесь, а не вверху: hh/resumes.py сам читает настройки
+
+        try:
+            rules = parse_rules(cfg.resumes.rules)
+        except ValueError as e:
+            raise ConfigError(f"[resumes] rules: {e}") from e
+        if not rules:
+            raise ConfigError("[resumes] включено, но не задано ни одного резюме (rules): по строке на резюме — "
+                              "«название резюме: слова в названии вакансии через запятую»")
     if cfg.letter.mode not in LETTER_MODES:
         raise ConfigError(f"[letter] mode: «{cfg.letter.mode}», допустимо: {', '.join(LETTER_MODES)}")
     if cfg.letter.mode == "template" and not cfg.letter.template_text.strip():

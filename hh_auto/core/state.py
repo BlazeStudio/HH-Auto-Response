@@ -28,8 +28,11 @@ class State:
             return f"пропущена ранее: {self.skipped[vacancy_id]['reason']}"
         return None
 
-    def mark_applied(self, vac: Vacancy, letter: bool) -> None:
+    def mark_applied(self, vac: Vacancy, letter: bool, resume_id: str | None = None) -> None:
+        """resume_id — с каким резюме откликнулись ([resumes]): ИИ в чате этой вакансии отвечает по нему."""
         self.applied[vac.id] = {"title": vac.title, "company": vac.company, "letter": letter, "at": _now()}
+        if resume_id:
+            self.applied[vac.id]["resume"] = resume_id
         self.skipped.pop(vac.id, None)
         if self._by_company is not None:
             self._by_company.setdefault(company_key(vac.company), []).append(self.applied[vac.id]["at"])

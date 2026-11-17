@@ -26,7 +26,8 @@ import customtkinter as ctk
 
 from .. import __version__
 from ..core import control, power
-from ..app import EXIT_OK, EXIT_STOPPED, fetch_resume, run_background, run_chats, run_market, run_responses
+from ..app import (EXIT_OK, EXIT_STOPPED, fetch_resume, list_my_resumes, run_background, run_chats, run_market,
+                   run_responses)
 from ..analysis import market as analysis_market, report as analysis, resume as analysis_resume
 from ..hh.chats import ChatStats
 from ..hh import filters as hhf
@@ -45,7 +46,7 @@ from ..core.logger import SUCCESS, log, setup_logging
 from ..core.paths import app_root, is_frozen
 from ..hh.runner import RunOptions, Stats
 from ..web import browser, window as browser_window
-from ..hh import raising, watch
+from ..hh import raising, resumes as multi_resumes, watch
 from ..core import updater
 from .mini import BrowserPreview, MiniWindow
 from . import tray as tray_icon
@@ -1085,7 +1086,31 @@ SETTINGS = [
         ("search", "title_only", "Искать запрос только в названии вакансии", "bool", ""),
         ("", "resume_url", "Ссылка на резюме (необязательно)", "str",
          "Если пусто — ID резюме берётся из параметра resume= в ссылке поиска"),
-        ("", "skip_on_resume_mismatch", "Пропускать вакансию, если hh подставил другое резюме", "bool", ""),
+        ("", "skip_on_resume_mismatch", "Пропускать вакансию, если hh подставил другое резюме", "bool",
+         "С «Несколькими резюме» — если нужное резюме в окне отклика выбрать не удалось. Выключено — отклик уйдёт "
+         "с тем резюме, что выбрано, а письмо нейросети будет по нему"),
+    ]),
+    ("Несколько резюме", [
+        ("resumes", "enabled", "Подбирать резюме под вакансию — у меня на hh несколько резюме", "bool",
+         "На вакансию аналитика — резюме аналитика, на Python — резюме разработчика. Программа выбирает резюме "
+         "по словам в названии вакансии, отмечает его в окне отклика hh («Резюме для отклика»), а письмо нейросети "
+         "и ответы на анкету пишет по нему. Что выбрано и почему — в «Журналах» и в таблице откликов (колонка "
+         "«Резюме»). Проверить правила без откликов — пробный прогон. Вакансии — из поиска выше: ссылка «подходящие "
+         "к резюме» — это вакансии под одно резюме, для всех удобнее «По запросу», по строке на профессию"),
+        ("resumes", "rules", "Какое резюме на какие вакансии", "text",
+         "По строке на резюме: название резюме (его часть или ссылка на него), двоеточие и слова из названий "
+         "вакансий через запятую. Например: «ИИ-инженер: ai, ml, llm, ии, нейросет», «Python-разработчик: python, "
+         "backend, django», «Системный аналитик: аналитик, analyst». Слово ищется с начала слова: «аналит» найдёт "
+         "и «Системный аналитик», и «Бизнес-аналитик». Короткие (до 3 букв: ai, ml, bi) и \"в кавычках\" — только "
+         "целым словом. Подошло несколько строк — решает нейросеть (ниже) или больше совпавших слов, при равенстве — "
+         "строка выше. Свои резюме вписать одной кнопкой — «Подставить мои резюме с hh»"),
+        ("resumes", "default", "Резюме, если в названии вакансии нет ни одного слова (необязательно)", "str",
+         "Часть названия или ссылка. Пусто — «Ссылка на резюме» выше (или resume= в ссылке поиска), без неё — "
+         "резюме из первой строки"),
+        ("resumes", "ai_pick", "Подошло несколько резюме или ни одного — спросить нейросеть", "bool",
+         "Нейросеть из вкладки «Нейросеть» читает название и описание вакансии и выбирает ближайшее резюме — "
+         "один короткий запрос на такую вакансию. Выключено или нейросеть не настроена — по числу совпавших слов, "
+         "а если не совпало ни одно — резюме по умолчанию"),
     ]),
     ("Лимиты и паузы", [
         ("limits", "max_responses", "Откликов за запуск", "int", "У hh лимит — около 200 откликов в сутки"),
@@ -1397,7 +1422,7 @@ def _flash(card, row=None) -> None:
 PAGE_FADE = 0.14  # сек: плавный переход между страницами
 TAB_FADE = 0.12  # и между вкладками настроек
 SETTINGS_TABS = [
-    ("Поиск", ("Поиск и резюме", "Фильтры по словам")),
+    ("Поиск", ("Поиск и резюме", "Несколько резюме", "Фильтры по словам")),
     ("Фильтры hh", ("Фильтры hh",)),
     ("Отбор", ("Нежелательные вакансии", "Уровень вакансии", "Работодатель и вакансия")),
     ("Отклики", ("Лимиты и паузы", "Сопроводительное письмо", "Вопросы работодателя", "Вакансии в другом регионе")),
@@ -1645,6 +1670,16 @@ class SettingsPage(Page):
                 field_row = self._add_field(card, section, key, label, kind, hint)
                 self.field_tab[(section, key)] = tab
                 self._index(label, tab, card, field_row, section_title, f"{hint} {section}.{key} {key}")
+            if section_title == "Несколько резюме":
+                row = PlainFrame(card)
+                row.pack(fill="x", padx=16, pady=(8, 0))
+                self.resumes_btn = _secondary_button(row, "Подставить мои резюме с hh", self.fill_resumes, width=240,
+                                                     height=32)
+                self.resumes_btn.pack(side="left")
+                self.resumes_info = SelectableText(row, self._resumes_known(), color=MUTED, size=12, width_px=480)
+                self.resumes_info.pack(side="left", fill="x", expand=True, padx=12)
+                self._index("Подставить мои резюме с hh", tab, card, row, section_title,
+                            "несколько резюме список мои резюме правила")
             if section_title == "ИИ-ответы в чатах":
                 row = PlainFrame(card)
                 row.pack(fill="x", padx=16, pady=(8, 0))
@@ -2151,6 +2186,66 @@ class SettingsPage(Page):
         else:
             messagebox.showerror(APP_NAME, text.replace("Не получилось: ", "Нейросеть не ответила\n\n", 1))
 
+    # ---------- несколько резюме ----------
+
+    def _resumes_known(self) -> str:
+        known = multi_resumes.saved_list(self.app.root_dir)
+        if not known:
+            return "Впишет по строке на каждое ваше резюме — останется дописать слова. Откроется браузер"
+        return f"Ваши резюме на hh ({len(known)}): " + "; ".join(f"«{multi_resumes.short(r.title, 45)}»" for r in known)
+
+    def fill_resumes(self) -> None:
+        """«Подставить мои резюме с hh»: прочитать «Мои резюме» (браузер) и вписать в правила по строке на каждое
+        резюме, которого там ещё нет. Идёт другая работа — по списку с прошлого раза."""
+        if self.app.worker and self.app.worker.is_alive():
+            known = multi_resumes.saved_list(self.app.root_dir)
+            if known:
+                self._insert_resumes(known, "по списку с прошлого запуска — сейчас браузер занят")
+            else:
+                messagebox.showinfo(APP_NAME, "Сейчас идёт работа\n\nНажмите «Подставить мои резюме с hh», когда "
+                                              "она закончится: программа откроет «Мои резюме» на hh.")
+            return
+        cfg = self.app._config_for_run(need_search_url=False)
+        if cfg is None:
+            return
+        self.waiting_resumes = True
+        self.resumes_btn.configure(state="disabled")
+        self.resumes_info.set("Читаю «Мои резюме» на hh — откроется браузер, ход видно в «Журналах»…", ACCENT)
+        self.app._start("resumes", "Список резюме", "resume",
+                        lambda log_path: list_my_resumes(cfg, self.app.root_dir, log_path))
+
+    def on_resumes_listed(self, code: int) -> None:
+        if not getattr(self, "waiting_resumes", False):
+            return
+        self.waiting_resumes = False
+        self.resumes_btn.configure(state="normal")
+        known = multi_resumes.saved_list(self.app.root_dir)
+        if code == EXIT_OK and known:
+            self._insert_resumes(known)
+        else:
+            self.resumes_info.set("Список резюме не загрузился — подробности в «Журналах»", RED)
+
+    def _insert_resumes(self, known: list, note: str = "") -> None:
+        """Дописать в правила строки «название резюме: » для резюме, которых там ещё нет (одинаковые названия —
+        ссылкой). Слова после двоеточия вписываете вы."""
+        _kind, box = self.widgets[("resumes", "rules")]
+        current = box.get("1.0", "end-1c")
+        have = multi_resumes.mentioned(current, known)
+        titles = [r.title for r in known]
+        fresh = [(f"https://hh.ru/resume/{r.id}" if titles.count(r.title) > 1 else r.title) + ": "
+                 for r in known if r.id not in have]
+        if fresh:
+            text = current.rstrip("\n") + ("\n" if current.strip() else "") + "\n".join(fresh)
+            box.delete("1.0", "end")
+            box.insert("1.0", text)
+        if fresh:
+            what = ("вписал строку" if len(fresh) == 1 else f"вписал строк: {len(fresh)}") + \
+                " — допишите после двоеточия слова из названий вакансий и нажмите «Сохранить»"
+        else:
+            what = "все уже есть в правилах"
+        self.resumes_info.set(f"Ваши резюме на hh ({len(known)})" + (f", {note}" if note else "") + f": {what}",
+                              ACCENT if fresh else MUTED)
+
     def show_raise_info(self, text: str) -> None:
         """«Последний раз поднято … Следующее — …» у кнопки «Поднять сейчас»."""
         info = getattr(self, "raise_info", None)
@@ -2484,7 +2579,7 @@ class ChartCard(Card):
             self.readout.configure(text=readout)
 
 
-FUNNEL_GROUPS = {"По запросам": "query", "По письму": "letter", "По навыкам": "match"}
+FUNNEL_GROUPS = {"По запросам": "query", "По письму": "letter", "По навыкам": "match", "По резюме": "resume"}
 
 
 def _pct(part: int, whole: int) -> str:
@@ -4240,6 +4335,9 @@ class App(ctk.CTk):
             self.pages["ai"].refresh()
             self.pages["ai"].view.append(f"  {summary}", "ok" if code == EXIT_OK else "error")
             self.pages["analysis"].on_hh_resume(code)
+        elif kind == "resumes":
+            summary = "список резюме загружен" if code == EXIT_OK else "список резюме не загрузился — см. «Журналы»"
+            self.pages["settings"].on_resumes_listed(code)
         elif kind == "market":
             result = self.market_result
             summary = f"просмотрено вакансий {result.get('seen', 0)}, новых {result.get('added', 0)}"
@@ -4256,7 +4354,7 @@ class App(ctk.CTk):
                              AMBER, summary)
         else:
             self._set_status("●  Остановлено с ошибкой", RED, "подробности в журнале")
-        if kind not in ("raise", "market"):  # проверка рынка — не запуск откликов
+        if kind not in ("raise", "market", "resumes"):  # проверка рынка, список резюме — не запуск откликов
             self.pages["responses"].current.configure(text=f"Последний запуск: {summary}")
         # следом за работой может быть запуск чатов по расписанию — подъём резюме его не опередит
         self._raise_after = max(self._raise_after, time.time() + 10)

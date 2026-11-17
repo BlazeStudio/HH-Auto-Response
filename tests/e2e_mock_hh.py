@@ -10,6 +10,7 @@ ok/BAD, код возврата 1, если что-то не так. Что пр
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -24,8 +25,8 @@ for stream in (sys.stdout, sys.stderr):  # кириллица в консоли 
     if hasattr(stream, "reconfigure"):
         stream.reconfigure(encoding="utf-8", errors="replace")
 
-from mock_hh import (DOCUMENTS, RESUME_ID, FakeLlm, MockChat, MockHh, YES_NO_DOCUMENTS, use_mock, vacancy,  # noqa: E402
-                     write_config)
+from mock_hh import (CITY, DOCUMENTS, RESUME_ID, RESUME_TEXT, FakeLlm, MockChat, MockHh, MockResume,  # noqa: E402
+                     YES_NO_DOCUMENTS, use_mock, vacancy, write_config)
 
 from hh_auto.app import EXIT_FATAL, EXIT_OK, fetch_resume, run_background, run_chats, run_market, run_responses  # noqa: E402
 from hh_auto.core import control  # noqa: E402
@@ -33,6 +34,7 @@ from hh_auto.core.config import load_config  # noqa: E402
 from hh_auto.core.logger import setup_logging  # noqa: E402
 from hh_auto.hh.chats import ChatStats  # noqa: E402
 from hh_auto.hh.runner import RunOptions, Stats  # noqa: E402
+from hh_auto.reports.results import ResultsBook  # noqa: E402
 
 results: list[str] = []
 LLM = FakeLlm()
@@ -525,9 +527,105 @@ def part_captcha_telegram() -> None:
         check("капча в Telegram: оба отклика засчитаны", stats.applied == 2, f"отправлено {stats.applied}")
 
 
+def _resume(code: str, title: str, marker: str) -> MockResume:
+    return MockResume(code * 19, title, RESUME_TEXT.replace("Python-разработчик\n", f"{title}\nМаркер: {marker}\n", 1))
+
+
+AI_CV = _resume("a1", "AI/LLM-инженер · ML-инженер (LLM/RAG) · Python Backend (AI)", "резюме ИИ")
+PY_CV = _resume("b2", "Python-разработчик (Backend, LLM / AI-агенты, Data)", "резюме Python")
+SA_CV = _resume("c3", "Системный аналитик", "резюме аналитика")
+MARKERS = {AI_CV.id: "резюме ИИ", PY_CV.id: "резюме Python", SA_CV.id: "резюме аналитика"}
+
+
+def part_resumes() -> None:
+    """Несколько резюме ([resumes]): резюме под вакансию по словам в названии, выбор в шторке «Резюме для отклика»
+    (в окне отклика и на странице вопросов), письмо и анкета — по тексту выбранного резюме, чат — по резюме отклика."""
+    pages = [[
+        vacancy(301, "Python AI Engineer", "modal"),  # ai и python — решает нейросеть: резюме ИИ (оно и выбрано)
+        vacancy(302, "Python Backend Developer", "modal"),  # только Python — переключить
+        vacancy(303, "System Analyst", "optional"),  # аналитик; шторка сама не закрывается
+        vacancy(304, "Бизнес-аналитик", "questions", questions=[{"kind": "text", "text": CITY}]),
+        vacancy(305, "Менеджер проектов", "modal"),  # ни одного слова, нейросеть не ответила — по умолчанию
+        vacancy(306, "Python-разработчик", "quick"),  # hh откликнулся сразу — резюме не выбрать
+        vacancy(307, "Аналитик данных", "modal"),  # резюме аналитика скрыто от этого работодателя
+    ]]
+    mock = MockHh(pages=pages, resumes=[AI_CV, PY_CV, SA_CV],
+                  chats=[MockChat("9", "System Analyst", "Компания 303", [CITY],
+                                  script=["Спасибо за ответы! Анкета завершена, работодатель свяжется с вами."])])
+    mock.sheet_stays = {SA_CV.id}
+    mock.hidden_resumes = {f"307:{SA_CV.id}"}
+    rules = ("AI/LLM-инженер: ai, ml, llm, ии\nPython-разработчик: python, backend, бэкенд\n"
+             "Системный аналитик: аналитик, analyst")
+    with session(mock, resumes__enabled=True, resumes__rules=rules, resumes__default="Python-разработчик") as root:
+        log_path = log_of(root)
+        stats = Stats()
+        code = run_responses(cfg_of(root), RunOptions(), root, stats, log_path)
+        log = text_of(log_path)
+        check("резюме: запуск без ошибки", code == EXIT_OK, f"код {code}")
+        check("резюме: наружу не ушло ни одного запроса", not mock.outside, mock.outside[:3])
+        sent = {r["id"]: r for r in mock.sent if r.get("flow") != "quick_letter"}
+        for vid, cv, what in (("301", AI_CV, "Python AI Engineer — ИИ (нейросеть из двух)"),
+                              ("302", PY_CV, "Python Backend Developer — Python (переключено)"),
+                              ("303", SA_CV, "System Analyst — аналитик (шторку закрыли сами)"),
+                              ("304", SA_CV, "Бизнес-аналитик — аналитик на странице вопросов"),
+                              ("305", PY_CV, "ни одного слова — резюме по умолчанию")):
+            check(f"резюме: {what}", vid in sent and sent[vid].get("resume") == cv.id, sent.get(vid))
+        check("резюме: быстрый отклик — hh взял своё", sent.get("306", {}).get("resume") == AI_CV.id, sent.get("306"))
+        check("резюме: скрытое резюме — пропуск", "307" not in sent, sent.get("307"))
+        letters = {vid: [t for t in LLM.asked("Ты пишешь сопроводительное") if f"ищет: {title}." in t]
+                   for vid, title in (("302", "Python Backend Developer"), ("303", "System Analyst"),
+                                      ("305", "Менеджер проектов"))}
+        for vid, cv in (("302", PY_CV), ("303", SA_CV), ("305", PY_CV)):
+            texts = letters[vid]
+            check(f"резюме: письмо {vid} — по тексту своего резюме",
+                  len(texts) == 1 and all((m in texts[0]) == (rid == cv.id) for rid, m in MARKERS.items()),
+                  [m for m in MARKERS.values() if texts and m in texts[0]])
+        form = [t for t in LLM.asked("Ты отвечаешь за соискателя") if "Бизнес-аналитик" in t]
+        check("резюме: анкета — по резюме аналитика", form and all("резюме аналитика" in t and "резюме ИИ" not in t
+                                                                    for t in form), len(form))
+        picks = LLM.asked("Ты помогаешь соискателю выбрать")
+        check("резюме: нейросеть спрошена только при сомнении (301, 305)",
+              len(picks) == 2 and "Python AI Engineer" in picks[0] and "Менеджер проектов" in picks[1],
+              [t.split("Название: ")[1].split("\n")[0] for t in picks])
+        for line in ("ваши резюме на hh (3)", "«Системный аналитик» ← аналитик, analyst",
+                     "по умолчанию (в названии нет слов из правил): «Python-разработчик",
+                     "резюме: «AI/LLM-инженер · ML-инженер (LLM/RAG) · Python Backend (AI)» — по словам подошли 2 "
+                     "резюме, нейросеть выбрала: вакансия про ИИ",
+                     "резюме: «Системный аналитик» — в названии «analyst»", "резюме: «Системный аналитик» — в названии «аналитик»",
+                     "✓ это и есть подобранное резюме", "→ меняю резюме на «Python-разработчик", "✓ резюме выбрано: «Системный аналитик»",
+                     "нейросеть не выбрала резюме", "резюме: «Python-разработчик (Backend, LLM / AI-агенты, Data)» — по умолчанию",
+                     "hh отправил отклик сразу, без окна", "ИИ пишет письмо по резюме «Системный аналитик»",
+                     "hh требует сделать резюме видимым всем работодателям (резюме «Системный аналитик»)", "по резюме:"):
+            check(f"резюме: в журнале «{line[:60]}»", line in log)
+        records = {r["id"]: r for r in ResultsBook(root).records()}
+        check("резюме: в журнале откликов — какое резюме", records.get("302", {}).get("resume") == PY_CV.title
+              and records.get("306", {}).get("resume_checked") is False, records.get("302"))
+        state = json.loads((root / "data" / "state.json").read_text(encoding="utf-8"))
+        check("резюме: state.json помнит резюме отклика", state["applied"].get("303", {}).get("resume") == SA_CV.id,
+              state["applied"].get("303"))
+        check("резюме: список и тексты сохранены", len(json.loads((root / "data" / "resumes.json").read_text(
+            encoding="utf-8"))) == 3 and all((root / "data" / "resumes" / f"{cv.id}.txt").exists()
+                                             for cv in (AI_CV, PY_CV, SA_CV)))
+        from openpyxl import load_workbook
+
+        sheet = load_workbook(root / "logs" / "responses.xlsx", read_only=True)["Откликнулся"]
+        header = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+        check("резюме: колонка «Резюме» в Excel", "Резюме" in header, header)
+
+        LLM.requests.clear()
+        chat_log = log_of(root, "chats")
+        run_chats(cfg_of(root), False, root, ChatStats(), chat_log)
+        chat = [t for t in LLM.asked("Ты помогаешь соискателю на hh.ru")]
+        check("резюме: чат вакансии — по резюме, с которым откликались",
+              chat and all("резюме аналитика" in t and "резюме ИИ" not in t for t in chat), len(chat))
+        check("резюме: в журнале чатов — резюме для ответов",
+              "резюме для ответов: «Системный аналитик» — с ним откликались" in text_of(chat_log))
+
+
 PARTS = {"responses": part_responses, "documents": part_documents, "letters": part_letters, "dry_run": part_dry_run,
          "hide": part_hide, "failures": part_failures, "chats": part_chats, "resume": part_resume, "background": part_background,
-         "market": part_market, "captcha_telegram": part_captcha_telegram, "captcha": part_captcha}
+         "market": part_market, "captcha_telegram": part_captcha_telegram, "captcha": part_captcha,
+         "resumes": part_resumes}
 
 
 def main() -> int:

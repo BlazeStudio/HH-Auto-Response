@@ -24,10 +24,15 @@ def build_workbook(records: list[dict], summary: Summary, chat_answers: list[dic
     _summary_sheet(wb.active, summary)
 
     applied = [r for r in records if r["category"] == APPLIED]
+    # несколько резюме ([resumes]): с каким резюме ушёл отклик — колонка, если такие отклики есть
+    resume = [("Резюме", 40, lambda r: r.get("resume", "") + (" (не проверено: hh откликнулся сразу)"
+                                                              if r.get("resume_checked") is False else ""))
+              ] if any(r.get("resume") for r in applied) else []
     _table(wb.create_sheet("Откликнулся"), applied, [
         ("Дата", 19, lambda r: r["at"]),
         ("Вакансия", 50, lambda r: (r["title"], r["url"])),
         ("Компания", 34, lambda r: r["company"]),
+        *resume,
         ("Письмо", 9, lambda r: "да" if r.get("letter") else "нет"),
         ("Комментарий", 30, lambda r: r.get("reason", "")),
         ("Ответы на анкету", 70, lambda r: "\n".join(f"{q} → {a}" for q, a in r.get("answers") or [])),

@@ -148,6 +148,47 @@ def part_settings_save() -> None:
     check("настройки: снова в форме после загрузки", entry.get() == url)
 
 
+def part_resumes_settings() -> None:
+    """«Несколько резюме»: находится поиском; «Подставить мои резюме с hh» (браузер подменён: список уже прочитан)
+    дописывает в правила только недостающие резюме; включить без слов нельзя, со словами — сохраняется."""
+    from hh_auto.hh import resumes
+
+    settings = app.pages["settings"]
+    app.show_page("settings")
+    settings.show_tab("Поиск")
+    pump(0.3)
+    found = [entry["title"] for entry in settings.find("несколько резюме")]
+    check("резюме: поиск находит раздел и кнопку", "Подставить мои резюме с hh" in found, found)
+    known = [resumes.MyResume("a1" * 19, "ИИ-инженер"), resumes.MyResume("b2" * 19, "Системный аналитик")]
+    resumes.save_list(HOME, known)
+    rules = settings.widgets[("resumes", "rules")][1]
+    rules.delete("1.0", "end")
+    rules.insert("1.0", "ИИ-инженер: ai, ml")
+    real = app._start
+    app._start = lambda kind, *args, **kwargs: (app.events.put(("done", kind, 0)) if kind == "resumes"
+                                                else real(kind, *args, **kwargs))
+    try:
+        settings.fill_resumes()
+        added = wait(lambda: "Системный аналитик: " in rules.get("1.0", "end-1c"), 5)
+    finally:
+        app._start = real
+    text = rules.get("1.0", "end-1c")
+    check("резюме: дописано только недостающее", added and text == "ИИ-инженер: ai, ml\nСистемный аналитик: ", text)
+    check("резюме: кнопка снова доступна", settings.resumes_btn.cget("state") == "normal")
+    settings.widgets[("resumes", "enabled")][1].select()
+    choose_later()  # «Не сохранено: … после двоеточия нет ни одного слова» — нажать «ОК»
+    check("резюме: строка без слов не сохраняется", settings.collect() is None)
+    rules.insert("end", "аналитик, analyst")
+    settings.save()
+    pump(0.5)
+    cfg = load_config(HOME / "config.toml")
+    check("резюме: правила сохранились", cfg.resumes.enabled and "Системный аналитик: аналитик, analyst" in cfg.resumes.rules,
+          cfg.resumes)
+    settings.widgets[("resumes", "enabled")][1].deselect()
+    settings.save()
+    pump(0.3)
+
+
 def part_chat_id() -> None:
     """«Узнать chat id»: человек пишет боту — chat id вписывается сам, бот шлёт проверочное сообщение.
     Telegram подменён, наружу ничего не уходит."""
@@ -443,7 +484,7 @@ def control_paused_holding() -> bool:
 
 
 def main() -> int:
-    for part in (part_pages, part_settings_save, part_chat_id, part_settings_search, part_log_colors, part_shortcuts,
+    for part in (part_pages, part_settings_save, part_resumes_settings, part_chat_id, part_settings_search, part_log_colors, part_shortcuts,
                  part_ai_page, part_themes_and_mini, part_tray, part_dialogs, part_runs, part_stop):
         print(f"--- {part.__name__}", flush=True)
         try:

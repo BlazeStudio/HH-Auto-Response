@@ -47,6 +47,15 @@ PROFILE_TEXT = """Профиль
 Почта
 ivan@example.com
 """
+
+
+@dataclass
+class MockResume:
+    id: str  # как у hh: 38 шестнадцатеричных знаков
+    title: str
+    text: str
+
+
 CITY = "В каком городе вы проживаете на постоянной основе?"
 DOCUMENTS = ("Готовы ли вы после телефонного интервью предоставить официальные документы, подтверждающие периоды "
              "работы из резюме (выписку из ЭТК Госуслуг, договоры ГПХ/ИП с актами выполненных работ)?")
@@ -115,6 +124,57 @@ border:1px solid #888;padding:12px;z-index:5} .drop{position:fixed;right:20px;to
 #list{width:300px;height:400px;overflow:auto} #panel{flex:1;padding:8px} .msg{margin:4px 0} #messages{min-height:120px}
 #answers{display:flex;flex-direction:column;align-items:flex-start}</style>"""
 
+# «Резюме для отклика», как на hh: выбранное резюме — карточка-кнопка с resume-title, щелчок открывает шторку
+# (отдельный role="dialog" со своим крестиком response-popup-close) со списком резюме: карточка-label, внутри —
+# ещё label с названием и переключатель name="resumeId" value=ID. Выбор ставит сам скрипт (как React), шторка
+# закрывается сама (кроме резюме из SHEET_STAYS). Резюме, скрытое от работодателя (HIDDEN — «вакансия:резюме»),
+# раскрывает предупреждение hidden-resume-warning и не выбирается.
+_RESUME_JS = r"""
+function resumeCell(owner, vacancyId) {
+  if (RESUMES.length < 2) return `<span data-qa="resume-title">${RESUMES[0].title}</span>`;
+  owner.dataset.resume = RESUMES[0].id;
+  return `<div role="button" tabindex="0" class="resume-cell" data-qa="resume-cell" data-vacancy="${vacancyId}">Резюме для отклика
+    <div data-qa="cell"><div data-qa="resume-title"><span data-qa="cell-text-content">${RESUMES[0].title}</span></div></div></div>`;
+}
+function bindResumeCell(owner) {
+  const cell = owner.querySelector('[data-qa="resume-cell"]');
+  if (cell) cell.onclick = () => resumeSheet(owner, cell.dataset.vacancy);
+}
+function resumeSheet(owner, vacancyId) {
+  const sheet = document.createElement('div');
+  sheet.setAttribute('role', 'dialog');
+  sheet.className = 'dlg';
+  sheet.style.top = '140px';
+  sheet.style.zIndex = '7';
+  const items = RESUMES.map((r) => {
+    const on = r.id === owner.dataset.resume ? ' checked' : '';
+    return `<label class="card"><input type="radio"${on}><div><label data-qa="cell">
+      <div data-qa="resume-title"><div data-qa="cell-text-content">${r.title}</div></div>
+      <span data-qa="radio-container"><input id="resume_${r.id}" name="resumeId" type="radio" readonly value="${r.id}"${on}></span>
+      </label></div></label>`;
+  }).join('');
+  sheet.innerHTML = `<div>Резюме для отклика</div><button type="button" data-qa="response-popup-close">×</button>
+    <div data-qa="hidden-resume-warning" style="max-height:0;overflow:hidden">Чтобы откликнуться на эту вакансию,
+    поменяйте видимость резюме</div>${items}`;
+  document.body.appendChild(sheet);
+  sheet.querySelector('[data-qa="response-popup-close"]').onclick = () => sheet.remove();
+  for (const card of sheet.querySelectorAll('label.card')) {
+    card.addEventListener('click', (event) => {
+      event.preventDefault();
+      const id = card.querySelector('input[name="resumeId"]').value;
+      for (const radio of sheet.querySelectorAll('input[name="resumeId"]')) radio.checked = radio.value === id;
+      const warning = sheet.querySelector('[data-qa="hidden-resume-warning"]');
+      if (HIDDEN.includes(`${vacancyId}:${id}`)) { warning.style.maxHeight = 'none'; return; }
+      warning.style.maxHeight = '0';
+      owner.dataset.resume = id;
+      owner.querySelector('[data-qa="resume-cell"] [data-qa="resume-title"]').textContent =
+        RESUMES.find((r) => r.id === id).title;
+      if (!SHEET_STAYS.includes(id)) setTimeout(() => sheet.remove(), 200);
+    });
+  }
+}
+"""
+
 _SEARCH_JS = r"""
 const post = (body) => fetch('/mock/sent', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                             body: JSON.stringify(body)});
@@ -169,10 +229,13 @@ function captchaForm(done) {
   };
 }
 function modal(card, id, flow, letter) {
-  const box = dialog(`<span data-qa="resume-title">${RESUME_TITLE}</span>${letter}
+  const box = dialog('');
+  box.innerHTML = `${resumeCell(box, id)}${letter}
     <button type="button" data-qa="generate-cover-letter">Сгенерировать</button>
     <button type="button" data-qa="vacancy-response-submit-popup">Откликнуться</button>
-    <button type="button" data-qa="response-popup-close">Закрыть</button>`);
+    <button type="button" data-qa="response-popup-close">Закрыть</button>`;
+  bindResumeCell(box);
+  const send = (body) => post({...body, resume: box.dataset.resume || RESUMES[0].id});
   qa(box, 'response-popup-close').onclick = () => box.remove();
   qa(box, 'generate-cover-letter').onclick = () => {
     if (!NO_GENERATE) {
@@ -186,7 +249,7 @@ function modal(card, id, flow, letter) {
     if ((flow === 'modal' || flow === 'captcha') && !text) return;  // письмо обязательное: hh не отправит
     if (flow === 'captcha' && CAPTCHA_ANSWER) {  // капча с формой, как на hh: ответ вводит программа
       captchaForm(async () => {
-        await post({id, flow, letter: text});
+        await send({id, flow, letter: text});
         box.remove();
         responded(card);
       });
@@ -195,14 +258,14 @@ function modal(card, id, flow, letter) {
     if (flow === 'captcha') {  // hh просит капчу; когда человек её решил, отклик уходит сам
       const captcha = dialog('<div data-qa="account-captcha-input">Введите символы с картинки</div>');
       setTimeout(async () => {
-        await post({id, flow, letter: text});
+        await send({id, flow, letter: text});
         captcha.remove();
         box.remove();
         responded(card);
       }, CAPTCHA_MS);
       return;
     }
-    await post({id, flow, letter: text});
+    await send({id, flow, letter: text});
     box.remove();
     responded(card);
   };
@@ -250,7 +313,7 @@ document.addEventListener('click', (event) => {
       };
     };
   } else if (flow === 'quick') {
-    post({id, flow, letter: ''});
+    post({id, flow, letter: '', resume: RESUMES[0].id});
     const informer = document.createElement('div');
     informer.setAttribute('data-qa', 'vacancy-response-letter-informer');
     informer.innerHTML = 'Ваш отклик отправлен работодателю <button type="button" data-qa="vacancy-response-letter-toggle">Приложить письмо</button>';
@@ -341,8 +404,13 @@ render();
 
 
 class MockHh:
-    def __init__(self, pages: list[list[dict]] | None = None, chats: list[MockChat] | None = None):
+    def __init__(self, pages: list[list[dict]] | None = None, chats: list[MockChat] | None = None,
+                 resumes: list[MockResume] | None = None):
         self.pages = pages if pages is not None else default_vacancies()
+        # резюме на «Мои резюме»: одно — окно отклика без выбора (как раньше), несколько — «Резюме для отклика»
+        self.resumes = resumes or [MockResume(RESUME_ID, RESUME_TITLE, RESUME_TEXT)]
+        self.hidden_resumes: set[str] = set()  # «вакансия:резюме» — резюме скрыто от этого работодателя
+        self.sheet_stays: set[str] = set()  # после выбора этих резюме шторка не закрывается сама
         self.chats = chats if chats is not None else default_chats()
         self.sent: list[dict] = []  # что ушло работодателям с откликами
         self.chat_sent: list[dict] = []  # что ушло в чаты
@@ -404,7 +472,7 @@ class MockHh:
         if path in ("/applicant/resumes", "/applicant/profile/me"):
             return 200, self._profile(), page
         if path.startswith("/resume/"):
-            return 200, self._resume(), page
+            return 200, self._resume(path.rstrip("/").rsplit("/", 1)[-1]), page
         if path.startswith("/search/vacancy"):
             return 200, self._search(query), page
         if path == "/applicant/vacancy_response":
@@ -417,13 +485,21 @@ class MockHh:
 
     def _profile(self) -> str:
         lines = "".join(f"<div>{html.escape(line)}</div>" for line in PROFILE_TEXT.splitlines())
-        return (f"<!doctype html><meta charset=utf-8><title>Профиль</title>{_PAGE_STYLE}<body>{lines}"
-                f'<section><a href="/resume/{RESUME_ID}">{RESUME_TITLE}</a> Обновлено сегодня в 09:00</section></body>')
+        cards = "".join(f'<section><a href="/resume/{r.id}">{html.escape(r.title)}</a> Обновлено сегодня в 09:00</section>'
+                        for r in self.resumes)
+        return f"<!doctype html><meta charset=utf-8><title>Профиль</title>{_PAGE_STYLE}<body>{lines}{cards}</body>"
 
-    def _resume(self) -> str:
-        lines = "".join(f"<div>{html.escape(line)}</div>" for line in RESUME_TEXT.splitlines())
+    def _resume(self, resume_id: str = "") -> str:
+        resume = next((r for r in self.resumes if r.id == resume_id), self.resumes[0])
+        lines = "".join(f"<div>{html.escape(line)}</div>" for line in resume.text.splitlines())
         return (f"<!doctype html><meta charset=utf-8><title>Резюме</title>{_PAGE_STYLE}<body><header>Шапка hh</header>"
-                f'<main><h1 data-qa="resume-block-title-position">{RESUME_TITLE}</h1>{lines}</main></body>')
+                f'<main><h1 data-qa="resume-block-title-position">{html.escape(resume.title)}</h1>{lines}</main></body>')
+
+    def _resume_data(self) -> str:
+        """Резюме и их поведение в шторке — для скриптов страниц (_RESUME_JS)."""
+        return (f"const RESUMES = {json.dumps([{'id': r.id, 'title': r.title} for r in self.resumes], ensure_ascii=False)};\n"
+                f"const HIDDEN = {json.dumps(sorted(self.hidden_resumes))};\n"
+                f"const SHEET_STAYS = {json.dumps(sorted(self.sheet_stays))};\n{_RESUME_JS}")
 
     def _state(self, cards: list[dict], total: int) -> str:
         now = datetime.now().isoformat(timespec="seconds")
@@ -458,7 +534,7 @@ class MockHh:
                 f'<a href="#" data-qa="vacancy-serp__vacancy_response" data-flow="{v["flow"]}">{label}</a>'
                 '<button type="button" aria-label="Скрыть" data-qa="vacancy__blacklist-show-add">◉</button></div>')
         pager = "".join(f'<a data-qa="pager-page" href="?page={i}">{i + 1}</a>' for i in range(len(self.pages)))
-        script = (f"const RESUME_TITLE = {json.dumps(RESUME_TITLE, ensure_ascii=False)};\n"
+        script = (f"{self._resume_data()}\n"
                   f"const NO_GENERATE = {json.dumps(self.no_generate)};\n"
                   f"const CAPTCHA_MS = {self.captcha_ms};\n"
                   f"const CAPTCHA_ANSWER = {json.dumps(self.captcha_answer)};\n{_SEARCH_JS}")
@@ -497,8 +573,10 @@ class MockHh:
                 inner = "".join(f'<label><input type="{kind}" name="q{i}" value="{html.escape(o)}">{html.escape(o)}</label>'
                                 for o in q["options"])
             blocks.append(f'<div data-qa="task-body"><div data-qa="task-question">{html.escape(q["text"])}</div>{inner}</div>')
-        script = f"""
+        script = self._resume_data() + f"""
 const id = {json.dumps(wanted)};
+document.getElementById('resume').innerHTML = resumeCell(document.body, id);
+bindResumeCell(document.body);
 document.querySelector('[data-qa="vacancy-response-letter-toggle"]').onclick = (e) => {{
   document.getElementById('slot').innerHTML = '<textarea data-qa="vacancy-response-popup-form-letter-input"></textarea>';
   e.target.remove();
@@ -511,11 +589,13 @@ document.querySelector('[data-qa="vacancy-response-submit-popup"]').onclick = as
   }}
   const letter = document.querySelector('[data-qa="vacancy-response-popup-form-letter-input"]');
   await fetch('/mock/sent', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
-                             body: JSON.stringify({{id, flow: 'questions', answers, letter: letter ? letter.value : ''}})}});
+                             body: JSON.stringify({{id, flow: 'questions', answers, letter: letter ? letter.value : '',
+                                                   resume: document.body.dataset.resume || RESUMES[0].id}})}});
   document.body.innerHTML = 'Отклик отправлен';
 }};"""
         return (f"<!doctype html><meta charset=utf-8><title>Вопросы</title>{_PAGE_STYLE}<body>"
                 f'<div data-qa="employer-asking-for-test">Работодатель просит ответить на вопросы</div>{"".join(blocks)}'
+                '<div id="resume"></div>'
                 '<button type="button" data-qa="vacancy-response-letter-toggle">Добавить</button><div id="slot"></div>'
                 f'<button type="button" data-qa="vacancy-response-submit-popup">Откликнуться</button><script>{script}</script></body>')
 
@@ -587,9 +667,24 @@ class FakeLlm:
             # как небольшая модель, которая не слушается: называет вакансию и компанию из описания
             found = re.search(r"(?m)^(.+?) ищет: (.+?)\. Нужны", user)
             return self.LETTER + (f" Мне интересна вакансия «{found.group(2)}» в компании {found.group(1)}." if found else "")
+        if system.startswith("Ты помогаешь соискателю выбрать"):
+            return self._resume_pick(user)
         if system.startswith("Ты помогаешь соискателю отбирать"):
             return json.dumps({"interesting": "кассир" not in user.lower(), "reason": "проверка"}, ensure_ascii=False)
         return "работает"
+
+    @staticmethod
+    def _resume_pick(user: str) -> str:
+        """Какое резюме: «AI» в названии вакансии — резюме с «ИИ» в названии; «менеджер» — непонятный ответ
+        (программа должна взять резюме по умолчанию); иначе — первое из списка."""
+        title = re.search(r"^Название: (.+)$", user, re.M).group(1).lower()
+        options = re.findall(r"^(\d+)\. «(.+?)»", user, re.M)
+        if "менеджер" in title:
+            return "не знаю"
+        if re.search(r"\bai\b", title):
+            number = next((n for n, name in options if "ИИ" in name), "1")
+            return json.dumps({"resume": int(number), "reason": "вакансия про ИИ"}, ensure_ascii=False)
+        return json.dumps({"resume": 1, "reason": "первое"}, ensure_ascii=False)
 
     @staticmethod
     def _form(user: str) -> str:

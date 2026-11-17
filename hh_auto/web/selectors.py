@@ -27,6 +27,9 @@ MODAL_SUBMIT = '[data-qa="vacancy-response-submit-popup"]'
 MODAL_CLOSE = '[data-qa="response-popup-close"]'
 MODAL_RESUME_TITLE = '[data-qa="resume-title"]'
 HIDDEN_RESUME_WARNING = '[data-qa="hidden-resume-warning"]'
+# «Резюме для отклика»: в окне отклика (и на странице вопросов) выбранное резюме — карточка-кнопка с resume-title;
+# щелчок открывает шторку со списком резюме, у каждого — переключатель name="resumeId", value — ID резюме
+RESUME_RADIO = 'input[name="resumeId"]'
 LETTER_INPUT = '[data-qa="vacancy-response-popup-form-letter-input"]'
 GENERATE_LETTER = '[data-qa="generate-cover-letter"]'
 
