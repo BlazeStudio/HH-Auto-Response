@@ -138,7 +138,47 @@ function resumeCell(owner, vacancyId) {
 }
 function bindResumeCell(owner) {
   const cell = owner.querySelector('[data-qa="resume-cell"]');
-  if (cell) cell.onclick = () => resumeSheet(owner, cell.dataset.vacancy);
+  if (!cell) return;
+  // скрытая копия списка, как в настоящей странице hh: её выбирать нельзя
+  const copy = document.createElement('div');
+  copy.style.display = 'none';
+  copy.innerHTML = RESUMES.map((r) => `<label><input type="radio" value="${r.id}">
+    <div data-qa="resume-title">${r.title}</div></label>`).join('');
+  owner.appendChild(copy);
+  cell.onclick = () => (RESUME_LIST === 'sheet' ? resumeSheet : resumeSelect)(owner, cell.dataset.vacancy);
+}
+function pickResume(owner, vacancyId, id) {
+  owner.dataset.resume = id;
+  owner.querySelector('[data-qa="resume-cell"] [data-qa="resume-title"]').textContent =
+    RESUMES.find((r) => r.id === id).title;
+}
+// широкое окно: выпадающий список (role="listbox"), пункт — label role="option" data-magritte-select-option=ID,
+// aria-selected; переключатель в пункте — без name. Щелчок по пункту выбирает и закрывает список,
+// повторный щелчок по резюме в окне — закрывает список
+function resumeSelect(owner, vacancyId) {
+  const open = document.querySelector('[data-qa="drop-base"]');
+  if (open) { open.remove(); return; }
+  const drop = document.createElement('div');
+  drop.setAttribute('role', 'dialog');
+  drop.setAttribute('data-qa', 'drop-base');
+  drop.className = 'dlg';
+  drop.style.top = '140px';
+  drop.style.zIndex = '7';
+  drop.innerHTML = `<div data-qa="drop"><div data-qa="magritte-select-option-list" role="listbox">${RESUMES.map((r) => {
+    const on = r.id === owner.dataset.resume;
+    return `<label role="option" data-magritte-select-option="${r.id}" data-qa="magritte-select-option-${r.id}"
+      aria-selected="${on}" tabindex="0"><div data-qa="cell"><span data-qa="radio-container"><input tabindex="-1"
+      type="radio" value="${r.id}"${on ? ' checked' : ''}></span><div data-qa="resume-title">
+      <div data-qa="cell-text-content">${r.title}</div></div></div></label>`;
+  }).join('')}</div></div>`;
+  document.body.appendChild(drop);
+  for (const option of drop.querySelectorAll('[role="option"]')) {
+    option.addEventListener('click', (event) => {
+      event.preventDefault();
+      pickResume(owner, vacancyId, option.getAttribute('data-magritte-select-option'));
+      drop.remove();
+    });
+  }
 }
 function resumeSheet(owner, vacancyId) {
   const sheet = document.createElement('div');
@@ -166,9 +206,7 @@ function resumeSheet(owner, vacancyId) {
       const warning = sheet.querySelector('[data-qa="hidden-resume-warning"]');
       if (HIDDEN.includes(`${vacancyId}:${id}`)) { warning.style.maxHeight = 'none'; return; }
       warning.style.maxHeight = '0';
-      owner.dataset.resume = id;
-      owner.querySelector('[data-qa="resume-cell"] [data-qa="resume-title"]').textContent =
-        RESUMES.find((r) => r.id === id).title;
+      pickResume(owner, vacancyId, id);
       if (!SHEET_STAYS.includes(id)) setTimeout(() => sheet.remove(), 200);
     });
   }
@@ -412,6 +450,8 @@ class MockHh:
         self.hidden_resumes: set[str] = set()  # «вакансия:резюме» — резюме скрыто от этого работодателя
         self.sheet_stays: set[str] = set()  # после выбора этих резюме шторка не закрывается сама
         self.shown_title = ""  # одно резюме: какое название hh показывает в окне отклика (выбрать не из чего)
+        # вид списка резюме: "select" — выпадающий список (широкое окно, как у hh обычно), "sheet" — шторка
+        self.resume_list = "select"
         self.chats = chats if chats is not None else default_chats()
         self.sent: list[dict] = []  # что ушло работодателям с откликами
         self.chat_sent: list[dict] = []  # что ушло в чаты
@@ -501,7 +541,8 @@ class MockHh:
         return (f"const RESUMES = {json.dumps([{'id': r.id, 'title': r.title} for r in self.resumes], ensure_ascii=False)};\n"
                 f"const HIDDEN = {json.dumps(sorted(self.hidden_resumes))};\n"
                 f"const SHEET_STAYS = {json.dumps(sorted(self.sheet_stays))};\n"
-                f"const SHOWN_TITLE = {json.dumps(self.shown_title, ensure_ascii=False)};\n{_RESUME_JS}")
+                f"const SHOWN_TITLE = {json.dumps(self.shown_title, ensure_ascii=False)};\n"
+                f"const RESUME_LIST = {json.dumps(self.resume_list)};\n{_RESUME_JS}")
 
     def _state(self, cards: list[dict], total: int) -> str:
         now = datetime.now().isoformat(timespec="seconds")

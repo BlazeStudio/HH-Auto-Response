@@ -56,16 +56,38 @@ MOVED = "hh пересортировал выдачу, вакансия ушла
 CAPTCHA_ATTEMPTS = 3  # капча на одной вакансии — повторяем отклик после неё, но не бесконечно
 HIDDEN_RESUME = "hh требует сделать резюме видимым всем работодателям"
 NO_RESUME_LIST = "в окне нет выпадающего списка резюме"
+# название резюме внутри списка «Резюме для отклика» (пункт выпадающего списка или карточка с переключателем),
+# а не выбранное резюме в самом окне
+_IN_RESUME_LIST = ("xpath=ancestor::*[@data-magritte-select-option or @role='option'"
+                   " or (self::label and descendant::input[@type='radio'])]")
 RESUME_LIST_WAIT = 6  # с: столько ждём список «Резюме для отклика» после щелчка по резюме
 
-# «Резюме для отклика»: переключатели резюме — ID, название рядом и выбрано ли (название ищем вверх от переключателя)
+# «Резюме для отклика» на экране: {id, title, checked} по пунктам выпадающего списка (data-magritte-select-option,
+# aria-selected) и по переключателям шторки (value — ID резюме: 16+ шестнадцатеричных знаков). Только видимые:
+# в странице бывают скрытые копии списка. Название — resume-title вверх от переключателя
 _RESUME_LIST_JS = """
-(s) => Array.from(document.querySelectorAll(s.radio)).map((input) => {
-  let box = input.parentElement;
-  while (box && !box.querySelector(s.title)) box = box.parentElement;
-  const title = box ? box.querySelector(s.title).innerText : '';
-  return {id: input.value || '', title: (title || '').replace(/\\s+/g, ' ').trim(), checked: !!input.checked};
-})
+(s) => {
+  const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0
+    && getComputedStyle(el).visibility !== 'hidden'; };
+  const titleIn = (box) => { const t = box && box.querySelector(s.title);
+    return t ? t.innerText.replace(/\\s+/g, ' ').trim() : ''; };
+  const found = new Map();
+  for (const option of document.querySelectorAll(s.option)) {
+    const id = option.getAttribute('data-magritte-select-option') || '';
+    if (!id || found.has(id) || !shown(option)) continue;
+    found.set(id, {id, title: titleIn(option),
+      checked: option.getAttribute('aria-selected') === 'true' || !!option.querySelector('input:checked')});
+  }
+  for (const input of document.querySelectorAll('input[type="radio"]')) {
+    const id = input.value || '';
+    if (!/^[0-9a-f]{16,}$/i.test(id) || found.has(id)) continue;
+    let box = input.parentElement;
+    while (box && !box.querySelector(s.title)) box = box.parentElement;
+    if (!box || !shown(box)) continue;
+    found.set(id, {id, title: titleIn(box), checked: !!input.checked});
+  }
+  return [...found.values()];
+}
 """
 
 
@@ -1111,7 +1133,7 @@ class Responder:
             same = [i for i, item in enumerate(listed) if target.title and _same_title(item["title"], target.title)]
             index = same[0] if len(same) == 1 else None
         if index is None:
-            self._close_resume_list()
+            self._close_resume_list(scope)
             return "его нет в выпадающем списке hh (скрыто или удалено?)"
         item = listed[index]
         if item["title"] and item["title"] != target.title:
@@ -1120,14 +1142,15 @@ class Responder:
             target.title = item["title"]  # название из списка hh — точное: по нему сверяем окно и пишем журнал
         if item["checked"]:
             log.info("  в списке оно уже отмечено")
-            self._close_resume_list()
+            self._close_resume_list(scope)
             return None
-        radio = self.page.locator(S.RESUME_RADIO).nth(index)
-        title = radio.locator("xpath=ancestor::*[descendant::*[@data-qa='resume-title']][1]"
-                              "/descendant::*[@data-qa='resume-title'][1]")
+        option = self._option(item["id"])
+        if option is None:
+            self._close_resume_list(scope)
+            return "в списке не нашлось, что нажать у этого резюме"
         self._pause()
         try:
-            (title if title.count() else radio).first.click()
+            option.click()
         except PlaywrightError as e:
             log.debug(f"  щелчок по резюме в списке: {(str(e).splitlines() or [''])[0][:120]}")
         deadline = time.monotonic() + 4
@@ -1135,27 +1158,39 @@ class Responder:
         while time.monotonic() < deadline:
             if self._visible(self.page.locator(S.HIDDEN_RESUME_WARNING)):
                 return HIDDEN_RESUME
-            if not self._resume_list_shown():
+            now = self._resume_list()
+            if not now:
                 return None  # список закрылся сам — hh принял выбор (проверим по окну)
-            try:
-                checked = checked or radio.is_checked(timeout=1_000)
-            except PlaywrightError:
-                pass
-            if checked:
+            if any(entry["id"] == item["id"] and entry["checked"] for entry in now):
+                checked = True
                 control.sleep(0.8)  # список обычно закрывается сам — даём ему время
                 break
             control.sleep(0.3)
-        if not checked and self._resume_list_shown():
+        if not checked and self._resume_list():
+            radio = self.page.locator(f'input[type="radio"][value="{item["id"]}"]')
             try:
-                radio.check(force=True, timeout=3_000)  # переключатель hh без подписи: щелчок мимо
-                checked = radio.is_checked(timeout=1_000)
+                (radio.filter(visible=True).first if radio.filter(visible=True).count() else radio.first).check(
+                    force=True, timeout=3_000)  # щелчок пришёлся мимо — отметить сам переключатель
             except PlaywrightError:
                 pass
-            if not checked:
-                return "переключатель резюме не отметился"
+            now = self._resume_list()
+            if now and not any(entry["id"] == item["id"] and entry["checked"] for entry in now):
+                return "резюме в списке не отметилось"
         if self._visible(self.page.locator(S.HIDDEN_RESUME_WARNING)):
             return HIDDEN_RESUME
-        self._close_resume_list()
+        self._close_resume_list(scope)
+        return None
+
+    def _option(self, resume_id: str) -> Locator | None:
+        """Что нажать, чтобы выбрать резюме в открытом списке: пункт выпадающего списка или название в карточке
+        шторки. Только видимое — в странице бывают скрытые копии списка."""
+        title_of_radio = ("xpath=ancestor::*[descendant::*[@data-qa='resume-title']][1]"
+                          "/descendant::*[@data-qa='resume-title'][1]")
+        for candidate in (self.page.locator(f'{S.RESUME_OPTION}[data-magritte-select-option="{resume_id}"]'),
+                          self.page.locator(f'input[type="radio"][value="{resume_id}"]').locator(title_of_radio)):
+            visible = candidate.filter(visible=True)
+            if visible.count():
+                return visible.first
         return None
 
     def _remember_list(self, listed: list[dict]) -> None:
@@ -1182,15 +1217,15 @@ class Responder:
             save_list(self.root, found + [r for r in saved_list(self.root) if r.id not in ids])
 
     def _resume_list(self) -> list[dict]:
-        """Переключатели «Резюме для отклика» на странице: {id, title, checked}."""
+        """Резюме в открытом списке «Резюме для отклика» (выпадающий список или шторка): {id, title, checked}."""
         try:
-            return self.page.evaluate(_RESUME_LIST_JS, {"radio": S.RESUME_RADIO, "title": S.MODAL_RESUME_TITLE})
+            return self.page.evaluate(_RESUME_LIST_JS, {"option": S.RESUME_OPTION, "title": S.MODAL_RESUME_TITLE})
         except PlaywrightError:
             return []
 
     def _resume_list_shown(self) -> bool:
-        """Список резюме на экране: видна строка хотя бы одного резюме (сам переключатель hh прячет)."""
-        return self._visible(self.page.locator("label").filter(has=self.page.locator(S.RESUME_RADIO)))
+        """Список резюме на экране: видно хотя бы одно резюме в нём."""
+        return bool(self._resume_list())
 
     def _shown_resume(self, scope: Locator | Page) -> str | None:
         """Название резюме, выбранного в окне отклика, — не из списка «Резюме для отклика»."""
@@ -1198,7 +1233,7 @@ class Responder:
         try:
             for i in range(min(titles.count(), 12)):
                 title = titles.nth(i)
-                if title.locator("xpath=ancestor::label[descendant::input[@name='resumeId']]").count():
+                if title.locator(_IN_RESUME_LIST).count():
                     continue
                 text = " ".join(title.inner_text().split()) if title.is_visible() else ""
                 if text:
@@ -1213,7 +1248,7 @@ class Responder:
         titles = scope.locator(S.MODAL_RESUME_TITLE)
         for i in range(min(titles.count(), 12)):
             title = titles.nth(i)
-            if title.locator("xpath=ancestor::label[descendant::input[@name='resumeId']]").count():
+            if title.locator(_IN_RESUME_LIST).count():
                 continue
             if not self._visible(title):
                 continue
@@ -1221,24 +1256,30 @@ class Responder:
             return (button.first, True) if button.count() else (title, False)
         return None
 
-    def _close_resume_list(self) -> None:
-        """Список не закрылся сам — закрыть крестиком. Только отдельную шторку: если список встроен в окно отклика,
-        крестик закрыл бы само окно."""
-        sheet = (self.page.locator(S.DIALOG).filter(has=self.page.locator(S.RESUME_RADIO))
-                 .filter(has_not=self.page.locator(S.MODAL_SUBMIT)).filter(visible=True))
-        if not sheet.count():
+    def _close_resume_list(self, scope: Locator | Page) -> None:
+        """Список не закрылся сам: у шторки — крестик, выпадающий список — повторный щелчок по резюме в окне
+        (как у человека), иначе Escape. Крестик ищем только в отдельном слое без «Откликнуться»: иначе он закрыл
+        бы само окно отклика."""
+        if not self._resume_list():
             return
-        sheet = sheet.last
-        close = sheet.locator(S.MODAL_CLOSE).or_(sheet.get_by_role("button", name=CLOSE_BUTTON_TEXT)).filter(visible=True)
+        layer = (self.page.locator(S.DIALOG)
+                 .filter(has=self.page.locator(f"{S.RESUME_OPTION}, {S.RESUME_RADIO}"))
+                 .filter(has_not=self.page.locator(S.MODAL_SUBMIT)).filter(visible=True))
+        close = (layer.last.locator(S.MODAL_CLOSE).or_(layer.last.get_by_role("button", name=CLOSE_BUTTON_TEXT))
+                 .filter(visible=True)) if layer.count() else None
+        log.debug("  закрываю список «Резюме для отклика»")
         try:
-            log.debug("  закрываю список «Резюме для отклика»")
-            if close.count():
+            if close is not None and close.count():
                 close.first.click()
+            elif (cell := self._resume_cell(scope)) is not None and cell[1]:
+                cell[0].click()
             else:
                 self.page.keyboard.press("Escape")
-            sheet.wait_for(state="hidden", timeout=3_000)
         except PlaywrightError:
             pass
+        deadline = time.monotonic() + 3
+        while self._resume_list() and time.monotonic() < deadline:
+            control.sleep(0.3)
 
     def _response_dialog(self) -> Locator | Page:
         dialog = self.page.locator('[role="dialog"]').filter(has=self.page.locator(S.MODAL_SUBMIT))

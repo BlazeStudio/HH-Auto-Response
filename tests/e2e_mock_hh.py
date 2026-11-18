@@ -552,6 +552,7 @@ def part_resumes() -> None:
     mock = MockHh(pages=pages, resumes=[AI_CV, PY_CV, SA_CV],
                   chats=[MockChat("9", "System Analyst", "Компания 303", [CITY],
                                   script=["Спасибо за ответы! Анкета завершена, работодатель свяжется с вами."])])
+    mock.resume_list = "sheet"  # узкое окно: шторка (выпадающий список — в part_resume_switch)
     mock.sheet_stays = {SA_CV.id}
     mock.hidden_resumes = {f"307:{SA_CV.id}"}
     rules = ("AI/LLM-инженер: ai, ml, llm, ии\nPython-разработчик: python, backend, бэкенд\n"
@@ -629,7 +630,7 @@ def part_resume_switch() -> None:
     другое название (выбрать не из чего) — откликается, а не пропускает."""
     pages = [[vacancy(311, "Backend-разработчик", "modal"),
               vacancy(312, "Разработчик с анкетой", "questions", questions=[{"kind": "text", "text": CITY}])]]
-    mock = MockHh(pages=pages, resumes=[AI_CV, PY_CV])
+    mock = MockHh(pages=pages, resumes=[AI_CV, PY_CV, SA_CV])  # выпадающий список, как на широком окне hh
     url = f"https://hh.ru/search/vacancy?resume={PY_CV.id}&from=resumelist"
     with session(mock, search_url=url) as root:
         log_path = log_of(root)
@@ -642,11 +643,13 @@ def part_resume_switch() -> None:
         check("смена резюме: в окне отклика — резюме из ссылки", sent.get("311", {}).get("resume") == PY_CV.id,
               sent.get("311"))
         check("смена резюме: на странице вопросов — тоже", sent.get("312", {}).get("resume") == PY_CV.id, sent.get("312"))
-        for line in ("в окне не то резюме — выбираю из ссылки на резюме / ссылки поиска", "в выпадающем списке hh резюме: 2",
+        for line in ("в окне не то резюме — выбираю из ссылки на резюме / ссылки поиска", "в выпадающем списке hh резюме: 3",
                      f"✓ резюме выбрано: «{PY_CV.title}»"):
             check(f"смена резюме: в журнале «{line[:60]}»", line in log)
         saved = json.loads((root / "data" / "resumes.json").read_text(encoding="utf-8"))
-        check("смена резюме: список из окна hh сохранён", [r["id"] for r in saved] == [AI_CV.id, PY_CV.id], saved)
+        check("смена резюме: список из окна hh сохранён", [r["id"] for r in saved] == [AI_CV.id, PY_CV.id, SA_CV.id],
+              saved)
+        check("смена резюме: скрытая копия списка не мешает", "его нет в выпадающем списке" not in log)
 
     mock = MockHh(pages=[[vacancy(321, "Python-разработчик", "modal")]])
     mock.shown_title = "Совсем другое резюме"

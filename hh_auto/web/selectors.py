@@ -27,8 +27,11 @@ MODAL_SUBMIT = '[data-qa="vacancy-response-submit-popup"]'
 MODAL_CLOSE = '[data-qa="response-popup-close"]'
 MODAL_RESUME_TITLE = '[data-qa="resume-title"]'
 HIDDEN_RESUME_WARNING = '[data-qa="hidden-resume-warning"]'
-# «Резюме для отклика»: в окне отклика (и на странице вопросов) выбранное резюме — карточка-кнопка с resume-title;
-# щелчок открывает шторку со списком резюме, у каждого — переключатель name="resumeId", value — ID резюме
+# «Резюме для отклика»: в окне отклика (и на странице вопросов) выбранное резюме — карточка-кнопка с resume-title,
+# щелчок открывает список резюме. На широком окне — выпадающий список (role="listbox"): пункты role="option"
+# с data-magritte-select-option=<ID резюме> и aria-selected, переключатель в пункте — без name. На узком — шторка
+# (role="dialog"): карточки с переключателем name="resumeId" value=<ID>. В странице бывают скрытые копии списка
+RESUME_OPTION = '[data-magritte-select-option]'
 RESUME_RADIO = 'input[name="resumeId"]'
 LETTER_INPUT = '[data-qa="vacancy-response-popup-form-letter-input"]'
 GENERATE_LETTER = '[data-qa="generate-cover-letter"]'
